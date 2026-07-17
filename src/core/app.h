@@ -14,6 +14,7 @@
 #include "core/keymap.h"
 #include "core/viewport.h"
 #include "platform/clipboard.h"
+#include "platform/encoder.h"
 #include "platform/file_system.h"
 #include "platform/renderer.h"
 
@@ -28,6 +29,9 @@ public:
     virtual void setFullscreen(bool enabled) = 0;
     virtual bool isFullscreen() const = 0;
     virtual std::optional<std::filesystem::path> showOpenDialog() = 0;
+    // 保存ダイアログ。キャンセル時 nullopt。返るパスには拡張子が付いていること
+    virtual std::optional<std::filesystem::path> showSaveDialog(
+        const std::wstring& defaultFileName) = 0;
     virtual void startTimer(unsigned milliseconds) = 0;  // 単発。満了で App::onTimer が呼ばれる
     virtual void quit() = 0;
 };
@@ -36,7 +40,8 @@ public:
 // 状態を更新して host にタイトル変更・再描画を依頼する(一方向フロー)。
 class App {
 public:
-    App(IAppHost& host, IFileSystem& fileSystem, ImageCache& cache, IClipboard& clipboard);
+    App(IAppHost& host, IFileSystem& fileSystem, ImageCache& cache, IClipboard& clipboard,
+        IImageEncoder& encoder);
 
     void applyConfig(const Config& config);
     void setDarkTheme(bool dark) { darkTheme_ = dark; }  // ステータスバー配色に反映
@@ -76,11 +81,13 @@ private:
     IFileSystem& fileSystem_;
     ImageCache& cache_;
     IClipboard& clipboard_;
+    IImageEncoder& encoder_;
     Keymap keymap_ = Keymap::defaults();
     ImageList list_;
     Viewport viewport_;
     std::shared_ptr<DecodedImage> current_;
     std::filesystem::path displayedPath_;  // current_ がどのパスの画像か
+    bool clipboardImage_ = false;  // current_ が貼り付け画像(フォルダ一覧とは独立)
     bool loadFailed_ = false;
     uint32_t backgroundRGB_ = 0x202020;
     int prefetchRadius_ = 2;

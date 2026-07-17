@@ -4,6 +4,8 @@
 #include <cstring>
 #include <vector>
 
+#include "core/dib.h"
+
 namespace blinker {
 namespace {
 
@@ -133,6 +135,24 @@ bool ClipboardWin::setImage(const DecodedImage& image) {
     }
     CloseClipboard();
     return ok;
+}
+
+std::shared_ptr<DecodedImage> ClipboardWin::getImage() {
+    if (!openClipboard(owner_)) return nullptr;
+    std::shared_ptr<DecodedImage> image;
+    // CF_DIBV5(アルファ保持)を優先。どちらか一方しかないときは OS が相互に合成する
+    for (const UINT format : {CF_DIBV5, CF_DIB}) {
+        HANDLE handle = GetClipboardData(format);
+        if (!handle) continue;
+        if (const void* data = GlobalLock(static_cast<HGLOBAL>(handle))) {
+            image = imageFromDib(static_cast<const uint8_t*>(data),
+                                 GlobalSize(static_cast<HGLOBAL>(handle)));
+            GlobalUnlock(static_cast<HGLOBAL>(handle));
+        }
+        if (image) break;
+    }
+    CloseClipboard();
+    return image;
 }
 
 bool ClipboardWin::setText(const std::wstring& text) {

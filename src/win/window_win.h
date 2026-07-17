@@ -28,6 +28,8 @@ public:
     void setFullscreen(bool enabled) override;
     bool isFullscreen() const override { return fullscreen_; }
     std::optional<std::filesystem::path> showOpenDialog() override;
+    std::optional<std::filesystem::path> showSaveDialog(
+        const std::wstring& defaultFileName) override;
     void startTimer(unsigned milliseconds) override;
     void quit() override;
 

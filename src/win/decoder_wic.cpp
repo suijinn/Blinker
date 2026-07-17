@@ -2,12 +2,13 @@
 
 #include <windows.h>
 
-#include <objbase.h>
 #include <wincodec.h>
 #include <wrl/client.h>
 
 #include <algorithm>
 #include <new>
+
+#include "win/wic_factory.h"
 
 namespace blinker {
 namespace {
@@ -16,26 +17,6 @@ using Microsoft::WRL::ComPtr;
 
 // D2D の ID2D1Bitmap が確実に扱える上限に収める
 constexpr UINT kMaxDimension = 16384;
-
-// スレッドごとに COM とファクトリを初期化して使い回す
-IWICImagingFactory* factoryForThisThread() {
-    thread_local struct ThreadState {
-        bool comInitialized = false;
-        ComPtr<IWICImagingFactory> factory;
-
-        ThreadState() {
-            // RPC_E_CHANGED_MODE(既に別モードで初期化済み)でも COM は利用できる
-            comInitialized = SUCCEEDED(CoInitializeEx(nullptr, COINIT_MULTITHREADED));
-            CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER,
-                             IID_PPV_ARGS(&factory));
-        }
-        ~ThreadState() {
-            factory.Reset();
-            if (comInitialized) CoUninitialize();
-        }
-    } state;
-    return state.factory.Get();
-}
 
 // EXIF Orientation (1-8) → WIC の変換オプション
 WICBitmapTransformOptions transformFromOrientation(UINT16 orientation) {
@@ -79,7 +60,7 @@ UINT16 readOrientation(IWICBitmapFrameDecode* frame) {
 } // namespace
 
 std::shared_ptr<DecodedImage> DecoderWic::decode(const std::filesystem::path& path) {
-    IWICImagingFactory* factory = factoryForThisThread();
+    IWICImagingFactory* factory = wicFactoryForThisThread();
     if (!factory) return nullptr;
 
     ComPtr<IWICBitmapDecoder> decoder;

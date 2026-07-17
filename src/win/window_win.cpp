@@ -279,6 +279,44 @@ std::optional<std::filesystem::path> MainWindow::showOpenDialog() {
     return std::filesystem::path(fileBuffer);
 }
 
+std::optional<std::filesystem::path> MainWindow::showSaveDialog(
+    const std::wstring& defaultFileName) {
+    // フィルタ順は EncoderWic の対応形式と一致させる (1=PNG, 2=JPEG, 3=BMP)
+    std::wstring filter;
+    filter += L"PNG (*.png)";
+    filter.push_back(L'\0');
+    filter += L"*.png";
+    filter.push_back(L'\0');
+    filter += L"JPEG (*.jpg;*.jpeg)";
+    filter.push_back(L'\0');
+    filter += L"*.jpg;*.jpeg";
+    filter.push_back(L'\0');
+    filter += L"BMP (*.bmp)";
+    filter.push_back(L'\0');
+    filter += L"*.bmp";
+    filter.push_back(L'\0');
+
+    wchar_t fileBuffer[MAX_PATH]{};
+    const size_t copyLength = std::min(defaultFileName.size(), static_cast<size_t>(MAX_PATH - 1));
+    defaultFileName.copy(fileBuffer, copyLength);
+
+    OPENFILENAMEW ofn{sizeof(ofn)};
+    ofn.hwndOwner = hwnd_;
+    ofn.lpstrFilter = filter.c_str();
+    ofn.lpstrFile = fileBuffer;
+    ofn.nMaxFile = MAX_PATH;
+    ofn.Flags = OFN_OVERWRITEPROMPT | OFN_HIDEREADONLY | OFN_PATHMUSTEXIST;
+    if (!GetSaveFileNameW(&ofn)) return std::nullopt;
+
+    // 拡張子なしで入力されたら選択中のフィルタに合わせて補う
+    // (lpstrDefExt では PNG 固定になってしまうため自前で行う)
+    std::filesystem::path result(fileBuffer);
+    if (!result.has_extension()) {
+        result += ofn.nFilterIndex == 2 ? L".jpg" : ofn.nFilterIndex == 3 ? L".bmp" : L".png";
+    }
+    return result;
+}
+
 void MainWindow::startTimer(unsigned milliseconds) {
     SetTimer(hwnd_, kMessageTimerId, milliseconds, nullptr);  // 既存タイマーは上書きされる
 }

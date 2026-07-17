@@ -11,6 +11,7 @@
 #include "core/str_util.h"
 #include "win/clipboard_win.h"
 #include "win/decoder_wic.h"
+#include "win/encoder_wic.h"
 #include "win/file_system_win.h"
 #include "win/window_win.h"
 
@@ -74,8 +75,9 @@ int WINAPI wWinMain(HINSTANCE hinstance, HINSTANCE, PWSTR, int showCommand) {
 
         ClipboardWin clipboard;
         clipboard.setOwner(window.hwnd());
+        EncoderWic encoder;
 
-        App app(window, fileSystem, cache, clipboard);
+        App app(window, fileSystem, cache, clipboard, encoder);
         app.setDarkTheme(darkTheme);
         app.applyConfig(config);
         window.attachApp(&app);

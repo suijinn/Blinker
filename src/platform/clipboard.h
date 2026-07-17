@@ -1,5 +1,6 @@
 #pragma once
 
+#include <memory>
 #include <string>
 
 #include "platform/decoder.h"
@@ -15,6 +16,9 @@ public:
     // 画像を書き込む(image のピクセルは 32bpp PBGRA)。失敗時 false
     virtual bool setImage(const DecodedImage& image) = 0;
     virtual bool setText(const std::wstring& text) = 0;
+
+    // クリップボードの画像を 32bpp PBGRA で取得する。画像がなければ nullptr
+    virtual std::shared_ptr<DecodedImage> getImage() = 0;
 };
 
 } // namespace blinker

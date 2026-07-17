@@ -9,10 +9,12 @@
 
 #include "core/app.h"
 #include "core/config.h"
+#include "core/dib.h"
 #include "core/geometry.h"
 #include "core/image_cache.h"
 #include "core/image_list.h"
 #include "core/keymap.h"
+#include "core/pixel_convert.h"
 #include "core/viewport.h"
 
 namespace {
@@ -142,7 +144,11 @@ void testKeymap() {
     CHECK(chord && chord->key == KeyCode::F11);
     CHECK(km.find({KeyCode{'C'}, true}) == Command::CopyImage);         // Ctrl+C
     CHECK(km.find({KeyCode{'C'}, true, true}) == Command::CopyPath);    // Shift+Ctrl+C
+    CHECK(km.find({KeyCode{'V'}, true}) == Command::PasteImage);        // Ctrl+V
+    CHECK(km.find({KeyCode{'S'}, true}) == Command::SaveImageAs);       // Ctrl+S
     CHECK(km.find({KeyCode{'B'}}) == Command::ToggleStatusBar);
+    CHECK(commandFromName("paste") == Command::PasteImage);
+    CHECK(commandFromName("save_as") == Command::SaveImageAs);
     chord = Keymap::parseChord("+");
     CHECK(chord && chord->key == KeyCode::Plus);
     chord = Keymap::parseChord("Ctrl++");
@@ -205,6 +211,190 @@ void testImageList() {
     CHECK(order[3].filename() == L"a.png");
 }
 
+// ---- DIB 変換 (クリップボード貼り付け用) ----
+
+void putU16(std::vector<uint8_t>& v, uint16_t x) {
+    v.push_back(static_cast<uint8_t>(x));
+    v.push_back(static_cast<uint8_t>(x >> 8));
+}
+
+void putU32(std::vector<uint8_t>& v, uint32_t x) {
+    putU16(v, static_cast<uint16_t>(x));
+    putU16(v, static_cast<uint16_t>(x >> 16));
+}
+
+// 40 バイトの BITMAPINFOHEADER を組み立てる
+std::vector<uint8_t> dibHeader(int32_t width, int32_t height, uint16_t bitCount,
+                               uint32_t compression, uint32_t clrUsed = 0) {
+    std::vector<uint8_t> v;
+    putU32(v, 40);
+    putU32(v, static_cast<uint32_t>(width));
+    putU32(v, static_cast<uint32_t>(height));
+    putU16(v, 1);  // planes
+    putU16(v, bitCount);
+    putU32(v, compression);
+    putU32(v, 0);  // sizeImage
+    putU32(v, 0);  // xppm
+    putU32(v, 0);  // yppm
+    putU32(v, clrUsed);
+    putU32(v, 0);  // clrImportant
+    return v;
+}
+
+// 124 バイトの BITMAPV5HEADER (BI_BITFIELDS、BGRA マスク付き)
+std::vector<uint8_t> dibV5Header(int32_t width, int32_t height) {
+    std::vector<uint8_t> v = dibHeader(width, height, 32, 3 /*BI_BITFIELDS*/);
+    v[0] = 124;  // bV5Size
+    putU32(v, 0x00FF0000);  // red
+    putU32(v, 0x0000FF00);  // green
+    putU32(v, 0x000000FF);  // blue
+    putU32(v, 0xFF000000);  // alpha
+    v.resize(124, 0);
+    return v;
+}
+
+// 出力 (PBGRA) の (x, y) が期待値どおりか
+bool pixelIs(const DecodedImage& img, uint32_t x, uint32_t y, uint8_t b, uint8_t g, uint8_t r,
+             uint8_t a) {
+    const uint8_t* p = img.pixels.data() + (static_cast<size_t>(y) * img.width + x) * 4;
+    return p[0] == b && p[1] == g && p[2] == r && p[3] == a;
+}
+
+void testDib() {
+    // 32bpp BI_RGB 2x2 ボトムアップ。第4バイトは未定義なので不透明扱い
+    {
+        auto d = dibHeader(2, 2, 32, 0);
+        // 格納順は下の行から: (0,1)=青, (1,1)=白 / (0,0)=赤, (1,0)=緑(第4バイトにゴミ)
+        putU32(d, 0x000000FF);  // 青 (XXRRGGBB リトルエンディアン格納 → B,G,R,X)
+        putU32(d, 0x00FFFFFF);  // 白
+        putU32(d, 0x00FF0000);  // 赤
+        putU32(d, 0x7F00FF00);  // 緑 + ゴミアルファ 0x7F
+        const auto img = imageFromDib(d.data(), d.size());
+        CHECK(img && img->width == 2 && img->height == 2);
+        CHECK(pixelIs(*img, 0, 0, 0, 0, 255, 255));      // 赤
+        CHECK(pixelIs(*img, 1, 0, 0, 255, 0, 255));      // 緑 (ゴミアルファは無視)
+        CHECK(pixelIs(*img, 0, 1, 255, 0, 0, 255));      // 青
+        CHECK(pixelIs(*img, 1, 1, 255, 255, 255, 255));  // 白
+
+        // トップダウン (高さ負) は格納順のまま
+        auto t = dibHeader(2, -2, 32, 0);
+        putU32(t, 0x000000FF);
+        putU32(t, 0x00FFFFFF);
+        putU32(t, 0x00FF0000);
+        putU32(t, 0x7F00FF00);
+        const auto timg = imageFromDib(t.data(), t.size());
+        CHECK(timg && pixelIs(*timg, 0, 0, 255, 0, 0, 255));  // 先頭行が上 → (0,0)=青
+        CHECK(pixelIs(*timg, 1, 1, 0, 255, 0, 255));
+    }
+
+    // CF_DIBV5: アルファマスク付き。ストレート → 事前乗算される
+    {
+        auto d = dibV5Header(1, 1);
+        putU32(d, 0x800000FF);  // 青、アルファ 128
+        const auto img = imageFromDib(d.data(), d.size());
+        CHECK(img && pixelIs(*img, 0, 0, 128, 0, 0, 128));  // (255*128+127)/255 = 128
+    }
+
+    // アルファマスク付きなのに全ピクセル a=0 → 不透明として救済
+    {
+        auto d = dibV5Header(2, 1);
+        putU32(d, 0x001E140A);  // (B,G,R) = (10,20,30), a=0
+        putU32(d, 0x00000000);
+        const auto img = imageFromDib(d.data(), d.size());
+        CHECK(img && pixelIs(*img, 0, 0, 10, 20, 30, 255));
+        CHECK(pixelIs(*img, 1, 0, 0, 0, 0, 255));
+    }
+
+    // 24bpp: 行が 4 バイト境界にパディングされる (幅3 → 9 バイト + 3 パディング)
+    {
+        auto d = dibHeader(3, 2, 24, 0);
+        const uint8_t rows[2][12] = {
+            {1, 2, 3, 4, 5, 6, 7, 8, 9, 0, 0, 0},           // 下の行
+            {10, 20, 30, 40, 50, 60, 70, 80, 90, 0, 0, 0},  // 上の行
+        };
+        for (const auto& row : rows) d.insert(d.end(), row, row + 12);
+        const auto img = imageFromDib(d.data(), d.size());
+        CHECK(img && img->width == 3 && img->height == 2);
+        CHECK(pixelIs(*img, 0, 0, 10, 20, 30, 255));
+        CHECK(pixelIs(*img, 2, 0, 70, 80, 90, 255));
+        CHECK(pixelIs(*img, 2, 1, 7, 8, 9, 255));
+    }
+
+    // 16bpp BI_BITFIELDS (565): マスク 3 個が 40 バイトヘッダの直後に続く
+    {
+        auto d = dibHeader(2, 1, 16, 3);
+        putU32(d, 0xF800);  // red
+        putU32(d, 0x07E0);  // green
+        putU32(d, 0x001F);  // blue
+        putU16(d, 0xF800);  // 赤ピクセル
+        putU16(d, 0x07E0);  // 緑ピクセル
+        const auto img = imageFromDib(d.data(), d.size());
+        CHECK(img && pixelIs(*img, 0, 0, 0, 0, 255, 255));
+        CHECK(pixelIs(*img, 1, 0, 0, 255, 0, 255));
+    }
+
+    // 16bpp BI_RGB は 555 固定
+    {
+        auto d = dibHeader(1, 1, 16, 0);
+        putU16(d, 0x7C00);  // 赤 (5bit 最大値 → 255 にスケール)
+        putU16(d, 0);       // パディング
+        const auto img = imageFromDib(d.data(), d.size());
+        CHECK(img && pixelIs(*img, 0, 0, 0, 0, 255, 255));
+    }
+
+    // 8bpp パレット
+    {
+        auto d = dibHeader(2, 1, 8, 0, 2);
+        putU32(d, 0x00030201);  // パレット0: B=1, G=2, R=3
+        putU32(d, 0x0096C8FA);  // パレット1: B=250, G=200, R=150
+        d.push_back(1);         // (0,0) → パレット1
+        d.push_back(0);         // (1,0) → パレット0
+        putU16(d, 0);           // 行パディング
+        const auto img = imageFromDib(d.data(), d.size());
+        CHECK(img && pixelIs(*img, 0, 0, 250, 200, 150, 255));
+        CHECK(pixelIs(*img, 1, 0, 1, 2, 3, 255));
+    }
+
+    // 不正データは nullptr
+    {
+        auto d = dibHeader(2, 2, 32, 0);
+        for (int i = 0; i < 4; ++i) putU32(d, 0);
+        CHECK(imageFromDib(d.data(), d.size() - 1) == nullptr);  // ピクセル不足
+        CHECK(imageFromDib(d.data(), 39) == nullptr);            // ヘッダ不足
+        CHECK(imageFromDib(nullptr, 100) == nullptr);
+
+        const auto reject = [](std::vector<uint8_t> header) {
+            header.resize(4096, 0);  // ピクセル領域は十分に確保した上でヘッダだけ不正にする
+            return imageFromDib(header.data(), header.size()) == nullptr;
+        };
+        CHECK(reject(dibHeader(2, 2, 4, 0)));        // 4bpp 非対応
+        CHECK(reject(dibHeader(2, 2, 8, 1)));        // RLE 非対応
+        CHECK(reject(dibHeader(0, 2, 32, 0)));       // 幅 0
+        CHECK(reject(dibHeader(100000, 1, 32, 0)));  // 巨大
+    }
+}
+
+void testPixelConvert() {
+    DecodedImage img;
+    img.width = 3;
+    img.height = 1;
+    // 事前乗算 (128,64,32, a=128) / 不透明 (10,20,30) / 完全透明
+    img.pixels = {128, 64, 32, 128, 10, 20, 30, 255, 0, 0, 0, 0};
+
+    const auto straight = toStraightBGRA(img);
+    CHECK(straight.size() == 12);
+    CHECK(straight[0] == 255 && straight[1] == 128 && straight[2] == 64 && straight[3] == 128);
+    CHECK(straight[4] == 10 && straight[5] == 20 && straight[6] == 30 && straight[7] == 255);
+    CHECK(straight[8] == 0 && straight[11] == 0);
+
+    const auto opaque = toOpaqueBGR(img);
+    CHECK(opaque.size() == 9);
+    // 白合成: premult + (255 - a)
+    CHECK(opaque[0] == 255 && opaque[1] == 191 && opaque[2] == 159);
+    CHECK(opaque[3] == 10 && opaque[4] == 20 && opaque[5] == 30);
+    CHECK(opaque[6] == 255 && opaque[7] == 255 && opaque[8] == 255);  // 透明 → 白
+}
+
 // 1x1 のダミー画像を返すテスト用デコーダ。"fail" を含むパスは失敗させる
 class FakeDecoder final : public IImageDecoder {
 public:
@@ -256,15 +446,25 @@ void testImageCache() {
 class FakeHost final : public IAppHost {
 public:
     void requestRedraw() override {}
-    void setTitle(const std::wstring&) override {}
+    void setTitle(const std::wstring& title) override { lastTitle = title; }
     void setFullscreen(bool enabled) override { fullscreen = enabled; }
     bool isFullscreen() const override { return fullscreen; }
     std::optional<std::filesystem::path> showOpenDialog() override { return std::nullopt; }
+    std::optional<std::filesystem::path> showSaveDialog(
+        const std::wstring& defaultFileName) override {
+        ++saveDialogCount;
+        lastDefaultName = defaultFileName;
+        return savePath;
+    }
     void startTimer(unsigned milliseconds) override { lastTimerMs = milliseconds; }
     void quit() override {}
 
     bool fullscreen = false;
     unsigned lastTimerMs = 0;
+    std::wstring lastTitle;
+    std::optional<std::filesystem::path> savePath;  // 保存ダイアログの応答 (nullopt = キャンセル)
+    int saveDialogCount = 0;
+    std::wstring lastDefaultName;
 };
 
 class FakeFileSystem final : public IFileSystem {
@@ -287,10 +487,27 @@ public:
         lastText = text;
         return true;
     }
+    std::shared_ptr<DecodedImage> getImage() override { return pasteImage; }
 
     int imageCount = 0;
     uint32_t lastWidth = 0;
     std::wstring lastText;
+    std::shared_ptr<DecodedImage> pasteImage;  // getImage の応答 (nullptr = 画像なし)
+};
+
+class FakeEncoder final : public IImageEncoder {
+public:
+    bool encode(const DecodedImage& image, const std::filesystem::path& path) override {
+        ++encodeCount;
+        lastWidth = image.width;
+        lastPath = path;
+        return ok;
+    }
+
+    bool ok = true;
+    int encodeCount = 0;
+    uint32_t lastWidth = 0;
+    std::filesystem::path lastPath;
 };
 
 void testAppClipboard() {
@@ -299,7 +516,8 @@ void testAppClipboard() {
     FakeHost host;
     FakeFileSystem fileSystem;
     FakeClipboard clipboard;
-    App app(host, fileSystem, cache, clipboard);
+    FakeEncoder encoder;
+    App app(host, fileSystem, cache, clipboard, encoder);
 
     // 画像を開いていない状態では何もコピーされない
     app.execute(Command::CopyImage);
@@ -340,7 +558,8 @@ void testAppStatusBar() {
     FakeHost host;
     FakeFileSystem fileSystem;
     FakeClipboard clipboard;
-    App app(host, fileSystem, cache, clipboard);
+    FakeEncoder encoder;
+    App app(host, fileSystem, cache, clipboard, encoder);
     app.onResize(800, 600);
 
     // 画像なし: バーは表示されるが左右とも空
@@ -402,6 +621,100 @@ void testAppStatusBar() {
     host.fullscreen = false;
 }
 
+void testAppPasteSave() {
+    FakeDecoder decoder;
+    ImageCache cache(decoder);
+    FakeHost host;
+    FakeFileSystem fileSystem;
+    FakeClipboard clipboard;
+    FakeEncoder encoder;
+    App app(host, fileSystem, cache, clipboard, encoder);
+    app.onResize(800, 600);
+
+    // 画像なしでの保存: ダイアログは開かずメッセージ
+    app.execute(Command::SaveImageAs);
+    CHECK(host.saveDialogCount == 0);
+    CHECK(app.statusBar().leftText == L"保存する画像がありません");
+
+    // クリップボードが空のときの貼り付け
+    app.execute(Command::PasteImage);
+    CHECK(app.currentImage() == nullptr);
+    CHECK(app.statusBar().leftText == L"クリップボードに画像がありません");
+
+    // フォルダの画像 (FakeDecoder の 1x1) を開く
+    std::mutex mutex;
+    std::condition_variable cv;
+    bool decoded = false;
+    cache.setOnDecoded([&](const std::filesystem::path&) {
+        std::lock_guard lock(mutex);
+        decoded = true;
+        cv.notify_all();
+    });
+    const std::filesystem::path path = L"C:/pics/a.png";
+    fileSystem.files = {path};
+    app.openPath(path);
+    {
+        std::unique_lock lock(mutex);
+        CHECK(cv.wait_for(lock, std::chrono::seconds(5), [&] { return decoded; }));
+    }
+    app.onDecodeCompleted();
+    CHECK(app.currentImage() && app.currentImage()->width == 1);
+
+    // 2x1 のクリップボード画像を貼り付け
+    auto pasted = std::make_shared<DecodedImage>();
+    pasted->width = 2;
+    pasted->height = 1;
+    pasted->pixels = {0, 0, 255, 255, 0, 255, 0, 255};
+    clipboard.pasteImage = pasted;
+    app.onTimer();  // 直前の通知メッセージを消しておく
+    app.execute(Command::PasteImage);
+    CHECK(app.currentImage() && app.currentImage()->width == 2);
+    CHECK(host.lastTitle.find(L"(クリップボード)") == 0);
+    CHECK(app.statusBar().leftText == L"2 x 1 px");
+
+    // デコード完了通知が来ても貼り付け画像は上書きされない
+    app.onDecodeCompleted();
+    CHECK(app.currentImage()->width == 2);
+
+    // 貼り付け表示中はパスのコピーを拒否(一覧のパスとは無関係のため)
+    app.execute(Command::CopyPath);
+    CHECK(app.statusBar().leftText == L"コピーするパスがありません");
+
+    // 貼り付け画像の保存: 既定名は「クリップボード.png」
+    host.savePath = std::filesystem::path(L"C:/out/pasted.png");
+    app.execute(Command::SaveImageAs);
+    CHECK(host.lastDefaultName == L"クリップボード.png");
+    CHECK(encoder.lastPath == std::filesystem::path(L"C:/out/pasted.png"));
+    CHECK(encoder.lastWidth == 2);
+    CHECK(app.statusBar().leftText == L"保存しました: C:/out/pasted.png");
+
+    // 次へ移動でフォルダ一覧の表示に戻る(1枚しかなくても)
+    app.execute(Command::NextImage);
+    CHECK(app.currentImage() && app.currentImage()->width == 1);
+    CHECK(host.lastTitle.find(L"a.png") != std::wstring::npos);
+
+    // 通常画像の保存: 既定名は元ファイル名の .png 置き換え
+    host.savePath = std::filesystem::path(L"C:/out/copy.jpg");
+    app.execute(Command::SaveImageAs);
+    CHECK(host.lastDefaultName == L"a.png");
+    CHECK(encoder.lastWidth == 1);
+    CHECK(app.statusBar().leftText == L"保存しました: C:/out/copy.jpg");
+
+    // ダイアログのキャンセル: エンコードもメッセージも発生しない
+    app.onTimer();  // 前のメッセージを消す
+    host.savePath.reset();
+    const int encodeCountBefore = encoder.encodeCount;
+    app.execute(Command::SaveImageAs);
+    CHECK(encoder.encodeCount == encodeCountBefore);
+    CHECK(app.statusBar().leftText == L"1 x 1 px");
+
+    // 保存失敗
+    encoder.ok = false;
+    host.savePath = std::filesystem::path(L"C:/out/x.png");
+    app.execute(Command::SaveImageAs);
+    CHECK(app.statusBar().leftText == L"保存に失敗しました: C:/out/x.png");
+}
+
 } // namespace
 
 int main() {
@@ -410,10 +723,13 @@ int main() {
     testViewportZoomAt();
     testKeymap();
     testConfig();
+    testDib();
+    testPixelConvert();
     testImageList();
     testImageCache();
     testAppClipboard();
     testAppStatusBar();
+    testAppPasteSave();
 
     if (g_failures == 0) {
         std::cout << "all tests passed\n";

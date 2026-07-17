@@ -4,6 +4,8 @@
 #include <cmath>
 #include <format>
 
+#include "core/pixel_convert.h"
+
 namespace blinker {
 
 namespace fs = std::filesystem;
@@ -12,16 +14,15 @@ namespace {
 
 constexpr unsigned kMessageDurationMs = 3000;
 
-// 事前乗算値からストレート値へ戻す(表示用、四捨五入)
-uint8_t unpremultiply(uint8_t value, uint8_t alpha) {
-    if (alpha == 0) return 0;
-    return static_cast<uint8_t>(std::min(255u, (value * 255u + alpha / 2u) / alpha));
-}
-
 } // namespace
 
-App::App(IAppHost& host, IFileSystem& fileSystem, ImageCache& cache, IClipboard& clipboard)
-    : host_(host), fileSystem_(fileSystem), cache_(cache), clipboard_(clipboard) {}
+App::App(IAppHost& host, IFileSystem& fileSystem, ImageCache& cache, IClipboard& clipboard,
+         IImageEncoder& encoder)
+    : host_(host),
+      fileSystem_(fileSystem),
+      cache_(cache),
+      clipboard_(clipboard),
+      encoder_(encoder) {}
 
 void App::applyConfig(const Config& config) {
     keymap_.applyConfig(config.section("keys"));
@@ -47,17 +48,19 @@ void App::openPath(const fs::path& path) {
 
 void App::execute(Command command) {
     switch (command) {
+    // 移動系は貼り付け画像の表示中ならフォルダ一覧の表示へ戻る(一覧位置が
+    // 動かなくても refreshCurrent が必要なため clipboardImage_ を OR する)
     case Command::NextImage:
-        if (list_.next()) refreshCurrent();
+        if (list_.next() || clipboardImage_) refreshCurrent();
         break;
     case Command::PrevImage:
-        if (list_.prev()) refreshCurrent();
+        if (list_.prev() || clipboardImage_) refreshCurrent();
         break;
     case Command::FirstImage:
-        if (list_.first()) refreshCurrent();
+        if (list_.first() || clipboardImage_) refreshCurrent();
         break;
     case Command::LastImage:
-        if (list_.last()) refreshCurrent();
+        if (list_.last() || clipboardImage_) refreshCurrent();
         break;
     case Command::ZoomIn:
         viewport_.zoomStep(true);
@@ -111,7 +114,7 @@ void App::execute(Command command) {
         }
         break;
     case Command::CopyPath:
-        if (list_.empty()) {
+        if (clipboardImage_ || list_.empty()) {
             showMessage(L"コピーするパスがありません");
         } else if (clipboard_.setText(list_.current().wstring())) {
             showMessage(L"パスをコピーしました: " + list_.current().wstring());
@@ -119,6 +122,37 @@ void App::execute(Command command) {
             showMessage(L"パスのコピーに失敗しました");
         }
         break;
+    case Command::PasteImage:
+        if (auto image = clipboard_.getImage(); image && image->width > 0 && image->height > 0) {
+            current_ = std::move(image);
+            clipboardImage_ = true;
+            displayedPath_.clear();  // 一覧に戻ったとき必ず再取得させる
+            loadFailed_ = false;
+            viewport_.setImage(
+                {static_cast<float>(current_->width), static_cast<float>(current_->height)});
+            updateTitle();
+            host_.requestRedraw();
+        } else {
+            showMessage(L"クリップボードに画像がありません");
+        }
+        break;
+    case Command::SaveImageAs: {
+        if (!current_) {
+            showMessage(L"保存する画像がありません");
+            break;
+        }
+        const std::wstring defaultName = clipboardImage_ || list_.empty()
+                                             ? L"クリップボード.png"
+                                             : list_.current().stem().wstring() + L".png";
+        if (const auto path = host_.showSaveDialog(defaultName)) {
+            if (encoder_.encode(*current_, *path)) {
+                showMessage(L"保存しました: " + path->wstring());
+            } else {
+                showMessage(L"保存に失敗しました: " + path->wstring());
+            }
+        }
+        break;
+    }
     case Command::ToggleStatusBar:
         statusBarEnabled_ = !statusBarEnabled_;
         applyLayout();
@@ -183,6 +217,7 @@ void App::onTimer() {
 }
 
 void App::onDecodeCompleted() {
+    if (clipboardImage_) return;  // 貼り付け画像の表示はデコード完了で上書きしない
     if (list_.empty()) return;
     // 表示すべき画像がまだ画面に出ていなければ取得を再試行する
     if (displayedPath_ == list_.current() && (current_ || loadFailed_)) return;
@@ -190,6 +225,7 @@ void App::onDecodeCompleted() {
 }
 
 void App::refreshCurrent() {
+    clipboardImage_ = false;  // 表示をフォルダ一覧由来に戻す
     if (list_.empty()) {
         current_.reset();
         displayedPath_.clear();
@@ -291,6 +327,11 @@ void App::updatePrefetch() {
 }
 
 void App::updateTitle() {
+    if (clipboardImage_) {
+        host_.setTitle(std::format(L"(クリップボード) {}% - Blinker",
+                                   static_cast<int>(std::lround(viewport_.zoom() * 100))));
+        return;
+    }
     if (list_.empty()) {
         host_.setTitle(L"Blinker");
         return;

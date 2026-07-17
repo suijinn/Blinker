@@ -9,9 +9,11 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 add_library(blinker_core STATIC
     src/core/app.cpp
     src/core/config.cpp
+    src/core/dib.cpp
     src/core/image_cache.cpp
     src/core/image_list.cpp
     src/core/keymap.cpp
+    src/core/pixel_convert.cpp
     src/core/viewport.cpp
 )
 target_include_directories(blinker_core PUBLIC src)
@@ -25,6 +27,8 @@ if(WIN32)
         src/win/window_win.cpp
         src/win/renderer_d2d.cpp
         src/win/decoder_wic.cpp
+        src/win/encoder_wic.cpp
+        src/win/wic_factory.cpp
         src/win/file_system_win.cpp
         src/win/clipboard_win.cpp
         src/win/blinker.rc

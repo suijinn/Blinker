@@ -22,7 +22,7 @@ prefetch_radius = 2
 # 使えるコマンド:
 #   next prev first last zoom_in zoom_out fit actual_size
 #   pan_left pan_right pan_up pan_down rotate_cw rotate_ccw
-#   fullscreen open copy_image copy_path statusbar escape quit
+#   fullscreen open copy_image copy_path paste save_as statusbar escape quit
 #
 # 例: Vim風の移動にする場合
 #next = L, Right, Space
