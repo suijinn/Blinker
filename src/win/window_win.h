@@ -18,7 +18,7 @@ public:
     // ImageCache のワーカースレッドからのデコード完了通知に使う
     static constexpr UINT kMsgImageDecoded = WM_APP + 1;
 
-    bool create(HINSTANCE hinstance, int showCommand);
+    bool create(HINSTANCE hinstance, int showCommand, bool darkTitleBar);
     void attachApp(App* app);
     HWND hwnd() const { return hwnd_; }
 

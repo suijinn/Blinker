@@ -8,11 +8,29 @@
 #include "core/app.h"
 #include "core/config.h"
 #include "core/image_cache.h"
+#include "core/str_util.h"
+#include "win/clipboard_win.h"
 #include "win/decoder_wic.h"
 #include "win/file_system_win.h"
 #include "win/window_win.h"
 
 namespace {
+
+// [view] theme = auto | dark | light。auto は OS のアプリテーマ設定に追従する
+bool resolveDarkTitleBar(const blinker::Config& config) {
+    const std::string theme = blinker::toLower(blinker::trim(config.get("view", "theme", "auto")));
+    if (theme == "dark") return true;
+    if (theme == "light") return false;
+    DWORD lightTheme = 1;
+    DWORD size = sizeof(lightTheme);
+    if (RegGetValueW(HKEY_CURRENT_USER,
+                     L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
+                     L"AppsUseLightTheme", RRF_RT_REG_DWORD, nullptr, &lightTheme,
+                     &size) != ERROR_SUCCESS) {
+        return false;  // 読めない環境ではライト(OS既定)のまま
+    }
+    return lightTheme == 0;
+}
 
 std::filesystem::path exeDirectory() {
     wchar_t buffer[MAX_PATH]{};
@@ -48,12 +66,15 @@ int WINAPI wWinMain(HINSTANCE hinstance, HINSTANCE, PWSTR, int showCommand) {
         FileSystemWin fileSystem;
 
         MainWindow window;
-        if (!window.create(hinstance, showCommand)) {
+        if (!window.create(hinstance, showCommand, resolveDarkTitleBar(config))) {
             CoUninitialize();
             return 1;
         }
 
-        App app(window, fileSystem, cache);
+        ClipboardWin clipboard;
+        clipboard.setOwner(window.hwnd());
+
+        App app(window, fileSystem, cache, clipboard);
         app.applyConfig(config);
         window.attachApp(&app);
 

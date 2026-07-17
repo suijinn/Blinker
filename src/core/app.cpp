@@ -8,8 +8,8 @@ namespace blinker {
 
 namespace fs = std::filesystem;
 
-App::App(IAppHost& host, IFileSystem& fileSystem, ImageCache& cache)
-    : host_(host), fileSystem_(fileSystem), cache_(cache) {}
+App::App(IAppHost& host, IFileSystem& fileSystem, ImageCache& cache, IClipboard& clipboard)
+    : host_(host), fileSystem_(fileSystem), cache_(cache), clipboard_(clipboard) {}
 
 void App::applyConfig(const Config& config) {
     keymap_.applyConfig(config.section("keys"));
@@ -86,6 +86,12 @@ void App::execute(Command command) {
         break;
     case Command::OpenFile:
         if (const auto path = host_.showOpenDialog()) openPath(*path);
+        break;
+    case Command::CopyImage:
+        if (current_) clipboard_.setImage(*current_);
+        break;
+    case Command::CopyPath:
+        if (!list_.empty()) clipboard_.setText(list_.current().wstring());
         break;
     case Command::Escape:
         if (host_.isFullscreen()) {

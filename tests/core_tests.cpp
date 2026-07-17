@@ -7,6 +7,7 @@
 #include <iostream>
 #include <mutex>
 
+#include "core/app.h"
 #include "core/config.h"
 #include "core/geometry.h"
 #include "core/image_cache.h"
@@ -127,6 +128,8 @@ void testKeymap() {
     CHECK(chord && chord->key == KeyCode{'R'} && chord->shift);
     chord = Keymap::parseChord("F11");
     CHECK(chord && chord->key == KeyCode::F11);
+    CHECK(km.find({KeyCode{'C'}, true}) == Command::CopyImage);         // Ctrl+C
+    CHECK(km.find({KeyCode{'C'}, true, true}) == Command::CopyPath);    // Shift+Ctrl+C
     chord = Keymap::parseChord("+");
     CHECK(chord && chord->key == KeyCode::Plus);
     chord = Keymap::parseChord("Ctrl++");
@@ -237,6 +240,85 @@ void testImageCache() {
     CHECK(cache.tryGet(L"never_requested.png") == nullptr);
 }
 
+class FakeHost final : public IAppHost {
+public:
+    void requestRedraw() override {}
+    void setTitle(const std::wstring&) override {}
+    void setFullscreen(bool enabled) override { fullscreen = enabled; }
+    bool isFullscreen() const override { return fullscreen; }
+    std::optional<std::filesystem::path> showOpenDialog() override { return std::nullopt; }
+    void quit() override {}
+
+    bool fullscreen = false;
+};
+
+class FakeFileSystem final : public IFileSystem {
+public:
+    std::vector<std::filesystem::path> listImages(const std::filesystem::path&) override {
+        return files;
+    }
+
+    std::vector<std::filesystem::path> files;
+};
+
+class FakeClipboard final : public IClipboard {
+public:
+    bool setImage(const DecodedImage& image) override {
+        ++imageCount;
+        lastWidth = image.width;
+        return true;
+    }
+    bool setText(const std::wstring& text) override {
+        lastText = text;
+        return true;
+    }
+
+    int imageCount = 0;
+    uint32_t lastWidth = 0;
+    std::wstring lastText;
+};
+
+void testAppClipboard() {
+    FakeDecoder decoder;
+    ImageCache cache(decoder);
+    FakeHost host;
+    FakeFileSystem fileSystem;
+    FakeClipboard clipboard;
+    App app(host, fileSystem, cache, clipboard);
+
+    // 画像を開いていない状態では何もコピーされない
+    app.execute(Command::CopyImage);
+    app.execute(Command::CopyPath);
+    CHECK(clipboard.imageCount == 0);
+    CHECK(clipboard.lastText.empty());
+
+    // デコード完了を同期して待てるようにしてから画像を開く
+    std::mutex mutex;
+    std::condition_variable cv;
+    bool decoded = false;
+    cache.setOnDecoded([&](const std::filesystem::path&) {
+        std::lock_guard lock(mutex);
+        decoded = true;
+        cv.notify_all();
+    });
+    const std::filesystem::path path = L"C:/pics/a.png";
+    fileSystem.files = {path};
+    app.openPath(path);
+    {
+        std::unique_lock lock(mutex);
+        CHECK(cv.wait_for(lock, std::chrono::seconds(5), [&] { return decoded; }));
+    }
+    app.onDecodeCompleted();  // 本来は UI スレッドへの PostMessage 経由
+    CHECK(app.currentImage() != nullptr);
+
+    app.execute(Command::CopyImage);
+    CHECK(clipboard.imageCount == 1);
+    CHECK(clipboard.lastWidth == 1);  // FakeDecoder は 1x1 を返す
+
+    app.execute(Command::CopyPath);
+    CHECK(clipboard.lastText == path.wstring());
+}
+
 } // namespace
 
 int main() {
@@ -247,6 +329,7 @@ int main() {
     testConfig();
     testImageList();
     testImageCache();
+    testAppClipboard();
 
     if (g_failures == 0) {
         std::cout << "all tests passed\n";

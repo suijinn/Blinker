@@ -13,6 +13,7 @@
 #include "core/image_list.h"
 #include "core/keymap.h"
 #include "core/viewport.h"
+#include "platform/clipboard.h"
 #include "platform/file_system.h"
 
 namespace blinker {
@@ -33,7 +34,7 @@ public:
 // 状態を更新して host にタイトル変更・再描画を依頼する(一方向フロー)。
 class App {
 public:
-    App(IAppHost& host, IFileSystem& fileSystem, ImageCache& cache);
+    App(IAppHost& host, IFileSystem& fileSystem, ImageCache& cache, IClipboard& clipboard);
 
     void applyConfig(const Config& config);
 
@@ -62,6 +63,7 @@ private:
     IAppHost& host_;
     IFileSystem& fileSystem_;
     ImageCache& cache_;
+    IClipboard& clipboard_;
     Keymap keymap_ = Keymap::defaults();
     ImageList list_;
     Viewport viewport_;

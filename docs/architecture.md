@@ -13,12 +13,14 @@
 ┌───────────────────────────────────────────┐
 │ src/win  (Windows 実装層)                  │
 │  main_win / window_win / renderer_d2d /    │
-│  decoder_wic / file_system_win             │
+│  decoder_wic / file_system_win /           │
+│  clipboard_win                             │
 └──────────────┬────────────────────────────┘
                │ 実装・所有
 ┌──────────────▼────────────────────────────┐
 │ src/platform (抽象インターフェース)          │
-│  IRenderer / IImageDecoder / IFileSystem   │
+│  IRenderer / IImageDecoder / IFileSystem / │
+│  IClipboard                                │
 └──────────────┬────────────────────────────┘
                │ 利用
 ┌──────────────▼────────────────────────────┐
@@ -54,6 +56,7 @@
 | `MainWindow` | Win32 メッセージ変換、フルスクリーン、ダイアログ(IAppHost 実装) |
 | `RendererD2D` | BGRA ピクセル → ID2D1Bitmap(±1枚をGPU側にキャッシュ)して描画 |
 | `DecoderWic` | WIC で 32bpp PBGRA に統一デコード。EXIF 回転適用、16384px 超は縮小 |
+| `ClipboardWin` | クリップボード書き込み。画像は CF_DIBV5(アルファ)+ CF_DIB(白合成24bpp)の2形式 |
 
 ## スレッドモデル
 

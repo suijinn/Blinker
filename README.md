@@ -43,11 +43,14 @@ blinker.exe <画像ファイル | フォルダ>
 | 回転(表示のみ) | `R`(右90°)/ `Shift+R`(左90°) |
 | フルスクリーン | `F11` `Enter` |
 | ファイルを開く | `Ctrl+O` |
+| 画像をクリップボードへコピー | `Ctrl+C` |
+| 画像のパスをコピー | `Shift+Ctrl+C` |
 | 終了 | `Q`、`Esc`(フルスクリーン中は解除) |
 
 ### 設定
 
-`blinker.exe` と同じフォルダに `blinker.ini` を置くと、キーバインドや背景色を変更できる。
+`blinker.exe` と同じフォルダに `blinker.ini` を置くと、キーバインドや背景色、
+タイトルバーのテーマ(OS設定追従 / ダーク / ライト)を変更できる。
 書式は [docs/blinker.ini.example](docs/blinker.ini.example) を参照。
 
 ## ライセンス / 開発メモ

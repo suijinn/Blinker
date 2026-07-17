@@ -1,6 +1,7 @@
 #include "win/window_win.h"
 
 #include <commdlg.h>
+#include <dwmapi.h>
 #include <shellapi.h>
 #include <windowsx.h>
 
@@ -14,7 +15,7 @@ constexpr int kIconResourceId = 101;  // blinker.rc の IDI_APPICON
 
 } // namespace
 
-bool MainWindow::create(HINSTANCE hinstance, int showCommand) {
+bool MainWindow::create(HINSTANCE hinstance, int showCommand, bool darkTitleBar) {
     WNDCLASSEXW wc{sizeof(wc)};
     wc.style = CS_HREDRAW | CS_VREDRAW;
     wc.lpfnWndProc = wndProc;
@@ -28,6 +29,12 @@ bool MainWindow::create(HINSTANCE hinstance, int showCommand) {
     hwnd_ = CreateWindowExW(0, kWindowClass, L"Blinker", WS_OVERLAPPEDWINDOW, CW_USEDEFAULT,
                             CW_USEDEFAULT, 1024, 768, nullptr, nullptr, hinstance, this);
     if (!hwnd_) return false;
+
+    if (darkTitleBar) {
+        // 表示前に設定してタイトルバーが白→黒と切り替わるちらつきを防ぐ
+        const BOOL dark = TRUE;
+        DwmSetWindowAttribute(hwnd_, DWMWA_USE_IMMERSIVE_DARK_MODE, &dark, sizeof(dark));
+    }
 
     renderer_ = std::make_unique<RendererD2D>(hwnd_);
     DragAcceptFiles(hwnd_, TRUE);

@@ -31,6 +31,8 @@ constexpr std::array kCommandNames = {
     CommandName{"rotate_ccw", Command::RotateCCW},
     CommandName{"fullscreen", Command::ToggleFullscreen},
     CommandName{"open", Command::OpenFile},
+    CommandName{"copy_image", Command::CopyImage},
+    CommandName{"copy_path", Command::CopyPath},
     CommandName{"escape", Command::Escape},
     CommandName{"quit", Command::Quit},
 };
@@ -101,6 +103,8 @@ Keymap Keymap::defaults() {
     b(KeyCode::F11, Command::ToggleFullscreen);
     b(KeyCode::Enter, Command::ToggleFullscreen);
     b(KeyCode{'O'}, Command::OpenFile, true);
+    b(KeyCode{'C'}, Command::CopyImage, true);
+    b(KeyCode{'C'}, Command::CopyPath, true, true);
     b(KeyCode::Escape, Command::Escape);
     b(KeyCode{'Q'}, Command::Quit);
     return km;
