@@ -89,7 +89,7 @@ ID2D1Bitmap* RendererD2D::bitmapFor(const std::shared_ptr<const DecodedImage>& i
 
 void RendererD2D::render(const std::shared_ptr<const DecodedImage>& image,
                          const Matrix3x2& imageToScreen, float zoom, uint32_t backgroundRGB,
-                         const StatusBarView& statusBar) {
+                         const SidebarView& sidebar, const StatusBarView& statusBar) {
     if (!ensureTarget()) return;
     target_->BeginDraw();
     target_->Clear(colorFromRGB(backgroundRGB));
@@ -107,9 +107,46 @@ void RendererD2D::render(const std::shared_ptr<const DecodedImage>& image,
             target_->SetTransform(D2D1::Matrix3x2F::Identity());
         }
     }
-    drawStatusBar(statusBar);  // 画像の後に描き、ズーム時のはみ出しを覆う
+    drawSidebar(sidebar);      // 画像の後に描き、ズーム時のはみ出しを覆う(不透明)
+    drawStatusBar(statusBar);
     if (target_->EndDraw() == D2DERR_RECREATE_TARGET) {
         discardTarget();  // 次回の render で作り直す
+    }
+}
+
+void RendererD2D::drawSidebar(const SidebarView& sidebar) {
+    if (!sidebar.visible || sidebar.width <= 0 || !brush_ || !textFormat_) return;
+    brush_->SetColor(colorFromRGB(sidebar.backgroundRGB));
+    target_->FillRectangle(D2D1::RectF(0, 0, sidebar.width, sidebar.height), brush_.Get());
+
+    constexpr float kPadding = 8.0f;
+    constexpr float kScrollbarWidth = 4.0f;
+    for (size_t i = 0; i < sidebar.items.size(); ++i) {
+        const SidebarItem& item = sidebar.items[i];
+        const float top = sidebar.firstItemY + static_cast<float>(i) * sidebar.itemHeight;
+        const float bottom = top + sidebar.itemHeight;
+        if (item.current) {
+            brush_->SetColor(colorFromRGB(sidebar.currentBackgroundRGB));
+            target_->FillRectangle(D2D1::RectF(0, top, sidebar.width, bottom), brush_.Get());
+        }
+        brush_->SetColor(colorFromRGB(item.current ? sidebar.currentTextRGB : sidebar.textRGB));
+        const auto rect =
+            D2D1::RectF(kPadding, top, sidebar.width - kPadding - kScrollbarWidth, bottom);
+        target_->DrawText(item.text.c_str(), static_cast<UINT32>(item.text.size()),
+                          textFormat_.Get(), rect, brush_.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
+    }
+
+    // スクロールバー(内容が収まらないときだけ右端に表示)
+    if (sidebar.contentHeight > sidebar.height) {
+        const float ratio = sidebar.height / sidebar.contentHeight;
+        const float thumbHeight = std::max(20.0f, sidebar.height * ratio);
+        const float range = sidebar.contentHeight - sidebar.height;
+        const float thumbTop =
+            (sidebar.scrollOffset / range) * (sidebar.height - thumbHeight);
+        brush_->SetColor(colorFromRGB(sidebar.scrollbarRGB));
+        target_->FillRectangle(D2D1::RectF(sidebar.width - kScrollbarWidth, thumbTop,
+                                           sidebar.width, thumbTop + thumbHeight),
+                               brush_.Get());
     }
 }
 

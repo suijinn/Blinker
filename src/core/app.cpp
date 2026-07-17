@@ -30,6 +30,10 @@ void App::applyConfig(const Config& config) {
     viewport_.setFitUpscale(config.getBool("view", "fit_upscale", false));
     prefetchRadius_ = std::clamp(config.getInt("view", "prefetch_radius", prefetchRadius_), 0, 8);
     statusBarEnabled_ = config.getBool("view", "statusbar", statusBarEnabled_);
+    sidebarEnabled_ = config.getBool("view", "sidebar", sidebarEnabled_);
+    sidebarWidth_ = static_cast<float>(
+        std::clamp(config.getInt("view", "sidebar_width", static_cast<int>(sidebarWidth_)), 120,
+                   480));
     applyLayout();
 }
 
@@ -153,6 +157,12 @@ void App::execute(Command command) {
         }
         break;
     }
+    case Command::ToggleSidebar:
+        sidebarEnabled_ = !sidebarEnabled_;
+        applyLayout();
+        if (sidebarEnabled_) scrollSidebarToCurrent();
+        onViewChanged();  // フィット再計算でズーム率表示が変わりうる
+        break;
     case Command::ToggleStatusBar:
         statusBarEnabled_ = !statusBarEnabled_;
         applyLayout();
@@ -188,8 +198,27 @@ void App::onResize(float width, float height) {
 
 void App::onWheel(float wheelNotches, Point screenPos) {
     if (wheelNotches == 0) return;
-    viewport_.zoomAt(std::pow(Viewport::kZoomStep, wheelNotches), screenPos);
+    if (sidebarVisible() && screenPos.x < sidebarOffset()) {
+        // サイドバー上ではズームせず一覧をスクロール(1ノッチ = 3項目)
+        sidebarScroll_ -= wheelNotches * 3 * kSidebarItemHeight;
+        clampSidebarScroll();
+        host_.requestRedraw();
+        return;
+    }
+    viewport_.zoomAt(std::pow(Viewport::kZoomStep, wheelNotches),
+                     {screenPos.x - sidebarOffset(), screenPos.y});
     onViewChanged();
+}
+
+bool App::onMouseDown(Point screenPos) {
+    if (!sidebarVisible() || screenPos.x >= sidebarOffset()) return false;
+    // ステータスバー上(サイドバー領域外)はどちらの操作でもないため消費だけする
+    if (screenPos.y >= 0 && screenPos.y < sidebarViewHeight()) {
+        const size_t index =
+            static_cast<size_t>((screenPos.y + sidebarScroll_) / kSidebarItemHeight);
+        if (index < list_.size() && (list_.jumpTo(index) || clipboardImage_)) refreshCurrent();
+    }
+    return true;  // サイドバー上のクリックはパン開始にしない
 }
 
 void App::onDragPan(float dx, float dy) {
@@ -251,6 +280,7 @@ void App::refreshCurrent() {
         cache_.requestNow(path);
         loadFailed_ = false;
     }
+    scrollSidebarToCurrent();
     updatePrefetch();
     updateTitle();
     host_.requestRedraw();
@@ -265,21 +295,61 @@ bool App::statusBarVisible() const {
     return statusBarEnabled_ && !host_.isFullscreen();
 }
 
+bool App::sidebarVisible() const {
+    return sidebarEnabled_ && !host_.isFullscreen();
+}
+
+float App::sidebarOffset() const {
+    return sidebarVisible() ? sidebarWidth_ : 0.0f;
+}
+
+float App::sidebarViewHeight() const {
+    const float barHeight = statusBarVisible() ? kStatusBarHeight : 0.0f;
+    return std::max(clientSize_.h - barHeight, 1.0f);
+}
+
+void App::clampSidebarScroll() {
+    const float maxScroll = std::max(
+        0.0f, static_cast<float>(list_.size()) * kSidebarItemHeight - sidebarViewHeight());
+    sidebarScroll_ = std::clamp(sidebarScroll_, 0.0f, maxScroll);
+}
+
+void App::scrollSidebarToCurrent() {
+    if (list_.empty()) {
+        sidebarScroll_ = 0;
+        return;
+    }
+    const float itemTop = static_cast<float>(list_.index()) * kSidebarItemHeight;
+    const float viewHeight = sidebarViewHeight();
+    if (itemTop < sidebarScroll_) {
+        sidebarScroll_ = itemTop;
+    } else if (itemTop + kSidebarItemHeight > sidebarScroll_ + viewHeight) {
+        sidebarScroll_ = itemTop + kSidebarItemHeight - viewHeight;
+    }
+    clampSidebarScroll();
+}
+
 void App::applyLayout() {
     const float barHeight = statusBarVisible() ? kStatusBarHeight : 0.0f;
-    viewport_.setWindowSize(
-        {std::max(clientSize_.w, 1.0f), std::max(clientSize_.h - barHeight, 1.0f)});
+    viewport_.setWindowSize({std::max(clientSize_.w - sidebarOffset(), 1.0f),
+                             std::max(clientSize_.h - barHeight, 1.0f)});
+    clampSidebarScroll();
+}
+
+Matrix3x2 App::imageToScreen() const {
+    // ビューポートはサイドバーの右側から始まる
+    return viewport_.imageToScreen() * Matrix3x2::translation(sidebarOffset(), 0);
 }
 
 std::wstring App::hoverInfoText(Point screenPos) const {
     if (!current_) return {};
-    // ビューポート外(ステータスバー上を含む)では表示しない
+    // ビューポート外(サイドバー・ステータスバー上を含む)では表示しない
     const float barHeight = statusBarVisible() ? kStatusBarHeight : 0.0f;
-    if (screenPos.x < 0 || screenPos.x >= clientSize_.w || screenPos.y < 0 ||
+    if (screenPos.x < sidebarOffset() || screenPos.x >= clientSize_.w || screenPos.y < 0 ||
         screenPos.y >= clientSize_.h - barHeight) {
         return {};
     }
-    const Point p = viewport_.screenToImage().apply(screenPos);
+    const Point p = imageToScreen().inverted().apply(screenPos);
     const int x = static_cast<int>(std::floor(p.x));
     const int y = static_cast<int>(std::floor(p.y));
     if (x < 0 || y < 0 || x >= static_cast<int>(current_->width) ||
@@ -320,6 +390,31 @@ StatusBarView App::statusBar() const {
     }
     bar.rightText = hoverText_;
     return bar;
+}
+
+SidebarView App::sidebar() const {
+    SidebarView sb;
+    sb.visible = sidebarVisible();
+    if (!sb.visible) return sb;
+    sb.width = sidebarWidth_;
+    sb.height = sidebarViewHeight();
+    sb.itemHeight = kSidebarItemHeight;
+    sb.backgroundRGB = darkTheme_ ? 0x252526 : 0xF3F3F3;
+    sb.textRGB = darkTheme_ ? 0xCCCCCC : 0x333333;
+    sb.currentBackgroundRGB = darkTheme_ ? 0x094771 : 0xCCE4F7;
+    sb.currentTextRGB = darkTheme_ ? 0xFFFFFF : 0x1A1A1A;
+    sb.scrollbarRGB = darkTheme_ ? 0x666666 : 0xA0A0A0;
+    sb.scrollOffset = sidebarScroll_;
+    sb.contentHeight = static_cast<float>(list_.size()) * kSidebarItemHeight;
+
+    // 可視範囲の項目だけを渡す(先頭が部分的に隠れる分は firstItemY が負になる)
+    const size_t first = static_cast<size_t>(sidebarScroll_ / kSidebarItemHeight);
+    sb.firstItemY = static_cast<float>(first) * kSidebarItemHeight - sidebarScroll_;
+    const size_t maxVisible = static_cast<size_t>(sb.height / kSidebarItemHeight) + 2;
+    for (size_t i = first; i < list_.size() && i < first + maxVisible; ++i) {
+        sb.items.push_back({list_.at(i).filename().wstring(), i == list_.index()});
+    }
+    return sb;
 }
 
 void App::updatePrefetch() {

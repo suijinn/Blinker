@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "core/geometry.h"
 #include "platform/decoder.h"
@@ -19,6 +20,29 @@ struct StatusBarView {
     std::wstring rightText;  // カーソル位置の座標と色
 };
 
+// サイドバー(ファイル名一覧)の描画内容。App が可視範囲の項目だけを組み立てる。
+// 領域はウィンドウ左端 (0, 0)-(width, height)。ステータスバーの高さは含まない。
+struct SidebarItem {
+    std::wstring text;
+    bool current = false;  // 表示中(一覧の現在位置)ならハイライト
+};
+
+struct SidebarView {
+    bool visible = false;
+    float width = 0;
+    float height = 0;
+    float itemHeight = 0;
+    float firstItemY = 0;  // items[0] の上端 Y(スクロールの端数を含むため負になりうる)
+    uint32_t backgroundRGB = 0;
+    uint32_t textRGB = 0;
+    uint32_t currentBackgroundRGB = 0;
+    uint32_t currentTextRGB = 0;
+    uint32_t scrollbarRGB = 0;
+    float scrollOffset = 0;   // スクロールバー描画用
+    float contentHeight = 0;  // 全項目の合計高さ。height 以下ならスクロールバー不要
+    std::vector<SidebarItem> items;  // 可視範囲のみ
+};
+
 // 描画のプラットフォーム抽象。Windows 実装は Direct2D (renderer_d2d)。
 // UI スレッドからのみ呼ばれる。
 class IRenderer {
@@ -30,7 +54,7 @@ public:
     // image は nullptr 可(背景のみ描画)。zoom は補間モード選択のヒント。
     virtual void render(const std::shared_ptr<const DecodedImage>& image,
                         const Matrix3x2& imageToScreen, float zoom, uint32_t backgroundRGB,
-                        const StatusBarView& statusBar) = 0;
+                        const SidebarView& sidebar, const StatusBarView& statusBar) = 0;
 };
 
 } // namespace blinker

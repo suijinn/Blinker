@@ -4,6 +4,7 @@
 #include <chrono>
 #include <cmath>
 #include <condition_variable>
+#include <format>
 #include <iostream>
 #include <mutex>
 
@@ -147,8 +148,10 @@ void testKeymap() {
     CHECK(km.find({KeyCode{'V'}, true}) == Command::PasteImage);        // Ctrl+V
     CHECK(km.find({KeyCode{'S'}, true}) == Command::SaveImageAs);       // Ctrl+S
     CHECK(km.find({KeyCode{'B'}}) == Command::ToggleStatusBar);
+    CHECK(km.find({KeyCode{'B'}, true}) == Command::ToggleSidebar);     // Ctrl+B
     CHECK(commandFromName("paste") == Command::PasteImage);
     CHECK(commandFromName("save_as") == Command::SaveImageAs);
+    CHECK(commandFromName("sidebar") == Command::ToggleSidebar);
     chord = Keymap::parseChord("+");
     CHECK(chord && chord->key == KeyCode::Plus);
     chord = Keymap::parseChord("Ctrl++");
@@ -203,6 +206,14 @@ void testImageList() {
     CHECK(list.index() == 2);
 
     list.set({L"a.png", L"b.png", L"c.png", L"d.png", L"e.png"}, L"c.png");
+    CHECK(list.at(3).filename() == L"d.png");
+    CHECK(list.jumpTo(4));
+    CHECK(list.index() == 4);
+    CHECK(!list.jumpTo(4));  // 同じ位置は false
+    CHECK(!list.jumpTo(5));  // 範囲外は無視
+    CHECK(list.index() == 4);
+    CHECK(list.jumpTo(2));
+
     const auto order = list.prefetchOrder(2);
     CHECK(order.size() == 4);
     CHECK(order[0].filename() == L"d.png");  // +1 が最優先
@@ -715,6 +726,122 @@ void testAppPasteSave() {
     CHECK(app.statusBar().leftText == L"保存に失敗しました: C:/out/x.png");
 }
 
+void testAppSidebar() {
+    FakeDecoder decoder;
+    ImageCache cache(decoder);
+    FakeHost host;
+    FakeFileSystem fileSystem;
+    FakeClipboard clipboard;
+    FakeEncoder encoder;
+    App app(host, fileSystem, cache, clipboard, encoder);
+    app.onResize(800, 600);
+
+    // 既定では非表示
+    CHECK(!app.sidebar().visible);
+
+    // 30 枚の一覧 (f01..f30) の 10 枚目を開く
+    std::mutex mutex;
+    std::condition_variable cv;
+    bool decoded = false;
+    cache.setOnDecoded([&](const std::filesystem::path&) {
+        std::lock_guard lock(mutex);
+        decoded = true;
+        cv.notify_all();
+    });
+    for (int i = 1; i <= 30; ++i) {
+        fileSystem.files.push_back(std::format(L"C:/pics/f{:02}.png", i));
+    }
+    app.openPath(fileSystem.files[9]);
+    {
+        std::unique_lock lock(mutex);
+        CHECK(cv.wait_for(lock, std::chrono::seconds(5), [&] { return decoded; }));
+    }
+    app.onDecodeCompleted();
+    CHECK(app.currentImage() != nullptr);
+
+    // Ctrl+B 相当でトグル表示
+    app.execute(Command::ToggleSidebar);
+    SidebarView sb = app.sidebar();
+    CHECK(sb.visible);
+    CHECK(nearly(sb.width, 220));
+    CHECK(nearly(sb.height, 574));          // 600 - ステータスバー26
+    CHECK(nearly(sb.itemHeight, 24));
+    CHECK(nearly(sb.contentHeight, 720));   // 30 * 24
+    CHECK(nearly(sb.scrollOffset, 0));      // 10 枚目 (y=216..240) は視界内
+    CHECK(sb.items.size() == 25);           // 可視範囲のみ (574/24 + 2)
+    CHECK(sb.items[0].text == L"f01.png");
+    CHECK(sb.items[9].current);
+    CHECK(!sb.items[0].current);
+
+    // 画像はサイドバーの右側の領域 (580x574) の中央に描画される
+    const Point center = app.imageToScreen().apply({0.5f, 0.5f});
+    CHECK(nearly(center.x, 220 + 290));
+    CHECK(nearly(center.y, 287));
+
+    // 末尾へ移動すると現在項目が見えるまでスクロールする
+    app.execute(Command::LastImage);
+    sb = app.sidebar();
+    CHECK(nearly(sb.scrollOffset, 720 - 574));
+    CHECK(sb.items.back().current);
+
+    // サイドバー上のホイールはスクロール (1ノッチ = 3項目) でズームしない
+    const float zoomBefore = app.zoom();
+    app.onWheel(1.0f, {100, 300});
+    sb = app.sidebar();
+    CHECK(nearly(sb.scrollOffset, 146 - 72));
+    CHECK(nearly(app.zoom(), zoomBefore));
+    app.onWheel(-100.0f, {100, 300});  // 大きく下へ → 末尾でクランプ
+    CHECK(nearly(app.sidebar().scrollOffset, 146));
+    app.onWheel(100.0f, {100, 300});   // 大きく上へ → 先頭でクランプ
+    CHECK(nearly(app.sidebar().scrollOffset, 0));
+
+    // ビューポート上のホイールは従来どおりズーム
+    app.onWheel(1.0f, {500, 300});
+    CHECK(app.zoom() > zoomBefore);
+    app.execute(Command::ZoomFit);
+
+    // クリックでジャンプ: scroll=0 で y=100 → index 4 (f05.png)
+    CHECK(app.onMouseDown({100, 100}));
+    CHECK(host.lastTitle.find(L"f05.png") == 0);
+    // ビューポート上のクリックは消費しない(パン開始に回す)
+    CHECK(!app.onMouseDown({500, 300}));
+    // サイドバー幅内でもステータスバーの高さでは消費のみ(ジャンプしない)
+    CHECK(app.onMouseDown({100, 590}));
+    CHECK(host.lastTitle.find(L"f05.png") == 0);
+
+    // f05 のデコード完了を待って表示を確定させる(以降のチェックを決定的にする)
+    {
+        std::unique_lock lock(mutex);
+        CHECK(cv.wait_for(lock, std::chrono::seconds(5),
+                          [&] { return cache.tryGet(fileSystem.files[4]) != nullptr; }));
+    }
+    app.onDecodeCompleted();
+    CHECK(app.currentImage() && app.currentImage()->width == 1);
+
+    // 貼り付け表示中に現在項目をクリック → 一覧表示へ戻る
+    auto pasted = std::make_shared<DecodedImage>();
+    pasted->width = 2;
+    pasted->height = 1;
+    pasted->pixels = {0, 0, 0, 255, 0, 0, 0, 255};
+    clipboard.pasteImage = pasted;
+    app.execute(Command::PasteImage);
+    CHECK(host.lastTitle.find(L"(クリップボード)") == 0);
+    CHECK(app.onMouseDown({100, 100}));  // index 4 = 現在項目
+    CHECK(host.lastTitle.find(L"f05.png") == 0);
+    CHECK(app.currentImage() && app.currentImage()->width == 1);
+
+    // フルスクリーン中は非表示
+    host.fullscreen = true;
+    CHECK(!app.sidebar().visible);
+    host.fullscreen = false;
+
+    // ini で初期表示と幅を指定できる
+    app.applyConfig(Config::parse("[view]\nsidebar = true\nsidebar_width = 300\n"));
+    sb = app.sidebar();
+    CHECK(sb.visible);
+    CHECK(nearly(sb.width, 300));
+}
+
 } // namespace
 
 int main() {
@@ -730,6 +857,7 @@ int main() {
     testAppClipboard();
     testAppStatusBar();
     testAppPasteSave();
+    testAppSidebar();
 
     if (g_failures == 0) {
         std::cout << "all tests passed\n";

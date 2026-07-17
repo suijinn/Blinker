@@ -49,13 +49,13 @@
 
 | コンポーネント | 責務 |
 |---|---|
-| `App` | 状態機械の中心。Command を受けて状態更新、host へ再描画依頼。ステータスバーの表示内容 (`StatusBarView`) もここで組み立てる。貼り付け画像はフォルダ一覧から独立した表示状態(`clipboardImage_`)で持ち、移動系コマンドで一覧表示へ戻る |
+| `App` | 状態機械の中心。Command を受けて状態更新、host へ再描画依頼。ステータスバー (`StatusBarView`) とサイドバー (`SidebarView`、可視範囲の項目のみ) の表示内容もここで組み立てる。貼り付け画像はフォルダ一覧から独立した表示状態(`clipboardImage_`)で持ち、移動系コマンドで一覧表示へ戻る |
 | `Viewport` | ズーム/パン/フィット/回転の座標変換(純粋計算、テスト容易) |
 | `ImageList` | フォルダ内画像の一覧・現在位置・先読み候補の順序付け |
 | `ImageCache` | ワーカースレッド1本で非同期デコード。LRU(既定: 8枚 or 512MB) |
 | `Keymap` | KeyChord → Command。デフォルト表 + ini 上書き |
 | `MainWindow` | Win32 メッセージ変換、フルスクリーン、ダイアログ(IAppHost 実装) |
-| `RendererD2D` | BGRA ピクセル → ID2D1Bitmap(±1枚をGPU側にキャッシュ)して描画。ステータスバーの文字は DirectWrite |
+| `RendererD2D` | BGRA ピクセル → ID2D1Bitmap(±1枚をGPU側にキャッシュ)して描画。サイドバー・ステータスバーの文字は DirectWrite |
 | `DecoderWic` | WIC で 32bpp PBGRA に統一デコード。EXIF 回転適用、16384px 超は縮小 |
 | `EncoderWic` | WIC で PNG/JPEG/BMP 保存 (Ctrl+S)。PNG は逆乗算してアルファ保持、JPEG/BMP は白背景に合成 |
 | `ClipboardWin` | クリップボード読み書き。書き込みは CF_DIBV5(アルファ)+ CF_DIB(白合成24bpp)の2形式。読み取り (Ctrl+V) は CF_DIBV5 優先で、DIB → PBGRA 変換は core の `imageFromDib`(純粋関数、単体テスト対象) |
