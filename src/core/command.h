@@ -27,6 +27,7 @@ enum class Command {
     OpenFile,
     CopyImage,  // 表示中の画像をクリップボードへ
     CopyPath,   // 表示中の画像のフルパスをクリップボードへ
+    ToggleStatusBar,
     Escape,  // フルスクリーン解除。通常時は終了
     Quit,
 };

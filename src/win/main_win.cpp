@@ -17,7 +17,7 @@
 namespace {
 
 // [view] theme = auto | dark | light。auto は OS のアプリテーマ設定に追従する
-bool resolveDarkTitleBar(const blinker::Config& config) {
+bool resolveDarkTheme(const blinker::Config& config) {
     const std::string theme = blinker::toLower(blinker::trim(config.get("view", "theme", "auto")));
     if (theme == "dark") return true;
     if (theme == "light") return false;
@@ -65,8 +65,9 @@ int WINAPI wWinMain(HINSTANCE hinstance, HINSTANCE, PWSTR, int showCommand) {
         ImageCache cache(decoder);
         FileSystemWin fileSystem;
 
+        const bool darkTheme = resolveDarkTheme(config);
         MainWindow window;
-        if (!window.create(hinstance, showCommand, resolveDarkTitleBar(config))) {
+        if (!window.create(hinstance, showCommand, darkTheme)) {
             CoUninitialize();
             return 1;
         }
@@ -75,6 +76,7 @@ int WINAPI wWinMain(HINSTANCE hinstance, HINSTANCE, PWSTR, int showCommand) {
         clipboard.setOwner(window.hwnd());
 
         App app(window, fileSystem, cache, clipboard);
+        app.setDarkTheme(darkTheme);
         app.applyConfig(config);
         window.attachApp(&app);
 

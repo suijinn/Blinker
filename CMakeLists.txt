@@ -32,7 +32,7 @@ if(WIN32)
     )
     target_compile_definitions(blinker PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
     target_link_libraries(blinker PRIVATE blinker_core
-        d2d1 windowscodecs shlwapi ole32 comdlg32 shell32 user32 gdi32 dwmapi advapi32)
+        d2d1 dwrite windowscodecs shlwapi ole32 comdlg32 shell32 user32 gdi32 dwmapi advapi32)
 endif()
 
 enable_testing()

@@ -48,13 +48,13 @@
 
 | コンポーネント | 責務 |
 |---|---|
-| `App` | 状態機械の中心。Command を受けて状態更新、host へ再描画依頼 |
+| `App` | 状態機械の中心。Command を受けて状態更新、host へ再描画依頼。ステータスバーの表示内容 (`StatusBarView`) もここで組み立てる |
 | `Viewport` | ズーム/パン/フィット/回転の座標変換(純粋計算、テスト容易) |
 | `ImageList` | フォルダ内画像の一覧・現在位置・先読み候補の順序付け |
 | `ImageCache` | ワーカースレッド1本で非同期デコード。LRU(既定: 8枚 or 512MB) |
 | `Keymap` | KeyChord → Command。デフォルト表 + ini 上書き |
 | `MainWindow` | Win32 メッセージ変換、フルスクリーン、ダイアログ(IAppHost 実装) |
-| `RendererD2D` | BGRA ピクセル → ID2D1Bitmap(±1枚をGPU側にキャッシュ)して描画 |
+| `RendererD2D` | BGRA ピクセル → ID2D1Bitmap(±1枚をGPU側にキャッシュ)して描画。ステータスバーの文字は DirectWrite |
 | `DecoderWic` | WIC で 32bpp PBGRA に統一デコード。EXIF 回転適用、16384px 超は縮小 |
 | `ClipboardWin` | クリップボード書き込み。画像は CF_DIBV5(アルファ)+ CF_DIB(白合成24bpp)の2形式 |
 

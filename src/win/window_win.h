@@ -28,6 +28,7 @@ public:
     void setFullscreen(bool enabled) override;
     bool isFullscreen() const override { return fullscreen_; }
     std::optional<std::filesystem::path> showOpenDialog() override;
+    void startTimer(unsigned milliseconds) override;
     void quit() override;
 
 private:
@@ -47,6 +48,7 @@ private:
     LONG savedStyle_ = 0;
     bool dragging_ = false;
     POINT lastDragPos_{};
+    bool trackingMouseLeave_ = false;
 };
 
 } // namespace blinker

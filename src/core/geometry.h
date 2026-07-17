@@ -45,6 +45,21 @@ struct Matrix3x2 {
     Point apply(Point p) const {
         return {p.x * m11 + p.y * m21 + dx, p.x * m12 + p.y * m22 + dy};
     }
+
+    // 逆変換。特異(det = 0)の場合は単位行列を返す
+    Matrix3x2 inverted() const {
+        const float det = m11 * m22 - m12 * m21;
+        if (det == 0) return {};
+        const float inv = 1.0f / det;
+        return {
+            m22 * inv,
+            -m12 * inv,
+            -m21 * inv,
+            m11 * inv,
+            (m21 * dy - m22 * dx) * inv,
+            (m12 * dx - m11 * dy) * inv,
+        };
+    }
 };
 
 } // namespace blinker

@@ -22,6 +22,7 @@ public:
     void rotate(int quarterTurnsDelta);          // 90度単位(+1で時計回り)
 
     Matrix3x2 imageToScreen() const;
+    Matrix3x2 screenToImage() const { return imageToScreen().inverted(); }
     float zoom() const { return zoom_; }
     bool fitMode() const { return fitMode_; }
     int rotationDegrees() const { return quarterTurns_ * 90; }

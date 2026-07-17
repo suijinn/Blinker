@@ -12,6 +12,7 @@ namespace {
 
 constexpr wchar_t kWindowClass[] = L"BlinkerMainWindow";
 constexpr int kIconResourceId = 101;  // blinker.rc の IDI_APPICON
+constexpr UINT_PTR kMessageTimerId = 1;
 
 } // namespace
 
@@ -94,12 +95,30 @@ LRESULT MainWindow::handleMessage(UINT msg, WPARAM wp, LPARAM lp) {
         lastDragPos_ = {GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
         SetCapture(hwnd_);
         return 0;
-    case WM_MOUSEMOVE:
-        if (dragging_ && app_) {
-            const POINT pt{GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
-            app_->onDragPan(static_cast<float>(pt.x - lastDragPos_.x),
-                            static_cast<float>(pt.y - lastDragPos_.y));
-            lastDragPos_ = pt;
+    case WM_MOUSEMOVE: {
+        const POINT pt{GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
+        if (!trackingMouseLeave_) {
+            TRACKMOUSEEVENT tme{sizeof(tme), TME_LEAVE, hwnd_, 0};
+            trackingMouseLeave_ = TrackMouseEvent(&tme) != FALSE;
+        }
+        if (app_) {
+            if (dragging_) {
+                app_->onDragPan(static_cast<float>(pt.x - lastDragPos_.x),
+                                static_cast<float>(pt.y - lastDragPos_.y));
+                lastDragPos_ = pt;
+            }
+            app_->onMouseMove({static_cast<float>(pt.x), static_cast<float>(pt.y)});
+        }
+        return 0;
+    }
+    case WM_MOUSELEAVE:
+        trackingMouseLeave_ = false;
+        if (app_) app_->onMouseLeave();
+        return 0;
+    case WM_TIMER:
+        if (wp == kMessageTimerId) {
+            KillTimer(hwnd_, kMessageTimerId);  // 単発
+            if (app_) app_->onTimer();
         }
         return 0;
     case WM_LBUTTONUP:
@@ -136,7 +155,7 @@ void MainWindow::onPaint() {
     BeginPaint(hwnd_, &ps);
     if (app_ && renderer_) {
         renderer_->render(app_->currentImage(), app_->imageToScreen(), app_->zoom(),
-                          app_->backgroundRGB());
+                          app_->backgroundRGB(), app_->statusBar());
     }
     EndPaint(hwnd_, &ps);
 }
@@ -258,6 +277,10 @@ std::optional<std::filesystem::path> MainWindow::showOpenDialog() {
     ofn.Flags = OFN_FILEMUSTEXIST | OFN_HIDEREADONLY;
     if (!GetOpenFileNameW(&ofn)) return std::nullopt;
     return std::filesystem::path(fileBuffer);
+}
+
+void MainWindow::startTimer(unsigned milliseconds) {
+    SetTimer(hwnd_, kMessageTimerId, milliseconds, nullptr);  // 既存タイマーは上書きされる
 }
 
 void MainWindow::quit() {

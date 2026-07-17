@@ -50,6 +50,13 @@ void testMatrix() {
     const Point r4 = Matrix3x2::rotation90(4).apply({3, 7});
     CHECK(nearly(r4.x, 3));
     CHECK(nearly(r4.y, 7));
+
+    // 逆変換との往復で元に戻る
+    const Matrix3x2 t =
+        Matrix3x2::translation(5, -3) * Matrix3x2::scale(2) * Matrix3x2::rotation90(1);
+    const Point back = t.inverted().apply(t.apply({12, 34}));
+    CHECK(nearly(back.x, 12));
+    CHECK(nearly(back.y, 34));
 }
 
 void testViewportFit() {
@@ -99,6 +106,11 @@ void testViewportZoomAt() {
     CHECK(nearly(after.x, 200));
     CHECK(nearly(after.y, 150));
 
+    // screenToImage は imageToScreen の逆変換
+    const Point roundTrip = vp.screenToImage().apply(after);
+    CHECK(nearly(roundTrip.x, imagePoint.x));
+    CHECK(nearly(roundTrip.y, imagePoint.y));
+
     // パンは画像端がウィンドウ内に収まる範囲へクランプされる
     vp.panBy(100000, 100000);
     const Point corner = vp.imageToScreen().apply({0, 0});  // 画像左上
@@ -130,6 +142,7 @@ void testKeymap() {
     CHECK(chord && chord->key == KeyCode::F11);
     CHECK(km.find({KeyCode{'C'}, true}) == Command::CopyImage);         // Ctrl+C
     CHECK(km.find({KeyCode{'C'}, true, true}) == Command::CopyPath);    // Shift+Ctrl+C
+    CHECK(km.find({KeyCode{'B'}}) == Command::ToggleStatusBar);
     chord = Keymap::parseChord("+");
     CHECK(chord && chord->key == KeyCode::Plus);
     chord = Keymap::parseChord("Ctrl++");
@@ -247,9 +260,11 @@ public:
     void setFullscreen(bool enabled) override { fullscreen = enabled; }
     bool isFullscreen() const override { return fullscreen; }
     std::optional<std::filesystem::path> showOpenDialog() override { return std::nullopt; }
+    void startTimer(unsigned milliseconds) override { lastTimerMs = milliseconds; }
     void quit() override {}
 
     bool fullscreen = false;
+    unsigned lastTimerMs = 0;
 };
 
 class FakeFileSystem final : public IFileSystem {
@@ -319,6 +334,74 @@ void testAppClipboard() {
     CHECK(clipboard.lastText == path.wstring());
 }
 
+void testAppStatusBar() {
+    FakeDecoder decoder;
+    ImageCache cache(decoder);
+    FakeHost host;
+    FakeFileSystem fileSystem;
+    FakeClipboard clipboard;
+    App app(host, fileSystem, cache, clipboard);
+    app.onResize(800, 600);
+
+    // 画像なし: バーは表示されるが左右とも空
+    StatusBarView bar = app.statusBar();
+    CHECK(bar.visible);
+    CHECK(bar.height > 0);
+    CHECK(bar.leftText.empty());
+    CHECK(bar.rightText.empty());
+
+    // 画像 (FakeDecoder の 1x1 黒) を開く
+    std::mutex mutex;
+    std::condition_variable cv;
+    bool decoded = false;
+    cache.setOnDecoded([&](const std::filesystem::path&) {
+        std::lock_guard lock(mutex);
+        decoded = true;
+        cv.notify_all();
+    });
+    const std::filesystem::path path = L"C:/pics/black.png";
+    fileSystem.files = {path};
+    app.openPath(path);
+    {
+        std::unique_lock lock(mutex);
+        CHECK(cv.wait_for(lock, std::chrono::seconds(5), [&] { return decoded; }));
+    }
+    app.onDecodeCompleted();
+    CHECK(app.currentImage() != nullptr);
+    CHECK(app.statusBar().leftText == L"1 x 1 px");
+
+    // 1x1 画像はビューポート 800x(600-26) の中央 (400, 287) に等倍表示される。
+    // その位置にカーソルを置くとピクセル (0,0) の座標と色が出る
+    app.onMouseMove({400, 287});
+    CHECK(app.statusBar().rightText == L"(0, 0)  #000000  RGB(0, 0, 0)");
+
+    // ステータスバー上・画像外では表示しない
+    app.onMouseMove({400, 590});
+    CHECK(app.statusBar().rightText.empty());
+    app.onMouseMove({400, 287});
+    CHECK(!app.statusBar().rightText.empty());
+    app.onMouseLeave();
+    CHECK(app.statusBar().rightText.empty());
+
+    // コピーで通知が出て、タイマー満了で画像情報表示に戻る
+    app.execute(Command::CopyImage);
+    CHECK(app.statusBar().leftText == L"画像をクリップボードにコピーしました");
+    CHECK(host.lastTimerMs == 3000);
+    app.execute(Command::CopyPath);
+    CHECK(app.statusBar().leftText == L"パスをコピーしました: " + path.wstring());
+    app.onTimer();
+    CHECK(app.statusBar().leftText == L"1 x 1 px");
+
+    // トグルとフルスクリーンで非表示になる
+    app.execute(Command::ToggleStatusBar);
+    CHECK(!app.statusBar().visible);
+    app.execute(Command::ToggleStatusBar);
+    CHECK(app.statusBar().visible);
+    host.fullscreen = true;
+    CHECK(!app.statusBar().visible);
+    host.fullscreen = false;
+}
+
 } // namespace
 
 int main() {
@@ -330,6 +413,7 @@ int main() {
     testImageList();
     testImageCache();
     testAppClipboard();
+    testAppStatusBar();
 
     if (g_failures == 0) {
         std::cout << "all tests passed\n";
