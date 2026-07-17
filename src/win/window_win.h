@@ -1,0 +1,52 @@
+#pragma once
+
+#include <windows.h>
+
+#include <filesystem>
+#include <memory>
+#include <optional>
+#include <string>
+
+#include "core/app.h"
+#include "win/renderer_d2d.h"
+
+namespace blinker {
+
+// メインウィンドウ。Win32 メッセージを App のコマンド/イベントに変換し、IAppHost を実装する。
+class MainWindow final : public IAppHost {
+public:
+    // ImageCache のワーカースレッドからのデコード完了通知に使う
+    static constexpr UINT kMsgImageDecoded = WM_APP + 1;
+
+    bool create(HINSTANCE hinstance, int showCommand);
+    void attachApp(App* app);
+    HWND hwnd() const { return hwnd_; }
+
+    // IAppHost
+    void requestRedraw() override;
+    void setTitle(const std::wstring& title) override;
+    void setFullscreen(bool enabled) override;
+    bool isFullscreen() const override { return fullscreen_; }
+    std::optional<std::filesystem::path> showOpenDialog() override;
+    void quit() override;
+
+private:
+    static LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp);
+    LRESULT handleMessage(UINT msg, WPARAM wp, LPARAM lp);
+    void onPaint();
+    void onSize(uint32_t width, uint32_t height);
+    bool handleKey(WPARAM vk);
+    void onDropFiles(WPARAM wp);
+    static KeyCode keyCodeFromVirtualKey(WPARAM vk);
+
+    HWND hwnd_ = nullptr;
+    App* app_ = nullptr;
+    std::unique_ptr<RendererD2D> renderer_;
+    bool fullscreen_ = false;
+    WINDOWPLACEMENT savedPlacement_{sizeof(WINDOWPLACEMENT)};
+    LONG savedStyle_ = 0;
+    bool dragging_ = false;
+    POINT lastDragPos_{};
+};
+
+} // namespace blinker

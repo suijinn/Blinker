@@ -1,0 +1,25 @@
+# Blinker 設定ファイル (blinker.exe と同じフォルダに blinker.ini として置く)
+# 行頭 # または ; はコメント
+
+[view]
+# 背景色 (RRGGBB)
+background = 202020
+# フィット表示時にウィンドウより小さい画像を拡大するか
+fit_upscale = false
+# 前後何枚を先読みするか (0-8)
+prefetch_radius = 2
+
+[keys]
+# コマンド = キー1, キー2, ... (記述したコマンドのデフォルトキーは置き換えられる)
+# 修飾キーは Ctrl+ / Shift+ / Alt+。キー名の例:
+#   Left Right Up Down Home End PageUp PageDown Space Enter Esc
+#   Backspace Delete Tab Insert F1-F12 + - A-Z 0-9
+#
+# 使えるコマンド:
+#   next prev first last zoom_in zoom_out fit actual_size
+#   pan_left pan_right pan_up pan_down rotate_cw rotate_ccw
+#   fullscreen open escape quit
+#
+# 例: Vim風の移動にする場合
+#next = L, Right, Space
+#prev = H, Left, Backspace
