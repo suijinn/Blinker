@@ -2,6 +2,10 @@
 
 軽量・高速起動のWindows用画像ビューア。C++20 / Win32 API / Direct2D / WIC。外部ライブラリ依存ゼロの単一exe(約330KB)。
 
+設計の詳細(層構造・コンポーネントの責務・データフロー・起動シーケンス)の正は
+[docs/architecture.md](docs/architecture.md)。ここにはビルド方法と、コードを触るたびに必要になる
+不変条件・規約だけを書く。
+
 ## ビルド・テスト・実行
 
 MSVC環境変数が必要(通常のシェルでは cl/cmake にPATHが通っていない):
@@ -21,33 +25,19 @@ cmd /c '"C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Bu
 - CMake/NinjaはVS2022同梱のものが使われる(vcvars64がPATHに追加する)
 - `/W4 /utf-8 /permissive-` で警告ゼロを維持すること
 
-## アーキテクチャ(詳細は docs/architecture.md)
+## 不変条件(壊してはならない)
 
-3層構造。**依存方向は win → platform → core の一方向のみ**:
-
-- `src/core/` — プラットフォーム非依存の純C++20。**OSヘッダをincludeしてはならない**(単体テスト対象)
-  - `app.cpp` 状態機械の中心 / `viewport.cpp` ズーム・パン・回転の座標計算 /
-    `image_cache.cpp` ワーカースレッド1本の非同期先読み+LRU / `keymap.cpp` キー→Command解決 /
-    `image_list.cpp` 一覧と現在位置 / `config.cpp` iniパーサ
-- `src/platform/` — 抽象インターフェース(ヘッダのみ): `IImageDecoder` `IRenderer` `IFileSystem`
-- `src/win/` — Windows実装: `main_win`(エントリ)/ `window_win`(Win32メッセージ→イベント変換、IAppHost実装)/
-  `renderer_d2d` / `decoder_wic` / `file_system_win`
-
-データフローは一方向: 入力 → KeyChord → `Keymap` → `Command` → `App::execute` → 状態更新 → `IAppHost::requestRedraw` → WM_PAINTで描画。
-
-## 機能追加の定型手順
-
-1. `src/core/command.h` の `Command` enum に追加
-2. `src/core/app.cpp` の `App::execute` にハンドラ追加(ウィンドウ側の機能が必要なら `IAppHost` にAPIを足し `MainWindow` に実装)
-3. `src/core/keymap.cpp` の `kCommandNames`(ini用の名前)とデフォルトキー表 `Keymap::defaults()` に追加
-4. `tests/core_tests.cpp` にテスト追加
-
-## スレッドモデル(重要)
-
-- App/Viewport/ImageListはUIスレッド専用。スレッド安全ではない
-- デコードは `ImageCache` 内のワーカースレッド1本のみ。UI→ワーカーは `requestNow`/`setPrefetch`、
-  ワーカー→UIは `onDecoded` コールバック → `PostMessage(kMsgImageDecoded)` → `App::onDecodeCompleted`
-- `DecoderWic` はthread_localでCOM初期化するためどのスレッドからでも呼べる
+- **依存方向は win → platform → core の一方向のみ**。`src/core/` はOSヘッダをincludeしてはならない
+  (単体テスト対象)。`src/platform/` は抽象インターフェースのヘッダのみ
+- **データフローは一方向**: 入力 → KeyChord → `Keymap` → `Command` → `App::execute` → 状態更新 →
+  `IAppHost::requestRedraw` → WM_PAINTで描画
+- **スレッドモデル**: App/Viewport/ImageListはUIスレッド専用でスレッド安全ではない。
+  デコードは `ImageCache` 内のワーカースレッド1本のみ。UI→ワーカーは `requestNow`/`setPrefetch`、
+  ワーカー→UIは `onDecoded` → `PostMessage(kMsgImageDecoded)` → `App::onDecodeCompleted`。
+  `DecoderWic` はthread_localでCOM初期化するためどのスレッドからでも呼べる
+- **機能追加は定型手順に従う**: `Command` enum追加 → `App::execute` にハンドラ →
+  `keymap.cpp`(`kCommandNames` とデフォルトキー表)→ `tests/core_tests.cpp` にテスト。
+  詳細は architecture.md「機能追加の手順」
 
 ## 規約・注意点
 
