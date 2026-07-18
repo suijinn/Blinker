@@ -49,6 +49,9 @@
 `onRightDragStart/Move/End` → `IAppHost::showContextMenu` で機能選択 →
 トリミングは core の `cropImage`、図形・テキストは `IAnnotationRasterizer` で
 ラスタライズして `blendOverlay` で合成 → `current_` を差し替えて再描画依頼。
+メニューは階層構造(`MenuItem` の木、選択結果は末端項目の深さ優先通し番号)で、
+設定系の項目(線の太さ・文字サイズ・回転角度・色 = `IAppHost::showColorPicker`)を
+選んだ場合は選択領域を保ったままメニューを再表示して続けて編集を選べる。
 編集は表示中画像のコピーに対して行い(キャッシュとは共有しない)、Ctrl+Z で
 1段階ずつ取り消せる(履歴は画像スナップショット、上限10)。保存は Ctrl+S のみで
 元ファイルは自動では書き換えない。
@@ -62,12 +65,12 @@
 | `ImageList` | フォルダ内画像の一覧・現在位置・先読み候補の順序付け |
 | `ImageCache` | ワーカースレッド1本で非同期デコード。LRU(既定: 8枚 or 512MB) |
 | `Keymap` | KeyChord → Command。デフォルト表 + ini 上書き |
-| `MainWindow` | Win32 メッセージ変換、フルスクリーン、ダイアログ・編集メニュー・テキスト入力(IAppHost 実装) |
+| `MainWindow` | Win32 メッセージ変換、フルスクリーン、ダイアログ(開く・保存・色選択)・編集メニュー(サブメニュー対応)・複数行テキスト入力(IAppHost 実装) |
 | `RendererD2D` | BGRA ピクセル → ID2D1Bitmap(±1枚をGPU側にキャッシュ)して描画。選択領域のラバーバンド(`SelectionView`)もここで描く。サイドバー・ステータスバーの文字は DirectWrite |
 | `DecoderWic` | WIC で 32bpp PBGRA に統一デコード。EXIF 回転適用、16384px 超は縮小 |
 | `EncoderWic` | WIC で PNG/JPEG/BMP 保存 (Ctrl+S)。PNG は逆乗算してアルファ保持、JPEG/BMP は白背景に合成 |
 | `ClipboardWin` | クリップボード読み書き。書き込みは CF_DIBV5(アルファ)+ CF_DIB(白合成24bpp)の2形式。読み取り (Ctrl+V) は CF_DIBV5 優先で、DIB → PBGRA 変換は core の `imageFromDib`(純粋関数、単体テスト対象) |
-| `AnnotationD2D` | 図形(矩形・楕円・矢印・直線)とテキストを D2D/DirectWrite で WIC ビットマップへ AA 描画し、PBGRA overlay として返す(`IAnnotationRasterizer` 実装)。トリミング・合成は core の `edit.cpp`(`cropImage` / `blendOverlay`、純粋関数、単体テスト対象) |
+| `AnnotationD2D` | 図形(矩形・楕円・矢印・直線)とテキスト(複数行可)を D2D/DirectWrite で WIC ビットマップへ AA 描画し、PBGRA overlay として返す(`IAnnotationRasterizer` 実装)。`AnnotationSpec::angleDeg` によるバウンディングボックス中心周りの回転にも対応。トリミング・合成は core の `edit.cpp`(`cropImage` / `blendOverlay`、純粋関数、単体テスト対象) |
 
 ## スレッドモデル
 

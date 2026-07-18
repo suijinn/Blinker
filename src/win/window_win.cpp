@@ -5,6 +5,7 @@
 #include <shellapi.h>
 #include <windowsx.h>
 
+#include <algorithm>
 #include <vector>
 
 #include "platform/image_formats.h"
@@ -26,9 +27,14 @@ INT_PTR CALLBACK textInputDlgProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_COMMAND:
         if (LOWORD(wp) == IDOK) {
             auto* result = reinterpret_cast<std::wstring*>(GetWindowLongPtrW(dlg, DWLP_USER));
-            wchar_t buffer[512]{};
-            GetDlgItemTextW(dlg, kTextInputEditId, buffer, 512);
-            *result = buffer;
+            const HWND edit = GetDlgItem(dlg, kTextInputEditId);
+            const int length = GetWindowTextLengthW(edit);
+            result->assign(static_cast<size_t>(std::max(length, 0)), L'\0');
+            if (length > 0) GetWindowTextW(edit, result->data(), length + 1);
+            // 複数行エディットの改行 CRLF を '\n' に正規化する
+            for (size_t pos = 0; (pos = result->find(L"\r\n", pos)) != std::wstring::npos;) {
+                result->replace(pos, 2, L"\n");
+            }
             EndDialog(dlg, IDOK);
             return TRUE;
         }
@@ -64,10 +70,10 @@ std::vector<WORD> buildTextInputTemplate() {
     pushW(0);    // x
     pushW(0);    // y
     pushW(220);  // cx (ダイアログ単位)
-    pushW(60);   // cy
+    pushW(96);   // cy
     pushW(0);    // メニューなし
     pushW(0);    // 既定のダイアログクラス
-    pushStr(L"テキストを追加");
+    pushStr(L"テキストを追加 (Enter で改行)");
     pushW(9);  // フォントサイズ (pt)
     pushStr(L"MS Shell Dlg");
 
@@ -77,11 +83,12 @@ std::vector<WORD> buildTextInputTemplate() {
         const wchar_t* text;
     };
     const Item items[] = {
-        {WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_BORDER | ES_AUTOHSCROLL, 7, 7, 206, 14,
-         kTextInputEditId, 0x0081, L""},  // EDIT
-        {WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON, 105, 38, 50, 14, IDOK, 0x0080,
+        {WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_BORDER | WS_VSCROLL | ES_MULTILINE |
+             ES_AUTOVSCROLL | ES_WANTRETURN,
+         7, 7, 206, 60, kTextInputEditId, 0x0081, L""},  // EDIT (複数行)
+        {WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON, 105, 74, 50, 14, IDOK, 0x0080,
          L"OK"},
-        {WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON, 160, 38, 53, 14, IDCANCEL, 0x0080,
+        {WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON, 160, 74, 53, 14, IDCANCEL, 0x0080,
          L"キャンセル"},
     };
     for (const Item& item : items) {
@@ -429,13 +436,42 @@ std::optional<std::filesystem::path> MainWindow::showSaveDialog(
     return result;
 }
 
-std::optional<size_t> MainWindow::showContextMenu(const std::vector<std::wstring>& items,
+namespace {
+
+// MenuItem 木を HMENU に組み立てる。末端項目に深さ優先で 1 始まりの ID を振る
+// (ID 0 はキャンセルと区別できないため)。サブメニューは親メニューの破棄で一緒に破棄される
+bool appendMenuItems(HMENU menu, const std::vector<MenuItem>& items, UINT& nextId) {
+    for (const MenuItem& item : items) {
+        if (item.separator) {
+            AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+            continue;
+        }
+        if (!item.children.empty()) {
+            HMENU sub = CreatePopupMenu();
+            if (!sub) return false;
+            if (!appendMenuItems(sub, item.children, nextId)) {
+                DestroyMenu(sub);
+                return false;
+            }
+            AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(sub), item.text.c_str());
+            continue;
+        }
+        AppendMenuW(menu, MF_STRING | (item.checked ? MF_CHECKED : 0u), nextId++,
+                    item.text.c_str());
+    }
+    return true;
+}
+
+} // namespace
+
+std::optional<size_t> MainWindow::showContextMenu(const std::vector<MenuItem>& items,
                                                   Point screenPos) {
     HMENU menu = CreatePopupMenu();
     if (!menu) return std::nullopt;
-    for (size_t i = 0; i < items.size(); ++i) {
-        // ID 0 はキャンセルと区別できないため 1 始まり
-        AppendMenuW(menu, MF_STRING, i + 1, items[i].c_str());
+    UINT nextId = 1;
+    if (!appendMenuItems(menu, items, nextId)) {
+        DestroyMenu(menu);
+        return std::nullopt;
     }
     POINT pt{static_cast<LONG>(screenPos.x), static_cast<LONG>(screenPos.y)};
     ClientToScreen(hwnd_, &pt);
@@ -444,6 +480,19 @@ std::optional<size_t> MainWindow::showContextMenu(const std::vector<std::wstring
     DestroyMenu(menu);
     if (selected <= 0) return std::nullopt;
     return static_cast<size_t>(selected - 1);
+}
+
+std::optional<uint32_t> MainWindow::showColorPicker(uint32_t initialRGB) {
+    static COLORREF customColors[16]{};  // ダイアログの「作成した色」をセッション内で保持
+    CHOOSECOLORW cc{sizeof(cc)};
+    cc.hwndOwner = hwnd_;
+    cc.rgbResult = RGB((initialRGB >> 16) & 0xFF, (initialRGB >> 8) & 0xFF, initialRGB & 0xFF);
+    cc.lpCustColors = customColors;
+    cc.Flags = CC_RGBINIT | CC_FULLOPEN;
+    if (!ChooseColorW(&cc)) return std::nullopt;
+    return (static_cast<uint32_t>(GetRValue(cc.rgbResult)) << 16) |
+           (static_cast<uint32_t>(GetGValue(cc.rgbResult)) << 8) |
+           static_cast<uint32_t>(GetBValue(cc.rgbResult));
 }
 
 std::optional<std::wstring> MainWindow::showTextInput() {

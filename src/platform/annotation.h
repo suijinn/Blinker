@@ -17,8 +17,9 @@ struct AnnotationSpec {
     Point p2;               // Rect/Ellipse/Text は対角の他方、Arrow/Line は終点
     uint32_t colorRGB = 0;
     float strokeWidth = 1;
+    float angleDeg = 0;     // バウンディングボックス中心周りの回転(時計回り、度)
     float fontSize = 16;    // Text 用
-    std::wstring text;      // Text 用
+    std::wstring text;      // Text 用(改行 '\n' 可)
 };
 
 // ラスタライズ結果。image はバウンディングボックス分の PBGRA で、
