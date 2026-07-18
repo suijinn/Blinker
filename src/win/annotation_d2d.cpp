@@ -67,10 +67,28 @@ AnnotationOverlay AnnotationD2D::rasterize(const AnnotationSpec& spec) {
     const float margin = spec.kind == AnnotationSpec::Kind::Text
                              ? 2.0f
                              : spec.strokeWidth + arrowHeadLength(spec.strokeWidth);
-    const int originX = static_cast<int>(std::floor(bounds.minX - margin));
-    const int originY = static_cast<int>(std::floor(bounds.minY - margin));
-    const float widthF = std::ceil(bounds.maxX + margin) - static_cast<float>(originX);
-    const float heightF = std::ceil(bounds.maxY + margin) - static_cast<float>(originY);
+    // 回転はバウンディングボックス中心周り。マージン込みの矩形の四隅を回して
+    // 回転後の AABB をオーバーレイの領域にする(回転は等長変換なのでマージンは保たれる)
+    const float centerX = (bounds.minX + bounds.maxX) * 0.5f;
+    const float centerY = (bounds.minY + bounds.maxY) * 0.5f;
+    BoundsF outer{bounds.minX - margin, bounds.minY - margin, bounds.maxX + margin,
+                  bounds.maxY + margin};
+    if (spec.angleDeg != 0) {
+        constexpr float kPi = 3.14159265358979323846f;
+        const float rad = spec.angleDeg * kPi / 180.0f;
+        const float c = std::cos(rad);
+        const float s = std::sin(rad);
+        const float hw = (outer.maxX - outer.minX) * 0.5f;
+        const float hh = (outer.maxY - outer.minY) * 0.5f;
+        // 中心対称なので回転後の半幅・半高は |c|,|s| の線形結合で求まる
+        const float rw = std::abs(c) * hw + std::abs(s) * hh;
+        const float rh = std::abs(s) * hw + std::abs(c) * hh;
+        outer = {centerX - rw, centerY - rh, centerX + rw, centerY + rh};
+    }
+    const int originX = static_cast<int>(std::floor(outer.minX));
+    const int originY = static_cast<int>(std::floor(outer.minY));
+    const float widthF = std::ceil(outer.maxX) - static_cast<float>(originX);
+    const float heightF = std::ceil(outer.maxY) - static_cast<float>(originY);
     if (widthF <= 0 || heightF <= 0 || widthF > kMaxOverlaySize || heightF > kMaxOverlaySize) {
         return {};
     }
@@ -103,6 +121,10 @@ AnnotationOverlay AnnotationD2D::rasterize(const AnnotationSpec& spec) {
 
     target->BeginDraw();
     target->Clear(D2D1::ColorF(0, 0.0f));
+    if (spec.angleDeg != 0) {
+        target->SetTransform(D2D1::Matrix3x2F::Rotation(
+            spec.angleDeg, D2D1::Point2F(centerX - originX, centerY - originY)));
+    }
     switch (spec.kind) {
     case AnnotationSpec::Kind::Rect:
         target->DrawRectangle(D2D1::RectF(left, top, right, bottom), brush.Get(),

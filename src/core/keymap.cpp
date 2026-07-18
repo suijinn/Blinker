@@ -88,9 +88,11 @@ Keymap Keymap::defaults() {
         km.bind({key, ctrl, shift, false}, cmd);
     };
     b(KeyCode::Right, Command::NextImage);
+    b(KeyCode::Down, Command::NextImage);
     b(KeyCode::Space, Command::NextImage);
     b(KeyCode::PageDown, Command::NextImage);
     b(KeyCode::Left, Command::PrevImage);
+    b(KeyCode::Up, Command::PrevImage);
     b(KeyCode::Backspace, Command::PrevImage);
     b(KeyCode::PageUp, Command::PrevImage);
     b(KeyCode::Home, Command::FirstImage);
@@ -117,6 +119,7 @@ Keymap Keymap::defaults() {
     b(KeyCode{'B'}, Command::ToggleStatusBar);
     b(KeyCode::Escape, Command::Escape);
     b(KeyCode{'Q'}, Command::Quit);
+    b(KeyCode{'W'}, Command::Quit, true);
     return km;
 }
 

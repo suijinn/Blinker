@@ -4,6 +4,7 @@
 #include <chrono>
 #include <cmath>
 #include <condition_variable>
+#include <deque>
 #include <format>
 #include <iostream>
 #include <mutex>
@@ -133,6 +134,9 @@ void testViewportZoomAt() {
 void testKeymap() {
     const Keymap km = Keymap::defaults();
     CHECK(km.find({KeyCode::Right}) == Command::NextImage);
+    CHECK(km.find({KeyCode::Down}) == Command::NextImage);
+    CHECK(km.find({KeyCode::Up}) == Command::PrevImage);
+    CHECK(km.find({KeyCode{'W'}, true}) == Command::Quit);  // Ctrl+W
     CHECK(km.find({KeyCode::Right, true}) == Command::PanRight);  // Ctrl+Right
     CHECK(km.find({KeyCode{'R'}}) == Command::RotateCW);
     CHECK(km.find({KeyCode{'R'}, false, true}) == Command::RotateCCW);  // Shift+R
@@ -468,13 +472,23 @@ public:
         lastDefaultName = defaultFileName;
         return savePath;
     }
-    std::optional<size_t> showContextMenu(const std::vector<std::wstring>& items,
-                                          Point) override {
+    std::optional<size_t> showContextMenu(const std::vector<MenuItem>& items, Point) override {
         ++menuCount;
         lastMenuItems = items;
+        // キューがあれば先頭から順に応答する(設定→編集の連続選択のテスト用)
+        if (!menuQueue.empty()) {
+            const size_t choice = menuQueue.front();
+            menuQueue.pop_front();
+            return choice;
+        }
         return menuChoice;
     }
     std::optional<std::wstring> showTextInput() override { return textInput; }
+    std::optional<uint32_t> showColorPicker(uint32_t initialRGB) override {
+        ++colorPickerCount;
+        lastColorPickerInitial = initialRGB;
+        return colorChoice;
+    }
     void startTimer(unsigned milliseconds) override { lastTimerMs = milliseconds; }
     void quit() override {}
 
@@ -485,10 +499,28 @@ public:
     int saveDialogCount = 0;
     std::wstring lastDefaultName;
     std::optional<size_t> menuChoice;  // メニューの応答 (nullopt = キャンセル)
+    std::deque<size_t> menuQueue;      // 空でなければ menuChoice より優先
     int menuCount = 0;
-    std::vector<std::wstring> lastMenuItems;
+    std::vector<MenuItem> lastMenuItems;
     std::optional<std::wstring> textInput;  // テキスト入力の応答 (nullopt = キャンセル)
+    std::optional<uint32_t> colorChoice;    // 色ダイアログの応答 (nullopt = キャンセル)
+    uint32_t lastColorPickerInitial = 0;
+    int colorPickerCount = 0;
 };
+
+// 選択可能な末端項目(separator とサブメニュー親を除く)の数。index の対応確認用
+size_t countMenuLeaves(const std::vector<MenuItem>& items) {
+    size_t count = 0;
+    for (const MenuItem& item : items) {
+        if (item.separator) continue;
+        if (!item.children.empty()) {
+            count += countMenuLeaves(item.children);
+        } else {
+            ++count;
+        }
+    }
+    return count;
+}
 
 class FakeFileSystem final : public IFileSystem {
 public:
@@ -998,7 +1030,8 @@ void testAppEdit() {
     app.onRightDragStart({396, 283});
     app.onRightDragEnd({400, 287});
     CHECK(host.menuCount == 1);
-    CHECK(host.lastMenuItems.size() == 6);
+    // 末端項目: 編集6種 + 太さ7 + 文字サイズ7 + 回転8 + 色1 = 29
+    CHECK(countMenuLeaves(host.lastMenuItems) == 29);
     CHECK(app.currentImage()->width == 8);
     CHECK(rasterizer.rasterizeCount == 0);
 
@@ -1054,6 +1087,57 @@ void testAppEdit() {
     CHECK(rasterizer.rasterizeCount == 2);
     CHECK(rasterizer.lastSpec.kind == AnnotationSpec::Kind::Text);
     CHECK(rasterizer.lastSpec.text == L"メモ");
+    CHECK(nearly(rasterizer.lastSpec.fontSize, 18));  // 既定値 (等倍表示)
+    CHECK(nearly(rasterizer.lastSpec.angleDeg, 0));
+
+    // 設定変更を選ぶとメニューが再表示され、選択領域を保ったまま続けて編集できる。
+    // 末端 index: 0-5 編集, 6-12 太さ {1,2,3,5,8,12,20}, 13-19 文字サイズ
+    // {12,14,18,24,36,48,72}, 20-27 回転 {0,15,30,45,90,135,180,270}, 28 色
+    host.menuChoice = std::nullopt;
+    host.menuQueue = {10 /*太さ8px*/, 24 /*回転90°*/, 1 /*矩形*/};
+    app.onRightDragStart({396, 283});
+    app.onRightDragEnd({400, 287});
+    CHECK(host.menuQueue.empty());
+    CHECK(rasterizer.rasterizeCount == 3);
+    CHECK(nearly(rasterizer.lastSpec.strokeWidth, 8));
+    CHECK(nearly(rasterizer.lastSpec.angleDeg, 90));
+
+    // 文字サイズ 24px + 複数行テキスト。変更済みの太さ・回転も引き継がれる
+    host.textInput = L"1行目\n2行目";
+    host.menuQueue = {16 /*文字24px*/, 5 /*テキスト*/};
+    app.onRightDragStart({396, 283});
+    app.onRightDragEnd({400, 287});
+    CHECK(rasterizer.rasterizeCount == 4);
+    CHECK(rasterizer.lastSpec.text == L"1行目\n2行目");
+    CHECK(nearly(rasterizer.lastSpec.fontSize, 24));
+    CHECK(nearly(rasterizer.lastSpec.angleDeg, 90));
+
+    // 色の変更: ダイアログの結果が以降の編集に使われる。キャンセルなら元のまま
+    host.colorChoice = 0x00CC66;
+    host.menuQueue = {28 /*色*/, 4 /*直線*/};
+    app.onRightDragStart({396, 283});
+    app.onRightDragEnd({400, 287});
+    CHECK(host.colorPickerCount == 1);
+    CHECK(host.lastColorPickerInitial == 0xFF3B30);
+    CHECK(rasterizer.lastSpec.colorRGB == 0x00CC66);
+    host.colorChoice = std::nullopt;
+    host.menuQueue = {28 /*色 (キャンセル)*/, 4 /*直線*/};
+    app.onRightDragStart({396, 283});
+    app.onRightDragEnd({400, 287});
+    CHECK(host.colorPickerCount == 2);
+    CHECK(rasterizer.lastSpec.colorRGB == 0x00CC66);
+
+    // 設定変更だけしてメニューをキャンセル → 編集は適用されず設定は残る
+    const int rasterizeCountBefore = rasterizer.rasterizeCount;
+    host.menuQueue = {8 /*太さ3px*/};  // 続くメニュー再表示は menuChoice = nullopt で閉じる
+    app.onRightDragStart({396, 283});
+    app.onRightDragEnd({400, 287});
+    CHECK(rasterizer.rasterizeCount == rasterizeCountBefore);
+    CHECK(!app.selection().visible);
+    host.menuQueue = {1 /*矩形*/};
+    app.onRightDragStart({396, 283});
+    app.onRightDragEnd({400, 287});
+    CHECK(nearly(rasterizer.lastSpec.strokeWidth, 3));  // 3px に戻っている
 
     // ラスタライズ失敗はメッセージのみ
     rasterizer.ok = false;

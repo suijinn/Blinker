@@ -22,6 +22,15 @@
 
 namespace blinker {
 
+// ポップアップメニューの1項目。children が空でなければサブメニューになる。
+// separator = true の項目は区切り線(text・children は無視)。
+struct MenuItem {
+    std::wstring text;
+    bool checked = false;
+    bool separator = false;
+    std::vector<MenuItem> children;
+};
+
 // App がウィンドウ層に要求するサービス。win 層 (MainWindow) が実装する。
 class IAppHost {
 public:
@@ -35,11 +44,14 @@ public:
     virtual std::optional<std::filesystem::path> showSaveDialog(
         const std::wstring& defaultFileName) = 0;
     // ポップアップメニューをクライアント座標 screenPos に表示し、選択された項目の
-    // index を返す(キャンセル時 nullopt)。モーダル(選択されるまで返らない)
-    virtual std::optional<size_t> showContextMenu(const std::vector<std::wstring>& items,
+    // index を返す(キャンセル時 nullopt)。index は選択可能な末端項目(separator と
+    // サブメニュー親を除く)を深さ優先で数えた通し番号。モーダル(選択されるまで返らない)
+    virtual std::optional<size_t> showContextMenu(const std::vector<MenuItem>& items,
                                                   Point screenPos) = 0;
-    // テキスト入力ダイアログ。キャンセル時 nullopt
+    // テキスト入力ダイアログ(複数行)。キャンセル時 nullopt。改行は L'\n'
     virtual std::optional<std::wstring> showTextInput() = 0;
+    // 色選択ダイアログ。キャンセル時 nullopt
+    virtual std::optional<uint32_t> showColorPicker(uint32_t initialRGB) = 0;
     virtual void startTimer(unsigned milliseconds) = 0;  // 単発。満了で App::onTimer が呼ばれる
     virtual void quit() = 0;
 };
@@ -97,7 +109,17 @@ private:
     std::wstring hoverInfoText(Point screenPos) const;
     void showMessage(std::wstring text);
     Point clampToImage(Point imagePos) const;
-    void applyEditChoice(size_t index);   // 選択領域へメニューで選ばれた編集を適用する
+
+    // 編集メニューの末端項目が表す操作。設定系はメニューを再表示して続けて選択できる
+    struct EditMenuEntry {
+        enum class Action { Crop, Annotate, StrokeWidth, FontSize, Angle, PickColor };
+        Action action;
+        AnnotationSpec::Kind kind = AnnotationSpec::Kind::Rect;  // Annotate 用
+        float value = 0;                                         // 設定系の値
+    };
+    // メニュー構造を組み立てる。entries[i] が末端項目 i(showContextMenu の返す index)に対応
+    std::vector<MenuItem> buildEditMenu(std::vector<EditMenuEntry>& entries) const;
+    bool applyEditChoice(const EditMenuEntry& entry);  // true ならメニューを閉じる
     void applyCrop();
     void applyAnnotation(AnnotationSpec::Kind kind);
     void pushUndo();       // 現在の画像を undo 履歴へ積む(上限あり)
@@ -140,6 +162,7 @@ private:
     uint32_t editColorRGB_ = 0xFF3B30;
     float editStrokeWidth_ = 3.0f;  // 画面px基準(適用時に 1/zoom で画像座標へ換算)
     float editFontSize_ = 18.0f;    // 同上
+    float editAngleDeg_ = 0.0f;     // 図形・テキストの回転角(時計回り、度)
 };
 
 } // namespace blinker

@@ -263,25 +263,100 @@ void App::onRightDragEnd(Point screenPos) {
         host_.requestRedraw();
         return;
     }
-    // メニュー表示中(モーダル)もラバーバンドは描画されたまま残る
-    const std::vector<std::wstring> items = {L"トリミング", L"矩形", L"楕円",
-                                             L"矢印",       L"直線", L"テキスト"};
-    const auto choice = host_.showContextMenu(items, screenPos);
-    if (choice) applyEditChoice(*choice);
+    // メニュー表示中(モーダル)もラバーバンドは描画されたまま残る。
+    // 設定系の項目(太さ・サイズ・回転・色)を選んだ場合は選択領域を保ったまま
+    // メニューを再表示し、続けて編集を選べるようにする
+    while (true) {
+        std::vector<EditMenuEntry> entries;
+        const std::vector<MenuItem> items = buildEditMenu(entries);
+        const auto choice = host_.showContextMenu(items, screenPos);
+        if (!choice || *choice >= entries.size()) break;
+        if (applyEditChoice(entries[*choice])) break;
+    }
     selecting_ = false;
     host_.requestRedraw();
 }
 
-void App::applyEditChoice(size_t index) {
-    switch (index) {
-    case 0: applyCrop(); break;
-    case 1: applyAnnotation(AnnotationSpec::Kind::Rect); break;
-    case 2: applyAnnotation(AnnotationSpec::Kind::Ellipse); break;
-    case 3: applyAnnotation(AnnotationSpec::Kind::Arrow); break;
-    case 4: applyAnnotation(AnnotationSpec::Kind::Line); break;
-    case 5: applyAnnotation(AnnotationSpec::Kind::Text); break;
-    default: break;
+std::vector<MenuItem> App::buildEditMenu(std::vector<EditMenuEntry>& entries) const {
+    const auto leaf = [&entries](std::wstring text, EditMenuEntry entry, bool checked = false) {
+        entries.push_back(entry);
+        MenuItem item;
+        item.text = std::move(text);
+        item.checked = checked;
+        return item;
+    };
+    const auto annotate = [&leaf](std::wstring text, AnnotationSpec::Kind kind) {
+        return leaf(std::move(text), {EditMenuEntry::Action::Annotate, kind, 0});
+    };
+    using Action = EditMenuEntry::Action;
+
+    std::vector<MenuItem> items;
+    items.push_back(leaf(L"トリミング", {Action::Crop}));
+    items.push_back({.separator = true});
+    items.push_back(annotate(L"矩形", AnnotationSpec::Kind::Rect));
+    items.push_back(annotate(L"楕円", AnnotationSpec::Kind::Ellipse));
+    items.push_back(annotate(L"矢印", AnnotationSpec::Kind::Arrow));
+    items.push_back(annotate(L"直線", AnnotationSpec::Kind::Line));
+    items.push_back(annotate(L"テキスト", AnnotationSpec::Kind::Text));
+    items.push_back({.separator = true});
+
+    MenuItem stroke;
+    stroke.text = std::format(L"線の太さ ({}px)", static_cast<int>(editStrokeWidth_));
+    for (const int w : {1, 2, 3, 5, 8, 12, 20}) {
+        stroke.children.push_back(
+            leaf(std::format(L"{}px", w),
+                 {Action::StrokeWidth, AnnotationSpec::Kind::Rect, static_cast<float>(w)},
+                 static_cast<float>(w) == editStrokeWidth_));
     }
+    items.push_back(std::move(stroke));
+
+    MenuItem font;
+    font.text = std::format(L"文字サイズ ({}px)", static_cast<int>(editFontSize_));
+    for (const int s : {12, 14, 18, 24, 36, 48, 72}) {
+        font.children.push_back(
+            leaf(std::format(L"{}px", s),
+                 {Action::FontSize, AnnotationSpec::Kind::Rect, static_cast<float>(s)},
+                 static_cast<float>(s) == editFontSize_));
+    }
+    items.push_back(std::move(font));
+
+    MenuItem angle;
+    angle.text = std::format(L"回転角度 ({}°)", static_cast<int>(editAngleDeg_));
+    for (const int a : {0, 15, 30, 45, 90, 135, 180, 270}) {
+        angle.children.push_back(
+            leaf(std::format(L"{}°", a),
+                 {Action::Angle, AnnotationSpec::Kind::Rect, static_cast<float>(a)},
+                 static_cast<float>(a) == editAngleDeg_));
+    }
+    items.push_back(std::move(angle));
+
+    items.push_back(
+        leaf(std::format(L"色の変更... (#{:06X})", editColorRGB_), {Action::PickColor}));
+    return items;
+}
+
+bool App::applyEditChoice(const EditMenuEntry& entry) {
+    switch (entry.action) {
+    case EditMenuEntry::Action::Crop:
+        applyCrop();
+        return true;
+    case EditMenuEntry::Action::Annotate:
+        applyAnnotation(entry.kind);
+        return true;
+    case EditMenuEntry::Action::StrokeWidth:
+        editStrokeWidth_ = entry.value;
+        return false;
+    case EditMenuEntry::Action::FontSize:
+        editFontSize_ = entry.value;
+        return false;
+    case EditMenuEntry::Action::Angle:
+        editAngleDeg_ = entry.value;
+        return false;
+    case EditMenuEntry::Action::PickColor:
+        if (const auto rgb = host_.showColorPicker(editColorRGB_)) editColorRGB_ = *rgb;
+        return false;
+    }
+    return true;
 }
 
 void App::applyCrop() {
@@ -308,6 +383,7 @@ void App::applyAnnotation(AnnotationSpec::Kind kind) {
     spec.p1 = selStartImage_;
     spec.p2 = selEndImage_;
     spec.colorRGB = editColorRGB_;
+    spec.angleDeg = editAngleDeg_;
     // 線幅・文字サイズは「画面上での見た目」基準で画像座標へ換算する
     const float zoom = std::max(viewport_.zoom(), 0.001f);
     spec.strokeWidth = std::max(1.0f, editStrokeWidth_ / zoom);

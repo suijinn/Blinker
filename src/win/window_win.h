@@ -30,9 +30,10 @@ public:
     std::optional<std::filesystem::path> showOpenDialog() override;
     std::optional<std::filesystem::path> showSaveDialog(
         const std::wstring& defaultFileName) override;
-    std::optional<size_t> showContextMenu(const std::vector<std::wstring>& items,
+    std::optional<size_t> showContextMenu(const std::vector<MenuItem>& items,
                                           Point screenPos) override;
     std::optional<std::wstring> showTextInput() override;
+    std::optional<uint32_t> showColorPicker(uint32_t initialRGB) override;
     void startTimer(unsigned milliseconds) override;
     void quit() override;
 
