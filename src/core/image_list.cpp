@@ -59,6 +59,12 @@ bool ImageList::last() {
     return true;
 }
 
+bool ImageList::jumpTo(size_t index) {
+    if (index >= files_.size() || index == index_) return false;
+    index_ = index;
+    return true;
+}
+
 std::vector<std::filesystem::path> ImageList::prefetchOrder(int radius) const {
     std::vector<std::filesystem::path> out;
     for (int d = 1; d <= radius; ++d) {

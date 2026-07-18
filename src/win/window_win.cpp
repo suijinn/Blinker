@@ -90,11 +90,17 @@ LRESULT MainWindow::handleMessage(UINT msg, WPARAM wp, LPARAM lp) {
         }
         return 0;
     }
-    case WM_LBUTTONDOWN:
+    case WM_LBUTTONDOWN: {
+        const POINT pt{GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
+        // サイドバー上のクリック(項目ジャンプ)ならパンを開始しない
+        if (app_ && app_->onMouseDown({static_cast<float>(pt.x), static_cast<float>(pt.y)})) {
+            return 0;
+        }
         dragging_ = true;
-        lastDragPos_ = {GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
+        lastDragPos_ = pt;
         SetCapture(hwnd_);
         return 0;
+    }
     case WM_MOUSEMOVE: {
         const POINT pt{GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
         if (!trackingMouseLeave_) {
@@ -155,7 +161,7 @@ void MainWindow::onPaint() {
     BeginPaint(hwnd_, &ps);
     if (app_ && renderer_) {
         renderer_->render(app_->currentImage(), app_->imageToScreen(), app_->zoom(),
-                          app_->backgroundRGB(), app_->statusBar());
+                          app_->backgroundRGB(), app_->sidebar(), app_->statusBar());
     }
     EndPaint(hwnd_, &ps);
 }

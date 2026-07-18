@@ -8,6 +8,10 @@ background = 202020
 theme = auto
 # ステータスバー(画像情報・カーソル位置の座標と色・コピー通知)を表示するか
 statusbar = true
+# サイドバー(ファイル名一覧、Ctrl+Bでトグル)を起動時に表示するか
+sidebar = false
+# サイドバーの幅 (px, 120-480)
+sidebar_width = 220
 # フィット表示時にウィンドウより小さい画像を拡大するか
 fit_upscale = false
 # 前後何枚を先読みするか (0-8)
@@ -22,7 +26,7 @@ prefetch_radius = 2
 # 使えるコマンド:
 #   next prev first last zoom_in zoom_out fit actual_size
 #   pan_left pan_right pan_up pan_down rotate_cw rotate_ccw
-#   fullscreen open copy_image copy_path paste save_as statusbar escape quit
+#   fullscreen open copy_image copy_path paste save_as sidebar statusbar escape quit
 #
 # 例: Vim風の移動にする場合
 #next = L, Right, Space

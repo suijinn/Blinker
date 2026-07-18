@@ -16,12 +16,14 @@ public:
     size_t size() const { return files_.size(); }
     size_t index() const { return index_; }
     const std::filesystem::path& current() const { return files_[index_]; }  // 事前条件: !empty()
+    const std::filesystem::path& at(size_t i) const { return files_[i]; }    // 事前条件: i < size()
 
     // 位置が変わったら true
     bool next();
     bool prev();
     bool first();
     bool last();
+    bool jumpTo(size_t index);  // 範囲外は無視して false
 
     // 現在位置の近傍を優先度順に並べた先読み候補 (+1, -1, +2, -2, ...)
     std::vector<std::filesystem::path> prefetchOrder(int radius) const;

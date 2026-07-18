@@ -50,7 +50,8 @@ public:
     void execute(Command command);
     bool onKey(const KeyChord& chord);  // バインドがあれば実行して true
     void onResize(float width, float height);
-    void onWheel(float wheelNotches, Point screenPos);  // 正で拡大
+    void onWheel(float wheelNotches, Point screenPos);  // 正で拡大。サイドバー上ではスクロール
+    bool onMouseDown(Point screenPos);  // サイドバーのクリックを消費したら true(パンを開始しない)
     void onDragPan(float dx, float dy);
     void onMouseMove(Point screenPos);  // ステータスバーの座標・色表示を更新
     void onMouseLeave();
@@ -59,21 +60,28 @@ public:
 
     // 描画用スナップショット
     const std::shared_ptr<DecodedImage>& currentImage() const { return current_; }
-    Matrix3x2 imageToScreen() const { return viewport_.imageToScreen(); }
+    Matrix3x2 imageToScreen() const;  // サイドバー分のオフセットを含む
     float zoom() const { return viewport_.zoom(); }
     uint32_t backgroundRGB() const { return backgroundRGB_; }
     StatusBarView statusBar() const;
+    SidebarView sidebar() const;
 
 private:
     static constexpr float kPanStepPx = 64.0f;
     static constexpr float kStatusBarHeight = 26.0f;
+    static constexpr float kSidebarItemHeight = 24.0f;
 
     void refreshCurrent();
     void onViewChanged();
     void updatePrefetch();
     void updateTitle();
     bool statusBarVisible() const;
-    void applyLayout();  // ステータスバーの分だけビューポートを狭める
+    bool sidebarVisible() const;
+    float sidebarOffset() const;      // サイドバー幅。非表示なら 0
+    float sidebarViewHeight() const;  // サイドバー領域の高さ(ステータスバーを除く)
+    void clampSidebarScroll();
+    void scrollSidebarToCurrent();    // 現在項目が見える位置までスクロール
+    void applyLayout();  // サイドバー・ステータスバーの分だけビューポートを狭める
     std::wstring hoverInfoText(Point screenPos) const;
     void showMessage(std::wstring text);
 
@@ -91,8 +99,11 @@ private:
     bool loadFailed_ = false;
     uint32_t backgroundRGB_ = 0x202020;
     int prefetchRadius_ = 2;
-    SizeF clientSize_{};        // クライアント領域全体(ビューポート + ステータスバー)
+    SizeF clientSize_{};        // クライアント領域全体(サイドバー + ビューポート + ステータスバー)
     bool statusBarEnabled_ = true;
+    bool sidebarEnabled_ = false;
+    float sidebarWidth_ = 220.0f;
+    float sidebarScroll_ = 0.0f;  // 一覧のスクロール量 (px)
     bool darkTheme_ = true;
     std::wstring message_;      // ステータスバー左側の通知(タイマーで消える)
     std::wstring hoverText_;    // ステータスバー右側(カーソル位置の座標・色)
