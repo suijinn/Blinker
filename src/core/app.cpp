@@ -4,6 +4,7 @@
 #include <cmath>
 #include <format>
 
+#include "core/edit.h"
 #include "core/pixel_convert.h"
 
 namespace blinker {
@@ -17,12 +18,13 @@ constexpr unsigned kMessageDurationMs = 3000;
 } // namespace
 
 App::App(IAppHost& host, IFileSystem& fileSystem, ImageCache& cache, IClipboard& clipboard,
-         IImageEncoder& encoder)
+         IImageEncoder& encoder, IAnnotationRasterizer& rasterizer)
     : host_(host),
       fileSystem_(fileSystem),
       cache_(cache),
       clipboard_(clipboard),
-      encoder_(encoder) {}
+      encoder_(encoder),
+      rasterizer_(rasterizer) {}
 
 void App::applyConfig(const Config& config) {
     keymap_.applyConfig(config.section("keys"));
@@ -34,6 +36,11 @@ void App::applyConfig(const Config& config) {
     sidebarWidth_ = static_cast<float>(
         std::clamp(config.getInt("view", "sidebar_width", static_cast<int>(sidebarWidth_)), 120,
                    480));
+    editColorRGB_ = config.getColorRGB("edit", "color", editColorRGB_);
+    editStrokeWidth_ = static_cast<float>(std::clamp(
+        config.getInt("edit", "stroke_width", static_cast<int>(editStrokeWidth_)), 1, 100));
+    editFontSize_ = static_cast<float>(
+        std::clamp(config.getInt("edit", "font_size", static_cast<int>(editFontSize_)), 6, 200));
     applyLayout();
 }
 
@@ -128,6 +135,7 @@ void App::execute(Command command) {
         break;
     case Command::PasteImage:
         if (auto image = clipboard_.getImage(); image && image->width > 0 && image->height > 0) {
+            discardEdits();
             current_ = std::move(image);
             clipboardImage_ = true;
             displayedPath_.clear();  // 一覧に戻ったとき必ず再取得させる
@@ -157,6 +165,9 @@ void App::execute(Command command) {
         }
         break;
     }
+    case Command::Undo:
+        executeUndo();
+        break;
     case Command::ToggleSidebar:
         sidebarEnabled_ = !sidebarEnabled_;
         applyLayout();
@@ -169,7 +180,10 @@ void App::execute(Command command) {
         onViewChanged();  // フィット再計算でズーム率表示が変わりうる
         break;
     case Command::Escape:
-        if (host_.isFullscreen()) {
+        if (selecting_) {
+            selecting_ = false;
+            host_.requestRedraw();
+        } else if (host_.isFullscreen()) {
             host_.setFullscreen(false);
         } else {
             host_.quit();
@@ -221,6 +235,153 @@ bool App::onMouseDown(Point screenPos) {
     return true;  // サイドバー上のクリックはパン開始にしない
 }
 
+void App::onRightDragStart(Point screenPos) {
+    if (!current_) return;
+    // サイドバー・ステータスバー上からは開始しない
+    const float barHeight = statusBarVisible() ? kStatusBarHeight : 0.0f;
+    if (screenPos.x < sidebarOffset() || screenPos.y >= clientSize_.h - barHeight) return;
+    selecting_ = true;
+    selStartScreen_ = screenPos;
+    selStartImage_ = clampToImage(imageToScreen().inverted().apply(screenPos));
+    selEndImage_ = selStartImage_;
+    host_.requestRedraw();
+}
+
+void App::onRightDragMove(Point screenPos) {
+    if (!selecting_) return;
+    selEndImage_ = clampToImage(imageToScreen().inverted().apply(screenPos));
+    host_.requestRedraw();
+}
+
+void App::onRightDragEnd(Point screenPos) {
+    if (!selecting_) return;
+    selEndImage_ = clampToImage(imageToScreen().inverted().apply(screenPos));
+    const float dx = screenPos.x - selStartScreen_.x;
+    const float dy = screenPos.y - selStartScreen_.y;
+    if (dx * dx + dy * dy < kDragThresholdPx * kDragThresholdPx) {
+        selecting_ = false;  // 単なる右クリック(移動量が小さい)は何もしない
+        host_.requestRedraw();
+        return;
+    }
+    // メニュー表示中(モーダル)もラバーバンドは描画されたまま残る
+    const std::vector<std::wstring> items = {L"トリミング", L"矩形", L"楕円",
+                                             L"矢印",       L"直線", L"テキスト"};
+    const auto choice = host_.showContextMenu(items, screenPos);
+    if (choice) applyEditChoice(*choice);
+    selecting_ = false;
+    host_.requestRedraw();
+}
+
+void App::applyEditChoice(size_t index) {
+    switch (index) {
+    case 0: applyCrop(); break;
+    case 1: applyAnnotation(AnnotationSpec::Kind::Rect); break;
+    case 2: applyAnnotation(AnnotationSpec::Kind::Ellipse); break;
+    case 3: applyAnnotation(AnnotationSpec::Kind::Arrow); break;
+    case 4: applyAnnotation(AnnotationSpec::Kind::Line); break;
+    case 5: applyAnnotation(AnnotationSpec::Kind::Text); break;
+    default: break;
+    }
+}
+
+void App::applyCrop() {
+    if (!current_) return;
+    // 部分的にかかったピクセルも含める(floor/ceil)
+    const int x0 = static_cast<int>(std::floor(std::min(selStartImage_.x, selEndImage_.x)));
+    const int y0 = static_cast<int>(std::floor(std::min(selStartImage_.y, selEndImage_.y)));
+    const int x1 = static_cast<int>(std::ceil(std::max(selStartImage_.x, selEndImage_.x)));
+    const int y1 = static_cast<int>(std::ceil(std::max(selStartImage_.y, selEndImage_.y)));
+    auto cropped = cropImage(*current_, {x0, y0, x1 - x0, y1 - y0});
+    if (!cropped) return;
+    pushUndo();
+    current_ = std::move(cropped);
+    viewport_.setImage(
+        {static_cast<float>(current_->width), static_cast<float>(current_->height)});
+    edited_ = true;
+    updateTitle();
+}
+
+void App::applyAnnotation(AnnotationSpec::Kind kind) {
+    if (!current_) return;
+    AnnotationSpec spec;
+    spec.kind = kind;
+    spec.p1 = selStartImage_;
+    spec.p2 = selEndImage_;
+    spec.colorRGB = editColorRGB_;
+    // 線幅・文字サイズは「画面上での見た目」基準で画像座標へ換算する
+    const float zoom = std::max(viewport_.zoom(), 0.001f);
+    spec.strokeWidth = std::max(1.0f, editStrokeWidth_ / zoom);
+    spec.fontSize = std::max(4.0f, editFontSize_ / zoom);
+    if (kind == AnnotationSpec::Kind::Text) {
+        const auto text = host_.showTextInput();
+        if (!text || text->empty()) return;
+        spec.text = *text;
+    }
+    const AnnotationOverlay overlay = rasterizer_.rasterize(spec);
+    if (!overlay.image) {
+        showMessage(L"描画に失敗しました");
+        return;
+    }
+    pushUndo();
+    auto edited = std::make_shared<DecodedImage>(*current_);  // キャッシュ共有のためコピー
+    blendOverlay(*edited, *overlay.image, overlay.x, overlay.y);
+    current_ = std::move(edited);
+    edited_ = true;
+    updateTitle();
+}
+
+void App::pushUndo() {
+    undoStack_.push_back(current_);
+    if (undoStack_.size() > kUndoLimit) undoStack_.erase(undoStack_.begin());
+}
+
+void App::executeUndo() {
+    if (undoStack_.empty()) {
+        showMessage(L"取り消す編集はありません");
+        return;
+    }
+    const bool sizeChanged = current_ && (current_->width != undoStack_.back()->width ||
+                                          current_->height != undoStack_.back()->height);
+    current_ = std::move(undoStack_.back());
+    undoStack_.pop_back();
+    // トリミングの取り消しでサイズが戻るときだけビューを再設定する(回転等を保つ)
+    if (sizeChanged) {
+        viewport_.setImage(
+            {static_cast<float>(current_->width), static_cast<float>(current_->height)});
+    }
+    edited_ = !undoStack_.empty();
+    updateTitle();
+    host_.requestRedraw();
+}
+
+void App::discardEdits() {
+    selecting_ = false;
+    if (undoStack_.empty() && !edited_) return;
+    undoStack_.clear();
+    if (edited_) {
+        edited_ = false;
+        showMessage(L"編集を破棄しました");
+    }
+}
+
+Point App::clampToImage(Point imagePos) const {
+    if (!current_) return imagePos;
+    return {std::clamp(imagePos.x, 0.0f, static_cast<float>(current_->width)),
+            std::clamp(imagePos.y, 0.0f, static_cast<float>(current_->height))};
+}
+
+SelectionView App::selection() const {
+    SelectionView sel;
+    sel.visible = selecting_ && current_ != nullptr;
+    if (!sel.visible) return sel;
+    const Matrix3x2 m = imageToScreen();
+    sel.p1 = m.apply(selStartImage_);
+    sel.p2 = m.apply(selEndImage_);
+    sel.borderRGB = 0x3399FF;
+    sel.fillARGB = 0x303399FF;  // 半透明の塗り
+    return sel;
+}
+
 void App::onDragPan(float dx, float dy) {
     viewport_.panBy(dx, dy);
     host_.requestRedraw();
@@ -247,6 +408,7 @@ void App::onTimer() {
 
 void App::onDecodeCompleted() {
     if (clipboardImage_) return;  // 貼り付け画像の表示はデコード完了で上書きしない
+    if (edited_) return;          // 編集中の画像も同様
     if (list_.empty()) return;
     // 表示すべき画像がまだ画面に出ていなければ取得を再試行する
     if (displayedPath_ == list_.current() && (current_ || loadFailed_)) return;
@@ -254,6 +416,7 @@ void App::onDecodeCompleted() {
 }
 
 void App::refreshCurrent() {
+    discardEdits();
     clipboardImage_ = false;  // 表示をフォルダ一覧由来に戻す
     if (list_.empty()) {
         current_.reset();
@@ -423,7 +586,8 @@ void App::updatePrefetch() {
 
 void App::updateTitle() {
     if (clipboardImage_) {
-        host_.setTitle(std::format(L"(クリップボード) {}% - Blinker",
+        host_.setTitle(std::format(L"(クリップボード){} {}% - Blinker",
+                                   edited_ ? L" (編集済み)" : L"",
                                    static_cast<int>(std::lround(viewport_.zoom() * 100))));
         return;
     }
@@ -438,6 +602,7 @@ void App::updateTitle() {
     } else if (displayedPath_ != list_.current()) {
         title += L" (読み込み中)";
     } else {
+        if (edited_) title += L" (編集済み)";
         title += std::format(L" {}%", static_cast<int>(std::lround(viewport_.zoom() * 100)));
     }
     title += L" - Blinker";

@@ -21,12 +21,14 @@ public:
     void resize(uint32_t width, uint32_t height) override;
     void render(const std::shared_ptr<const DecodedImage>& image,
                 const Matrix3x2& imageToScreen, float zoom, uint32_t backgroundRGB,
-                const SidebarView& sidebar, const StatusBarView& statusBar) override;
+                const SelectionView& selection, const SidebarView& sidebar,
+                const StatusBarView& statusBar) override;
 
 private:
     bool ensureTarget();
     void discardTarget();
     ID2D1Bitmap* bitmapFor(const std::shared_ptr<const DecodedImage>& image);
+    void drawSelection(const SelectionView& selection);
     void drawSidebar(const SidebarView& sidebar);
     void drawStatusBar(const StatusBarView& bar);
 

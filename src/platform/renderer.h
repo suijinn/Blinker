@@ -43,6 +43,15 @@ struct SidebarView {
     std::vector<SidebarItem> items;  // 可視範囲のみ
 };
 
+// 編集用の選択領域(ラバーバンド)の描画内容。App が画像座標→スクリーン座標へ変換済み。
+struct SelectionView {
+    bool visible = false;
+    Point p1;               // 矩形の対角(順不同)
+    Point p2;
+    uint32_t borderRGB = 0;
+    uint32_t fillARGB = 0;  // 上位バイト = アルファ
+};
+
 // 描画のプラットフォーム抽象。Windows 実装は Direct2D (renderer_d2d)。
 // UI スレッドからのみ呼ばれる。
 class IRenderer {
@@ -54,7 +63,8 @@ public:
     // image は nullptr 可(背景のみ描画)。zoom は補間モード選択のヒント。
     virtual void render(const std::shared_ptr<const DecodedImage>& image,
                         const Matrix3x2& imageToScreen, float zoom, uint32_t backgroundRGB,
-                        const SidebarView& sidebar, const StatusBarView& statusBar) = 0;
+                        const SelectionView& selection, const SidebarView& sidebar,
+                        const StatusBarView& statusBar) = 0;
 };
 
 } // namespace blinker

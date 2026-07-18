@@ -9,6 +9,7 @@
 #include "core/config.h"
 #include "core/image_cache.h"
 #include "core/str_util.h"
+#include "win/annotation_d2d.h"
 #include "win/clipboard_win.h"
 #include "win/decoder_wic.h"
 #include "win/encoder_wic.h"
@@ -76,8 +77,9 @@ int WINAPI wWinMain(HINSTANCE hinstance, HINSTANCE, PWSTR, int showCommand) {
         ClipboardWin clipboard;
         clipboard.setOwner(window.hwnd());
         EncoderWic encoder;
+        AnnotationD2D annotationRasterizer;
 
-        App app(window, fileSystem, cache, clipboard, encoder);
+        App app(window, fileSystem, cache, clipboard, encoder, annotationRasterizer);
         app.setDarkTheme(darkTheme);
         app.applyConfig(config);
         window.attachApp(&app);

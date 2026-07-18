@@ -29,6 +29,7 @@ enum class Command {
     CopyPath,     // 表示中の画像のフルパスをクリップボードへ
     PasteImage,   // クリップボードの画像を表示(次/前でフォルダ一覧に戻る)
     SaveImageAs,  // 表示中の画像を名前を付けて保存 (PNG/JPEG/BMP)
+    Undo,         // 直前の編集(トリミング・図形・テキスト)を取り消す
     ToggleSidebar,  // ファイル名一覧のサイドバー
     ToggleStatusBar,
     Escape,  // フルスクリーン解除。通常時は終了
