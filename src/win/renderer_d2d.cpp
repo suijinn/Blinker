@@ -89,7 +89,8 @@ ID2D1Bitmap* RendererD2D::bitmapFor(const std::shared_ptr<const DecodedImage>& i
 
 void RendererD2D::render(const std::shared_ptr<const DecodedImage>& image,
                          const Matrix3x2& imageToScreen, float zoom, uint32_t backgroundRGB,
-                         const SidebarView& sidebar, const StatusBarView& statusBar) {
+                         const SelectionView& selection, const SidebarView& sidebar,
+                         const StatusBarView& statusBar) {
     if (!ensureTarget()) return;
     target_->BeginDraw();
     target_->Clear(colorFromRGB(backgroundRGB));
@@ -107,11 +108,25 @@ void RendererD2D::render(const std::shared_ptr<const DecodedImage>& image,
             target_->SetTransform(D2D1::Matrix3x2F::Identity());
         }
     }
+    drawSelection(selection);  // 編集領域のラバーバンドは画像の上に重ねる
     drawSidebar(sidebar);      // 画像の後に描き、ズーム時のはみ出しを覆う(不透明)
     drawStatusBar(statusBar);
     if (target_->EndDraw() == D2DERR_RECREATE_TARGET) {
         discardTarget();  // 次回の render で作り直す
     }
+}
+
+void RendererD2D::drawSelection(const SelectionView& selection) {
+    if (!selection.visible || !brush_) return;
+    const auto rect = D2D1::RectF(
+        std::min(selection.p1.x, selection.p2.x), std::min(selection.p1.y, selection.p2.y),
+        std::max(selection.p1.x, selection.p2.x), std::max(selection.p1.y, selection.p2.y));
+    const uint32_t fill = selection.fillARGB;
+    brush_->SetColor(D2D1::ColorF(((fill >> 16) & 0xFF) / 255.0f, ((fill >> 8) & 0xFF) / 255.0f,
+                                  (fill & 0xFF) / 255.0f, ((fill >> 24) & 0xFF) / 255.0f));
+    target_->FillRectangle(rect, brush_.Get());
+    brush_->SetColor(colorFromRGB(selection.borderRGB));
+    target_->DrawRectangle(rect, brush_.Get(), 1.0f);
 }
 
 void RendererD2D::drawSidebar(const SidebarView& sidebar) {

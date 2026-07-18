@@ -5,6 +5,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <vector>
 
 #include "core/command.h"
 #include "core/config.h"
@@ -13,6 +14,7 @@
 #include "core/image_list.h"
 #include "core/keymap.h"
 #include "core/viewport.h"
+#include "platform/annotation.h"
 #include "platform/clipboard.h"
 #include "platform/encoder.h"
 #include "platform/file_system.h"
@@ -32,6 +34,12 @@ public:
     // 保存ダイアログ。キャンセル時 nullopt。返るパスには拡張子が付いていること
     virtual std::optional<std::filesystem::path> showSaveDialog(
         const std::wstring& defaultFileName) = 0;
+    // ポップアップメニューをクライアント座標 screenPos に表示し、選択された項目の
+    // index を返す(キャンセル時 nullopt)。モーダル(選択されるまで返らない)
+    virtual std::optional<size_t> showContextMenu(const std::vector<std::wstring>& items,
+                                                  Point screenPos) = 0;
+    // テキスト入力ダイアログ。キャンセル時 nullopt
+    virtual std::optional<std::wstring> showTextInput() = 0;
     virtual void startTimer(unsigned milliseconds) = 0;  // 単発。満了で App::onTimer が呼ばれる
     virtual void quit() = 0;
 };
@@ -41,7 +49,7 @@ public:
 class App {
 public:
     App(IAppHost& host, IFileSystem& fileSystem, ImageCache& cache, IClipboard& clipboard,
-        IImageEncoder& encoder);
+        IImageEncoder& encoder, IAnnotationRasterizer& rasterizer);
 
     void applyConfig(const Config& config);
     void setDarkTheme(bool dark) { darkTheme_ = dark; }  // ステータスバー配色に反映
@@ -52,6 +60,9 @@ public:
     void onResize(float width, float height);
     void onWheel(float wheelNotches, Point screenPos);  // 正で拡大。サイドバー上ではスクロール
     bool onMouseDown(Point screenPos);  // サイドバーのクリックを消費したら true(パンを開始しない)
+    void onRightDragStart(Point screenPos);  // 編集領域の選択開始(画像外・サイドバー上は無視)
+    void onRightDragMove(Point screenPos);
+    void onRightDragEnd(Point screenPos);  // メニューを表示し、選ばれた編集を適用する
     void onDragPan(float dx, float dy);
     void onMouseMove(Point screenPos);  // ステータスバーの座標・色表示を更新
     void onMouseLeave();
@@ -65,6 +76,7 @@ public:
     uint32_t backgroundRGB() const { return backgroundRGB_; }
     StatusBarView statusBar() const;
     SidebarView sidebar() const;
+    SelectionView selection() const;  // 選択中のラバーバンド(スクリーン座標)
 
 private:
     static constexpr float kPanStepPx = 64.0f;
@@ -84,12 +96,20 @@ private:
     void applyLayout();  // サイドバー・ステータスバーの分だけビューポートを狭める
     std::wstring hoverInfoText(Point screenPos) const;
     void showMessage(std::wstring text);
+    Point clampToImage(Point imagePos) const;
+    void applyEditChoice(size_t index);   // 選択領域へメニューで選ばれた編集を適用する
+    void applyCrop();
+    void applyAnnotation(AnnotationSpec::Kind kind);
+    void pushUndo();       // 現在の画像を undo 履歴へ積む(上限あり)
+    void executeUndo();
+    void discardEdits();   // 画像切替時に編集を破棄する(あれば通知)
 
     IAppHost& host_;
     IFileSystem& fileSystem_;
     ImageCache& cache_;
     IClipboard& clipboard_;
     IImageEncoder& encoder_;
+    IAnnotationRasterizer& rasterizer_;
     Keymap keymap_ = Keymap::defaults();
     ImageList list_;
     Viewport viewport_;
@@ -107,6 +127,19 @@ private:
     bool darkTheme_ = true;
     std::wstring message_;      // ステータスバー左側の通知(タイマーで消える)
     std::wstring hoverText_;    // ステータスバー右側(カーソル位置の座標・色)
+
+    // 編集(トリミング・図形・テキスト)の状態
+    static constexpr float kDragThresholdPx = 4.0f;  // これ未満の右ドラッグは無視(画面px)
+    static constexpr size_t kUndoLimit = 10;
+    bool selecting_ = false;    // 右ドラッグで領域選択中
+    Point selStartImage_{};     // 選択の始点・現在点(画像座標。ズーム中も不変)
+    Point selEndImage_{};
+    Point selStartScreen_{};    // ドラッグ量の閾値判定用
+    bool edited_ = false;       // current_ に未保存の編集がある
+    std::vector<std::shared_ptr<DecodedImage>> undoStack_;
+    uint32_t editColorRGB_ = 0xFF3B30;
+    float editStrokeWidth_ = 3.0f;  // 画面px基準(適用時に 1/zoom で画像座標へ換算)
+    float editFontSize_ = 18.0f;    // 同上
 };
 
 } // namespace blinker

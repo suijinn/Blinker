@@ -5,6 +5,8 @@
 #include <shellapi.h>
 #include <windowsx.h>
 
+#include <vector>
+
 #include "platform/image_formats.h"
 
 namespace blinker {
@@ -13,6 +15,91 @@ namespace {
 constexpr wchar_t kWindowClass[] = L"BlinkerMainWindow";
 constexpr int kIconResourceId = 101;  // blinker.rc の IDI_APPICON
 constexpr UINT_PTR kMessageTimerId = 1;
+constexpr WORD kTextInputEditId = 1000;
+
+// テキスト入力ダイアログのプロシージャ。lParam で受けた std::wstring* に結果を書く
+INT_PTR CALLBACK textInputDlgProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
+    switch (msg) {
+    case WM_INITDIALOG:
+        SetWindowLongPtrW(dlg, DWLP_USER, lp);
+        return TRUE;  // 最初の WS_TABSTOP (エディット) にフォーカスさせる
+    case WM_COMMAND:
+        if (LOWORD(wp) == IDOK) {
+            auto* result = reinterpret_cast<std::wstring*>(GetWindowLongPtrW(dlg, DWLP_USER));
+            wchar_t buffer[512]{};
+            GetDlgItemTextW(dlg, kTextInputEditId, buffer, 512);
+            *result = buffer;
+            EndDialog(dlg, IDOK);
+            return TRUE;
+        }
+        if (LOWORD(wp) == IDCANCEL) {
+            EndDialog(dlg, IDCANCEL);
+            return TRUE;
+        }
+        break;
+    }
+    return FALSE;
+}
+
+// DialogBoxIndirectParam 用のメモリ内テンプレート。WORD 列で組み立てる
+// (DLGTEMPLATE の後にメニュー・クラス・タイトル、各アイテムは DWORD 境界に揃える)
+std::vector<WORD> buildTextInputTemplate() {
+    std::vector<WORD> buf;
+    const auto pushW = [&buf](WORD w) { buf.push_back(w); };
+    const auto pushDW = [&buf](DWORD d) {
+        buf.push_back(LOWORD(d));
+        buf.push_back(HIWORD(d));
+    };
+    const auto pushStr = [&buf](const wchar_t* s) {
+        for (; *s; ++s) buf.push_back(static_cast<WORD>(*s));
+        buf.push_back(0);
+    };
+    const auto alignDword = [&buf] {
+        if (buf.size() % 2) buf.push_back(0);
+    };
+
+    pushDW(DS_MODALFRAME | DS_SETFONT | DS_CENTER | WS_POPUP | WS_CAPTION | WS_SYSMENU);
+    pushDW(0);   // 拡張スタイル
+    pushW(3);    // アイテム数
+    pushW(0);    // x
+    pushW(0);    // y
+    pushW(220);  // cx (ダイアログ単位)
+    pushW(60);   // cy
+    pushW(0);    // メニューなし
+    pushW(0);    // 既定のダイアログクラス
+    pushStr(L"テキストを追加");
+    pushW(9);  // フォントサイズ (pt)
+    pushStr(L"MS Shell Dlg");
+
+    struct Item {
+        DWORD style;
+        WORD x, y, cx, cy, id, classAtom;
+        const wchar_t* text;
+    };
+    const Item items[] = {
+        {WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_BORDER | ES_AUTOHSCROLL, 7, 7, 206, 14,
+         kTextInputEditId, 0x0081, L""},  // EDIT
+        {WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON, 105, 38, 50, 14, IDOK, 0x0080,
+         L"OK"},
+        {WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON, 160, 38, 53, 14, IDCANCEL, 0x0080,
+         L"キャンセル"},
+    };
+    for (const Item& item : items) {
+        alignDword();
+        pushDW(item.style);
+        pushDW(0);  // 拡張スタイル
+        pushW(item.x);
+        pushW(item.y);
+        pushW(item.cx);
+        pushW(item.cy);
+        pushW(item.id);
+        pushW(0xFFFF);  // クラスはアトム指定
+        pushW(item.classAtom);
+        pushStr(item.text);
+        pushW(0);  // 追加データなし
+    }
+    return buf;
+}
 
 } // namespace
 
@@ -113,8 +200,26 @@ LRESULT MainWindow::handleMessage(UINT msg, WPARAM wp, LPARAM lp) {
                                 static_cast<float>(pt.y - lastDragPos_.y));
                 lastDragPos_ = pt;
             }
+            if (rightDragging_) {
+                app_->onRightDragMove({static_cast<float>(pt.x), static_cast<float>(pt.y)});
+            }
             app_->onMouseMove({static_cast<float>(pt.x), static_cast<float>(pt.y)});
         }
+        return 0;
+    }
+    case WM_RBUTTONDOWN: {
+        const POINT pt{GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
+        rightDragging_ = true;
+        SetCapture(hwnd_);
+        if (app_) app_->onRightDragStart({static_cast<float>(pt.x), static_cast<float>(pt.y)});
+        return 0;
+    }
+    case WM_RBUTTONUP: {
+        if (!rightDragging_) break;
+        rightDragging_ = false;
+        ReleaseCapture();  // メニュー表示より先にキャプチャを解放する
+        const POINT pt{GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
+        if (app_) app_->onRightDragEnd({static_cast<float>(pt.x), static_cast<float>(pt.y)});
         return 0;
     }
     case WM_MOUSELEAVE:
@@ -161,7 +266,8 @@ void MainWindow::onPaint() {
     BeginPaint(hwnd_, &ps);
     if (app_ && renderer_) {
         renderer_->render(app_->currentImage(), app_->imageToScreen(), app_->zoom(),
-                          app_->backgroundRGB(), app_->sidebar(), app_->statusBar());
+                          app_->backgroundRGB(), app_->selection(), app_->sidebar(),
+                          app_->statusBar());
     }
     EndPaint(hwnd_, &ps);
 }
@@ -320,6 +426,34 @@ std::optional<std::filesystem::path> MainWindow::showSaveDialog(
     if (!result.has_extension()) {
         result += ofn.nFilterIndex == 2 ? L".jpg" : ofn.nFilterIndex == 3 ? L".bmp" : L".png";
     }
+    return result;
+}
+
+std::optional<size_t> MainWindow::showContextMenu(const std::vector<std::wstring>& items,
+                                                  Point screenPos) {
+    HMENU menu = CreatePopupMenu();
+    if (!menu) return std::nullopt;
+    for (size_t i = 0; i < items.size(); ++i) {
+        // ID 0 はキャンセルと区別できないため 1 始まり
+        AppendMenuW(menu, MF_STRING, i + 1, items[i].c_str());
+    }
+    POINT pt{static_cast<LONG>(screenPos.x), static_cast<LONG>(screenPos.y)};
+    ClientToScreen(hwnd_, &pt);
+    const int selected = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_NONOTIFY,
+                                        pt.x, pt.y, 0, hwnd_, nullptr);
+    DestroyMenu(menu);
+    if (selected <= 0) return std::nullopt;
+    return static_cast<size_t>(selected - 1);
+}
+
+std::optional<std::wstring> MainWindow::showTextInput() {
+    const std::vector<WORD> dlgTemplate = buildTextInputTemplate();
+    std::wstring result;
+    const INT_PTR code = DialogBoxIndirectParamW(
+        reinterpret_cast<HINSTANCE>(GetWindowLongPtrW(hwnd_, GWLP_HINSTANCE)),
+        reinterpret_cast<const DLGTEMPLATE*>(dlgTemplate.data()), hwnd_, textInputDlgProc,
+        reinterpret_cast<LPARAM>(&result));
+    if (code != IDOK) return std::nullopt;
     return result;
 }
 

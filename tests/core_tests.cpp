@@ -11,6 +11,7 @@
 #include "core/app.h"
 #include "core/config.h"
 #include "core/dib.h"
+#include "core/edit.h"
 #include "core/geometry.h"
 #include "core/image_cache.h"
 #include "core/image_list.h"
@@ -467,6 +468,13 @@ public:
         lastDefaultName = defaultFileName;
         return savePath;
     }
+    std::optional<size_t> showContextMenu(const std::vector<std::wstring>& items,
+                                          Point) override {
+        ++menuCount;
+        lastMenuItems = items;
+        return menuChoice;
+    }
+    std::optional<std::wstring> showTextInput() override { return textInput; }
     void startTimer(unsigned milliseconds) override { lastTimerMs = milliseconds; }
     void quit() override {}
 
@@ -476,6 +484,10 @@ public:
     std::optional<std::filesystem::path> savePath;  // 保存ダイアログの応答 (nullopt = キャンセル)
     int saveDialogCount = 0;
     std::wstring lastDefaultName;
+    std::optional<size_t> menuChoice;  // メニューの応答 (nullopt = キャンセル)
+    int menuCount = 0;
+    std::vector<std::wstring> lastMenuItems;
+    std::optional<std::wstring> textInput;  // テキスト入力の応答 (nullopt = キャンセル)
 };
 
 class FakeFileSystem final : public IFileSystem {
@@ -521,6 +533,35 @@ public:
     std::filesystem::path lastPath;
 };
 
+// 指定サイズの不透明単色 overlay を返すテスト用ラスタライザ
+class FakeAnnotationRasterizer final : public IAnnotationRasterizer {
+public:
+    AnnotationOverlay rasterize(const AnnotationSpec& spec) override {
+        ++rasterizeCount;
+        lastSpec = spec;
+        if (!ok) return {};
+        auto image = std::make_shared<DecodedImage>();
+        image->width = overlayWidth;
+        image->height = overlayHeight;
+        image->pixels.resize(static_cast<size_t>(overlayWidth) * overlayHeight * 4);
+        for (size_t i = 0; i < image->pixels.size(); i += 4) {
+            image->pixels[i] = 0;        // B
+            image->pixels[i + 1] = 0;    // G
+            image->pixels[i + 2] = 255;  // R
+            image->pixels[i + 3] = 255;  // A
+        }
+        return {std::move(image), overlayX, overlayY};
+    }
+
+    bool ok = true;
+    int rasterizeCount = 0;
+    uint32_t overlayWidth = 1;
+    uint32_t overlayHeight = 1;
+    int overlayX = 0;
+    int overlayY = 0;
+    AnnotationSpec lastSpec;
+};
+
 void testAppClipboard() {
     FakeDecoder decoder;
     ImageCache cache(decoder);
@@ -528,7 +569,8 @@ void testAppClipboard() {
     FakeFileSystem fileSystem;
     FakeClipboard clipboard;
     FakeEncoder encoder;
-    App app(host, fileSystem, cache, clipboard, encoder);
+    FakeAnnotationRasterizer rasterizer;
+    App app(host, fileSystem, cache, clipboard, encoder, rasterizer);
 
     // 画像を開いていない状態では何もコピーされない
     app.execute(Command::CopyImage);
@@ -570,7 +612,8 @@ void testAppStatusBar() {
     FakeFileSystem fileSystem;
     FakeClipboard clipboard;
     FakeEncoder encoder;
-    App app(host, fileSystem, cache, clipboard, encoder);
+    FakeAnnotationRasterizer rasterizer;
+    App app(host, fileSystem, cache, clipboard, encoder, rasterizer);
     app.onResize(800, 600);
 
     // 画像なし: バーは表示されるが左右とも空
@@ -639,7 +682,8 @@ void testAppPasteSave() {
     FakeFileSystem fileSystem;
     FakeClipboard clipboard;
     FakeEncoder encoder;
-    App app(host, fileSystem, cache, clipboard, encoder);
+    FakeAnnotationRasterizer rasterizer;
+    App app(host, fileSystem, cache, clipboard, encoder, rasterizer);
     app.onResize(800, 600);
 
     // 画像なしでの保存: ダイアログは開かずメッセージ
@@ -733,7 +777,8 @@ void testAppSidebar() {
     FakeFileSystem fileSystem;
     FakeClipboard clipboard;
     FakeEncoder encoder;
-    App app(host, fileSystem, cache, clipboard, encoder);
+    FakeAnnotationRasterizer rasterizer;
+    App app(host, fileSystem, cache, clipboard, encoder, rasterizer);
     app.onResize(800, 600);
 
     // 既定では非表示
@@ -842,6 +887,192 @@ void testAppSidebar() {
     CHECK(nearly(sb.width, 300));
 }
 
+void testEditFunctions() {
+    // 4x2、B チャンネル = 通し番号*10 の画像
+    DecodedImage src;
+    src.width = 4;
+    src.height = 2;
+    src.pixels.resize(4 * 2 * 4);
+    for (uint32_t i = 0; i < 8; ++i) {
+        const uint8_t v = static_cast<uint8_t>(i * 10);
+        src.pixels[i * 4 + 0] = v;
+        src.pixels[i * 4 + 1] = static_cast<uint8_t>(v + 1);
+        src.pixels[i * 4 + 2] = static_cast<uint8_t>(v + 2);
+        src.pixels[i * 4 + 3] = 255;
+    }
+
+    // 中央 2x2 の切り出し
+    const auto cropped = cropImage(src, {1, 0, 2, 2});
+    CHECK(cropped && cropped->width == 2 && cropped->height == 2);
+    CHECK(cropped->pixels[0] == 10);      // (0,0) = 元 (1,0)
+    CHECK(cropped->pixels[1 * 4] == 20);  // (1,0) = 元 (2,0)
+    CHECK(cropped->pixels[2 * 4] == 50);  // (0,1) = 元 (1,1)
+
+    // 画像外へはみ出す指定はクランプされる
+    const auto clamped = cropImage(src, {-5, -5, 100, 100});
+    CHECK(clamped && clamped->width == 4 && clamped->height == 2);
+    CHECK(clamped->pixels == src.pixels);
+
+    // 有効領域が残らなければ nullptr
+    CHECK(cropImage(src, {4, 0, 2, 2}) == nullptr);
+    CHECK(cropImage(src, {1, 1, 0, 0}) == nullptr);
+
+    // 半透明 (a=128) の事前乗算 over 合成
+    DecodedImage dst;
+    dst.width = 2;
+    dst.height = 2;
+    dst.pixels.assign(2 * 2 * 4, 100);
+    for (int i = 0; i < 4; ++i) dst.pixels[i * 4 + 3] = 255;
+    DecodedImage overlay;
+    overlay.width = 1;
+    overlay.height = 1;
+    overlay.pixels = {0, 0, 128, 128};  // 事前乗算済みの半透明赤
+    blendOverlay(dst, overlay, 1, 0);
+    CHECK(dst.pixels[1 * 4 + 0] == 50);   // B: 0 + 100*127/255
+    CHECK(dst.pixels[1 * 4 + 2] == 178);  // R: 128 + 100*127/255
+    CHECK(dst.pixels[1 * 4 + 3] == 255);  // A: 128 + 255*127/255
+    CHECK(dst.pixels[0] == 100);          // (0,0) は変化しない
+
+    // 不透明 overlay は上書き。はみ出しはクリップされる
+    DecodedImage red;
+    red.width = 2;
+    red.height = 2;
+    red.pixels.resize(2 * 2 * 4);
+    for (int i = 0; i < 4; ++i) {
+        red.pixels[i * 4 + 2] = 255;
+        red.pixels[i * 4 + 3] = 255;
+    }
+    blendOverlay(dst, red, -1, -1);  // overlay の右下 1 ピクセルだけが (0,0) に載る
+    CHECK(dst.pixels[2] == 255);              // (0,0) は赤
+    CHECK(dst.pixels[(1 * 2 + 1) * 4] == 100);  // (1,1) は変化しない
+}
+
+void testAppEdit() {
+    FakeDecoder decoder;
+    ImageCache cache(decoder);
+    FakeHost host;
+    FakeFileSystem fileSystem;
+    FakeClipboard clipboard;
+    FakeEncoder encoder;
+    FakeAnnotationRasterizer rasterizer;
+    App app(host, fileSystem, cache, clipboard, encoder, rasterizer);
+    app.onResize(800, 600);
+
+    // 画像がないときは選択を開始しない
+    app.onRightDragStart({400, 300});
+    CHECK(!app.selection().visible);
+    app.onRightDragEnd({500, 400});
+    CHECK(host.menuCount == 0);
+
+    // 8x8 の不透明青画像を貼り付けて編集対象にする。
+    // ビューポート 800x574 の中央に等倍表示され、画像左上はスクリーン (396, 283)
+    auto source = std::make_shared<DecodedImage>();
+    source->width = 8;
+    source->height = 8;
+    source->pixels.resize(8 * 8 * 4);
+    for (size_t i = 0; i < source->pixels.size(); i += 4) {
+        source->pixels[i] = 255;      // B
+        source->pixels[i + 3] = 255;  // A
+    }
+    clipboard.pasteImage = source;
+    app.execute(Command::PasteImage);
+    CHECK(app.currentImage() && app.currentImage()->width == 8);
+
+    // 閾値未満の右ドラッグ(ただの右クリック)は無視
+    app.onRightDragStart({400, 300});
+    app.onRightDragEnd({402, 301});
+    CHECK(host.menuCount == 0);
+
+    // ドラッグ中はラバーバンドが出て、Escape で解除できる
+    app.onRightDragStart({396, 283});
+    app.onRightDragMove({400, 287});
+    const SelectionView sel = app.selection();
+    CHECK(sel.visible);
+    CHECK(nearly(sel.p1.x, 396) && nearly(sel.p1.y, 283));
+    CHECK(nearly(sel.p2.x, 400) && nearly(sel.p2.y, 287));
+    app.execute(Command::Escape);
+    CHECK(!app.selection().visible);
+
+    // メニューをキャンセルすると何も起きない
+    host.menuChoice = std::nullopt;
+    app.onRightDragStart({396, 283});
+    app.onRightDragEnd({400, 287});
+    CHECK(host.menuCount == 1);
+    CHECK(host.lastMenuItems.size() == 6);
+    CHECK(app.currentImage()->width == 8);
+    CHECK(rasterizer.rasterizeCount == 0);
+
+    // トリミング: 画像座標 (0,0)-(4,4) → 4x4
+    host.menuChoice = 0;
+    app.onRightDragStart({396, 283});
+    app.onRightDragEnd({400, 287});
+    CHECK(app.currentImage()->width == 4 && app.currentImage()->height == 4);
+    CHECK(app.statusBar().leftText == L"4 x 4 px");
+    CHECK(host.lastTitle.find(L"(編集済み)") != std::wstring::npos);
+    CHECK(!app.selection().visible);
+
+    // Undo で元に戻る。履歴が空ならメッセージ
+    app.execute(Command::Undo);
+    CHECK(app.currentImage()->width == 8);
+    CHECK(host.lastTitle.find(L"(編集済み)") == std::wstring::npos);
+    app.execute(Command::Undo);
+    CHECK(app.statusBar().leftText == L"取り消す編集はありません");
+    app.onTimer();
+
+    // 矩形: ラスタライズ結果 (2x2 赤) が (1,1) へ合成される
+    host.menuChoice = 1;
+    rasterizer.overlayWidth = 2;
+    rasterizer.overlayHeight = 2;
+    rasterizer.overlayX = 1;
+    rasterizer.overlayY = 1;
+    app.onRightDragStart({396, 283});
+    app.onRightDragEnd({400, 287});
+    CHECK(rasterizer.rasterizeCount == 1);
+    CHECK(rasterizer.lastSpec.kind == AnnotationSpec::Kind::Rect);
+    CHECK(nearly(rasterizer.lastSpec.p1.x, 0) && nearly(rasterizer.lastSpec.p2.x, 4));
+    CHECK(nearly(rasterizer.lastSpec.strokeWidth, 3));  // 等倍表示なので画面基準の値のまま
+    CHECK(rasterizer.lastSpec.colorRGB == 0xFF3B30);
+    {
+        const DecodedImage& edited = *app.currentImage();
+        CHECK(edited.width == 8);
+        CHECK(edited.pixels[(1 * 8 + 1) * 4 + 2] == 255);  // (1,1) は赤
+        CHECK(edited.pixels[(1 * 8 + 1) * 4 + 0] == 0);
+        CHECK(edited.pixels[2] == 0);  // (0,0) は青のまま
+    }
+    // 貼り付け元(キャッシュ相当)の画像は書き換えられていない
+    CHECK(source->pixels[(1 * 8 + 1) * 4 + 2] == 0);
+
+    // テキスト: 入力キャンセルなら何もしない。入力があれば合成される
+    host.menuChoice = 5;
+    host.textInput = std::nullopt;
+    app.onRightDragStart({396, 283});
+    app.onRightDragEnd({400, 287});
+    CHECK(rasterizer.rasterizeCount == 1);
+    host.textInput = L"メモ";
+    app.onRightDragStart({396, 283});
+    app.onRightDragEnd({400, 287});
+    CHECK(rasterizer.rasterizeCount == 2);
+    CHECK(rasterizer.lastSpec.kind == AnnotationSpec::Kind::Text);
+    CHECK(rasterizer.lastSpec.text == L"メモ");
+
+    // ラスタライズ失敗はメッセージのみ
+    rasterizer.ok = false;
+    host.menuChoice = 3;  // 矢印
+    app.onRightDragStart({396, 283});
+    app.onRightDragEnd({400, 287});
+    CHECK(app.statusBar().leftText == L"描画に失敗しました");
+    rasterizer.ok = true;
+    app.onTimer();
+
+    // 画像移動で編集は破棄される(一覧が空なので表示もなくなる)
+    app.execute(Command::NextImage);
+    CHECK(app.statusBar().leftText == L"編集を破棄しました");
+    CHECK(app.currentImage() == nullptr);
+    CHECK(host.lastTitle == L"Blinker");
+    app.execute(Command::Undo);
+    CHECK(app.statusBar().leftText == L"取り消す編集はありません");
+}
+
 } // namespace
 
 int main() {
@@ -858,6 +1089,8 @@ int main() {
     testAppStatusBar();
     testAppPasteSave();
     testAppSidebar();
+    testEditFunctions();
+    testAppEdit();
 
     if (g_failures == 0) {
         std::cout << "all tests passed\n";

@@ -30,6 +30,9 @@ public:
     std::optional<std::filesystem::path> showOpenDialog() override;
     std::optional<std::filesystem::path> showSaveDialog(
         const std::wstring& defaultFileName) override;
+    std::optional<size_t> showContextMenu(const std::vector<std::wstring>& items,
+                                          Point screenPos) override;
+    std::optional<std::wstring> showTextInput() override;
     void startTimer(unsigned milliseconds) override;
     void quit() override;
 
@@ -49,6 +52,7 @@ private:
     WINDOWPLACEMENT savedPlacement_{sizeof(WINDOWPLACEMENT)};
     LONG savedStyle_ = 0;
     bool dragging_ = false;
+    bool rightDragging_ = false;  // 編集領域の選択中(右ボタン)
     POINT lastDragPos_{};
     bool trackingMouseLeave_ = false;
 };

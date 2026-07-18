@@ -10,6 +10,7 @@ add_library(blinker_core STATIC
     src/core/app.cpp
     src/core/config.cpp
     src/core/dib.cpp
+    src/core/edit.cpp
     src/core/image_cache.cpp
     src/core/image_list.cpp
     src/core/keymap.cpp
@@ -25,6 +26,7 @@ if(WIN32)
     add_executable(blinker WIN32
         src/win/main_win.cpp
         src/win/window_win.cpp
+        src/win/annotation_d2d.cpp
         src/win/renderer_d2d.cpp
         src/win/decoder_wic.cpp
         src/win/encoder_wic.cpp
