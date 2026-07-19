@@ -1,6 +1,6 @@
 # Blinker — 開発ガイド
 
-軽量・高速起動の画像ビューア。C++20。Windows版は Win32 API / Direct2D / WIC で外部ライブラリ依存ゼロの単一exe(約330KB)。Linux/macOS版は SDL3 + stb(third_party/にベンダリング)の `src/sdl` バックエンド(閲覧専用、編集は未対応)。
+軽量・高速起動の画像ビューア。C++20。Windows版は Win32 API / Direct2D / WIC で外部ライブラリ依存ゼロの単一exe(約430KB)。Linux/macOS版は SDL3 + stb(third_party/にベンダリング)の `src/sdl` バックエンド(閲覧専用、編集は未対応)。
 
 設計の詳細(層構造・コンポーネントの責務・データフロー・起動シーケンス)の正は
 [docs/architecture.md](docs/architecture.md)。ここにはビルド方法と、コードを触るたびに必要になる
