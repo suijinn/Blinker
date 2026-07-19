@@ -21,6 +21,7 @@
 #include "core/pixel_convert.h"
 #include "core/str_util.h"
 #include "core/unicode.h"
+#include "core/version.h"
 #include "core/viewport.h"
 
 namespace {
@@ -714,6 +715,10 @@ void testAppStatusBar() {
     host.fullscreen = true;
     CHECK(!app.statusBar().visible);
     host.fullscreen = false;
+
+    // タイトルバーには常にバージョンと git SHA-1 が付く
+    const std::string appName = std::format("Blinker v{} ({})", kAppVersion, kAppGitSha);
+    CHECK(host.lastTitle.ends_with(" - " + appName));
 }
 
 void testAppPasteSave() {
@@ -1467,7 +1472,7 @@ void testAppEdit() {
     CHECK(app.statusBar().leftText == "編集を破棄しました");
     CHECK(app.currentImage() == nullptr);
     CHECK(app.annotations().specs->empty());
-    CHECK(host.lastTitle == "Blinker");
+    CHECK(host.lastTitle == std::format("Blinker v{} ({})", kAppVersion, kAppGitSha));
     app.execute(Command::Undo);
     CHECK(app.statusBar().leftText == "取り消す編集はありません");
 }

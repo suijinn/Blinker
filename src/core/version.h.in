@@ -1,0 +1,10 @@
+#pragma once
+
+// CMake の configure_file で生成される(手編集しないこと)。CMakeLists.txt 参照。
+
+namespace blinker {
+
+inline constexpr const char* kAppVersion = "@PROJECT_VERSION@";
+inline constexpr const char* kAppGitSha = "@BLINKER_GIT_SHA@";
+
+} // namespace blinker

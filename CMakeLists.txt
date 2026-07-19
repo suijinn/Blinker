@@ -5,6 +5,24 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+# バージョン表示用の git SHA-1(短縮形)。取得できない場合は "unknown"
+set(BLINKER_GIT_SHA "unknown")
+find_package(Git QUIET)
+if(Git_FOUND)
+    execute_process(
+        COMMAND ${GIT_EXECUTABLE} rev-parse --short=8 HEAD
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+        OUTPUT_VARIABLE BLINKER_GIT_SHA_RESULT
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        ERROR_QUIET
+        RESULT_VARIABLE BLINKER_GIT_RESULT)
+    if(BLINKER_GIT_RESULT EQUAL 0 AND NOT BLINKER_GIT_SHA_RESULT STREQUAL "")
+        set(BLINKER_GIT_SHA "${BLINKER_GIT_SHA_RESULT}")
+    endif()
+endif()
+configure_file(src/core/version.h.in
+    ${CMAKE_BINARY_DIR}/generated/core/version.h @ONLY)
+
 # core: プラットフォーム非依存層。単体テストからもリンクする
 add_library(blinker_core STATIC
     src/core/annotation_edit.cpp
@@ -19,7 +37,7 @@ add_library(blinker_core STATIC
     src/core/unicode.cpp
     src/core/viewport.cpp
 )
-target_include_directories(blinker_core PUBLIC src)
+target_include_directories(blinker_core PUBLIC src ${CMAKE_BINARY_DIR}/generated)
 if(MSVC)
     target_compile_options(blinker_core PUBLIC /W4 /utf-8 /permissive-)
 else()
