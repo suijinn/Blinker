@@ -50,6 +50,11 @@ if(NOT WIN32)
 endif()
 
 if(WIN32)
+    # FileVersion/ProductVersion に PROJECT_VERSION と git SHA-1 を埋め込む
+    set(BLINKER_ICON_PATH "${CMAKE_SOURCE_DIR}/assets/blinker.ico")
+    configure_file(src/win/blinker.rc.in
+        ${CMAKE_BINARY_DIR}/generated/win/blinker.rc @ONLY)
+
     add_executable(blinker WIN32
         src/win/main_win.cpp
         src/win/window_win.cpp
@@ -61,7 +66,7 @@ if(WIN32)
         src/win/wic_factory.cpp
         src/win/file_system_win.cpp
         src/win/clipboard_win.cpp
-        src/win/blinker.rc
+        ${CMAKE_BINARY_DIR}/generated/win/blinker.rc
         src/win/blinker.manifest
     )
     target_compile_definitions(blinker PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
