@@ -1,6 +1,10 @@
 #include "win/renderer_d2d.h"
 
 #include <algorithm>
+#include <array>
+
+#include "core/annotation_edit.h"
+#include "win/annotation_draw.h"
 
 namespace blinker {
 namespace {
@@ -24,6 +28,14 @@ RendererD2D::RendererD2D(HWND hwnd) : hwnd_(hwnd) {
         dwriteFactory_->CreateTextFormat(L"Segoe UI", nullptr, DWRITE_FONT_WEIGHT_NORMAL,
                                          DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
                                          13.0f, L"ja-jp", &textFormat_);
+    }
+    if (factory_) {
+        // 選択枠用の破線。デバイス非依存リソースなので target_ 再作成の影響を受けない
+        factory_->CreateStrokeStyle(
+            D2D1::StrokeStyleProperties(D2D1_CAP_STYLE_FLAT, D2D1_CAP_STYLE_FLAT,
+                                        D2D1_CAP_STYLE_FLAT, D2D1_LINE_JOIN_MITER, 10.0f,
+                                        D2D1_DASH_STYLE_DASH, 0.0f),
+            nullptr, 0, &dashStroke_);
     }
     if (textFormat_) {
         textFormat_->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
@@ -89,8 +101,8 @@ ID2D1Bitmap* RendererD2D::bitmapFor(const std::shared_ptr<const DecodedImage>& i
 
 void RendererD2D::render(const std::shared_ptr<const DecodedImage>& image,
                          const Matrix3x2& imageToScreen, float zoom, uint32_t backgroundRGB,
-                         const SelectionView& selection, const SidebarView& sidebar,
-                         const StatusBarView& statusBar) {
+                         const AnnotationsView& annotations, const SelectionView& selection,
+                         const SidebarView& sidebar, const StatusBarView& statusBar) {
     if (!ensureTarget()) return;
     target_->BeginDraw();
     target_->Clear(colorFromRGB(backgroundRGB));
@@ -108,12 +120,57 @@ void RendererD2D::render(const std::shared_ptr<const DecodedImage>& image,
             target_->SetTransform(D2D1::Matrix3x2F::Identity());
         }
     }
+    drawAnnotations(annotations, imageToScreen);  // 注釈オブジェクトは画像の上に重ねる
     drawSelection(selection);  // 編集領域のラバーバンドは画像の上に重ねる
     drawSidebar(sidebar);      // 画像の後に描き、ズーム時のはみ出しを覆う(不透明)
     drawStatusBar(statusBar);
     if (target_->EndDraw() == D2DERR_RECREATE_TARGET) {
         discardTarget();  // 次回の render で作り直す
     }
+}
+
+void RendererD2D::drawAnnotations(const AnnotationsView& annotations,
+                                  const Matrix3x2& imageToScreen) {
+    if (!annotations.specs || annotations.specs->empty() || !brush_) return;
+    const auto toD2D = [](const Matrix3x2& m) {
+        return D2D1::Matrix3x2F(m.m11, m.m12, m.m21, m.m22, m.dx, m.dy);
+    };
+    // 画像座標のまま描き、変換で拡縮する(線幅・文字も拡縮され焼き込み結果と一致する)
+    for (const AnnotationSpec& spec : *annotations.specs) {
+        D2D1::Matrix3x2F transform = toD2D(imageToScreen);
+        if (spec.angleDeg != 0) {
+            const Point c = annotationCenter(spec);
+            transform =
+                D2D1::Matrix3x2F::Rotation(spec.angleDeg, D2D1::Point2F(c.x, c.y)) * transform;
+        }
+        target_->SetTransform(transform);
+        brush_->SetColor(colorFromRGB(spec.colorRGB));
+        drawAnnotationShape(target_.Get(), factory_.Get(), dwriteFactory_.Get(), spec,
+                            brush_.Get());
+    }
+    target_->SetTransform(D2D1::Matrix3x2F::Identity());
+
+    // 選択中オブジェクトの破線枠と回転ハンドル(スクリーン座標で等幅に描く)
+    if (!annotations.selected || *annotations.selected >= annotations.specs->size()) return;
+    const AnnotationSpec& spec = (*annotations.specs)[*annotations.selected];
+    const std::array<Point, 4> corners = rotatedCorners(spec);
+    std::array<D2D1_POINT_2F, 4> pts;
+    for (size_t i = 0; i < 4; ++i) {
+        const Point s = imageToScreen.apply(corners[i]);
+        pts[i] = D2D1::Point2F(s.x, s.y);
+    }
+    brush_->SetColor(colorFromRGB(annotations.selectionRGB));
+    for (size_t i = 0; i < 4; ++i) {
+        target_->DrawLine(pts[i], pts[(i + 1) % 4], brush_.Get(), 1.0f, dashStroke_.Get());
+    }
+    const Point handle =
+        rotationHandlePos(spec, imageToScreen, annotations.handleOffsetPx);
+    const D2D1_POINT_2F mid{(pts[0].x + pts[1].x) * 0.5f, (pts[0].y + pts[1].y) * 0.5f};
+    target_->DrawLine(mid, D2D1::Point2F(handle.x, handle.y), brush_.Get(), 1.0f,
+                      dashStroke_.Get());
+    target_->FillEllipse(D2D1::Ellipse(D2D1::Point2F(handle.x, handle.y),
+                                       annotations.handleRadiusPx, annotations.handleRadiusPx),
+                         brush_.Get());
 }
 
 void RendererD2D::drawSelection(const SelectionView& selection) {

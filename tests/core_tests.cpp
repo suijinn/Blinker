@@ -9,6 +9,7 @@
 #include <iostream>
 #include <mutex>
 
+#include "core/annotation_edit.h"
 #include "core/app.h"
 #include "core/config.h"
 #include "core/dib.h"
@@ -483,7 +484,10 @@ public:
         }
         return menuChoice;
     }
-    std::optional<std::wstring> showTextInput() override { return textInput; }
+    std::optional<std::wstring> showTextInput(const std::wstring& initial) override {
+        lastTextInitial = initial;
+        return textInput;
+    }
     std::optional<uint32_t> showColorPicker(uint32_t initialRGB) override {
         ++colorPickerCount;
         lastColorPickerInitial = initialRGB;
@@ -503,6 +507,7 @@ public:
     int menuCount = 0;
     std::vector<MenuItem> lastMenuItems;
     std::optional<std::wstring> textInput;  // テキスト入力の応答 (nullopt = キャンセル)
+    std::wstring lastTextInitial;           // テキスト入力ダイアログに渡された初期値
     std::optional<uint32_t> colorChoice;    // 色ダイアログの応答 (nullopt = キャンセル)
     uint32_t lastColorPickerInitial = 0;
     int colorPickerCount = 0;
@@ -536,6 +541,7 @@ public:
     bool setImage(const DecodedImage& image) override {
         ++imageCount;
         lastWidth = image.width;
+        lastPixels = image.pixels;
         return true;
     }
     bool setText(const std::wstring& text) override {
@@ -546,6 +552,7 @@ public:
 
     int imageCount = 0;
     uint32_t lastWidth = 0;
+    std::vector<uint8_t> lastPixels;
     std::wstring lastText;
     std::shared_ptr<DecodedImage> pasteImage;  // getImage の応答 (nullptr = 画像なし)
 };
@@ -979,6 +986,217 @@ void testEditFunctions() {
     CHECK(dst.pixels[(1 * 2 + 1) * 4] == 100);  // (1,1) は変化しない
 }
 
+void testAnnotationGeometry() {
+    AnnotationSpec rect;
+    rect.kind = AnnotationSpec::Kind::Rect;
+    rect.p1 = {10, 20};
+    rect.p2 = {0, 0};  // 順不同でも正規化される
+    rect.strokeWidth = 2;
+
+    const BoundsF b = annotationBounds(rect);
+    CHECK(nearly(b.minX, 0) && nearly(b.minY, 0) && nearly(b.maxX, 10) && nearly(b.maxY, 20));
+    const Point c = annotationCenter(rect);
+    CHECK(nearly(c.x, 5) && nearly(c.y, 10));
+
+    // 矩形: 輪郭の近傍のみヒット(内部は外れてパンに使える)。reach = 太さ/2 + 許容 = 2
+    CHECK(hitTestAnnotation(rect, {0, 0}, 1));       // 角
+    CHECK(hitTestAnnotation(rect, {-1.5f, 10}, 1));  // 左辺のすぐ外側
+    CHECK(!hitTestAnnotation(rect, {5, 10}, 1));     // 中心は外れ
+    CHECK(!hitTestAnnotation(rect, {-3, 10}, 1));    // 届かない距離
+
+    // 90° 回転: 幅10x高20 が中心 (5,10) 周りで横長になる
+    rect.angleDeg = 90;
+    CHECK(hitTestAnnotation(rect, {c.x + 10, c.y}, 1));   // 回転後の右辺(元の下辺)
+    CHECK(!hitTestAnnotation(rect, {c.x, c.y + 10}, 1));  // 回転後の高さは半分の5まで
+
+    // rotatedCorners: 元の TL (0,0) は中心周り 90° 回転で (15,5) へ
+    const auto corners = rotatedCorners(rect);
+    CHECK(nearly(corners[0].x, 15) && nearly(corners[0].y, 5));
+    CHECK(nearly(corners[2].x, -5) && nearly(corners[2].y, 15));  // 元の BR (10,20)
+
+    // 楕円: 輪郭上のみ
+    AnnotationSpec ellipse;
+    ellipse.kind = AnnotationSpec::Kind::Ellipse;
+    ellipse.p1 = {0, 0};
+    ellipse.p2 = {20, 10};
+    ellipse.strokeWidth = 2;
+    CHECK(hitTestAnnotation(ellipse, {20, 5}, 1));   // 右端の輪郭
+    CHECK(hitTestAnnotation(ellipse, {10, 0}, 1));   // 上端の輪郭
+    CHECK(!hitTestAnnotation(ellipse, {10, 5}, 1));  // 中心は外れ
+
+    // 直線・矢印: 線分への距離で判定
+    AnnotationSpec line;
+    line.kind = AnnotationSpec::Kind::Line;
+    line.p1 = {0, 0};
+    line.p2 = {10, 0};
+    line.strokeWidth = 2;
+    CHECK(hitTestAnnotation(line, {5, 1.5f}, 1));
+    CHECK(!hitTestAnnotation(line, {5, 4}, 1));
+    CHECK(!hitTestAnnotation(line, {14, 0}, 1));  // 端点の先
+
+    // テキスト: バウンディングボックス内部
+    AnnotationSpec text;
+    text.kind = AnnotationSpec::Kind::Text;
+    text.p1 = {0, 0};
+    text.p2 = {30, 10};
+    CHECK(hitTestAnnotation(text, {15, 5}, 1));
+    CHECK(!hitTestAnnotation(text, {15, 12}, 1));
+
+    // 重なりは最前面(末尾)が勝つ
+    const std::vector<AnnotationSpec> specs{text, line};
+    CHECK(hitTestAnnotations(specs, {5, 0.5f}, 1) == std::optional<size_t>(1));
+    CHECK(hitTestAnnotations(specs, {25, 8}, 1) == std::optional<size_t>(0));
+    CHECK(!hitTestAnnotations(specs, {100, 100}, 1));
+
+    AnnotationSpec moved = line;
+    translateAnnotation(moved, 5, 7);
+    CHECK(nearly(moved.p1.x, 5) && nearly(moved.p1.y, 7) && nearly(moved.p2.x, 15));
+
+    // 回転ハンドル: 無回転なら上辺中央の真上
+    AnnotationSpec plain;
+    plain.p1 = {0, 0};
+    plain.p2 = {10, 10};
+    const Point handle = rotationHandlePos(plain, Matrix3x2::identity(), 20);
+    CHECK(nearly(handle.x, 5) && nearly(handle.y, -20));
+
+    CHECK(nearly(angleDegFrom({0, 0}, {10, 0}), 0));
+    CHECK(nearly(angleDegFrom({0, 0}, {0, 10}), 90));  // Y 下向きで時計回り
+    CHECK(nearly(snapAngleDeg(47, 15), 45));
+    CHECK(nearly(snapAngleDeg(83, 15), 90));
+    CHECK(nearly(normalizeAngleDeg(-90), 270));
+    CHECK(nearly(normalizeAngleDeg(370), 10));
+}
+
+void testAppAnnotationObjects() {
+    FakeDecoder decoder;
+    ImageCache cache(decoder);
+    FakeHost host;
+    FakeFileSystem fileSystem;
+    FakeClipboard clipboard;
+    FakeEncoder encoder;
+    FakeAnnotationRasterizer rasterizer;
+    App app(host, fileSystem, cache, clipboard, encoder, rasterizer);
+    app.onResize(800, 600);
+
+    // 8x8 画像を貼り付け、矩形注釈 (0,0)-(4,4) を追加(画像左上はスクリーン (396,283))
+    auto source = std::make_shared<DecodedImage>();
+    source->width = 8;
+    source->height = 8;
+    source->pixels.resize(8 * 8 * 4);
+    clipboard.pasteImage = source;
+    app.execute(Command::PasteImage);
+    host.menuChoice = 1;  // 矩形
+    app.onRightDragStart({396, 283});
+    app.onRightDragEnd({400, 287});
+    CHECK(app.annotations().specs->size() == 1);
+    CHECK(app.annotations().selected.has_value());
+
+    // Escape はまず選択解除に使われる
+    app.execute(Command::Escape);
+    CHECK(!app.annotations().selected.has_value());
+
+    // 注釈の輪郭をクリックすると選択して移動ドラッグが始まる(クリックを消費しパンしない)
+    CHECK(app.onMouseDown({396, 283}));  // 画像 (0,0) = 矩形の角
+    CHECK(app.annotations().selected == std::optional<size_t>(0));
+    app.onMouseMove({398, 285});  // +2px 移動
+    {
+        const AnnotationSpec& spec = app.annotations().specs->front();
+        CHECK(nearly(spec.p1.x, 2) && nearly(spec.p1.y, 2));
+        CHECK(nearly(spec.p2.x, 6) && nearly(spec.p2.y, 6));
+    }
+    app.onMouseMove({397, 284});  // ドラッグ継続(+1px に戻す)
+    CHECK(nearly(app.annotations().specs->front().p1.x, 1));
+    app.onMouseUp();
+
+    // ドラッグ1回の undo は1段。取り消しで元の位置に戻り選択は解除される
+    app.execute(Command::Undo);
+    CHECK(nearly(app.annotations().specs->front().p1.x, 0));
+    CHECK(!app.annotations().selected.has_value());
+
+    // 何もない場所のクリックは消費しない(選択解除してパンに回る)
+    CHECK(app.onMouseDown({396, 283}));
+    app.onMouseUp();
+    CHECK(!app.onMouseDown({600, 450}));
+    CHECK(!app.annotations().selected.has_value());
+    app.onMouseUp();
+
+    // 回転ハンドル(枠上辺中央の 20px 上)のドラッグで回転する
+    CHECK(app.onMouseDown({396, 283}));  // 選択し直す
+    app.onMouseUp();
+    CHECK(app.onMouseDown({398, 263}));  // 中心 (398,285)、ハンドル (398,263)
+    app.onMouseMove({420, 285});         // 中心の真右 → 90°
+    CHECK(nearly(app.annotations().specs->front().angleDeg, 90));
+    app.onMouseMove({421, 287}, true);   // Shift で 15° 単位にスナップ
+    CHECK(nearly(std::fmod(app.annotations().specs->front().angleDeg, 15.0f), 0));
+    app.onMouseUp();
+    app.execute(Command::Undo);
+    CHECK(nearly(app.annotations().specs->front().angleDeg, 0));
+
+    // 右クリック(ドラッグ閾値未満)でオブジェクトメニュー。末端 index (図形):
+    // 0 削除, 1-8 回転 {0,15,30,45,90,135,180,270}, 9-15 太さ {1,2,3,5,8,12,20}, 16 色
+    host.menuChoice = 5;  // 90°
+    app.onRightDragStart({396, 283});
+    app.onRightDragEnd({397, 283});
+    CHECK(countMenuLeaves(host.lastMenuItems) == 17);
+    CHECK(nearly(app.annotations().specs->front().angleDeg, 90));
+
+    host.menuChoice = 13;  // 太さ 8px
+    app.onRightDragStart({396, 283});
+    app.onRightDragEnd({396, 283});
+    CHECK(nearly(app.annotations().specs->front().strokeWidth, 8));
+
+    host.colorChoice = 0x123456;
+    host.menuChoice = 16;  // 色の変更
+    app.onRightDragStart({396, 283});
+    app.onRightDragEnd({396, 283});
+    CHECK(app.annotations().specs->front().colorRGB == 0x123456);
+
+    // テキスト注釈を追加し、ダブルクリックで初期値入りダイアログから再編集する
+    host.menuChoice = 5;  // テキスト
+    host.textInput = L"元のテキスト";
+    rasterizer.overlayWidth = 24;
+    rasterizer.overlayHeight = 12;
+    const int measureCount = rasterizer.rasterizeCount;
+    app.onRightDragStart({401, 286});  // 画像 (5,3)
+    app.onRightDragEnd({404, 290});    // 閾値以上のドラッグで編集メニューを出す
+    CHECK(rasterizer.rasterizeCount == measureCount + 1);
+    CHECK(app.annotations().specs->size() == 2);
+    host.textInput = L"更新後";
+    CHECK(app.onDoubleClick({402, 288}));
+    CHECK(host.lastTextInitial == L"元のテキスト");
+    CHECK(app.annotations().specs->back().text == L"更新後");
+    CHECK(rasterizer.rasterizeCount == measureCount + 2);  // 再実測
+    CHECK(!app.onDoubleClick({600, 450}));  // テキスト以外の場所では何もしない
+
+    // Delete で選択中の注釈を削除。選択なしはメッセージのみ。undo で復活する
+    app.execute(Command::DeleteAnnotation);  // ダブルクリックで選択済み
+    CHECK(app.annotations().specs->size() == 1);
+    app.execute(Command::DeleteAnnotation);
+    CHECK(app.statusBar().leftText == L"削除する注釈がありません");
+    app.onTimer();
+    app.execute(Command::Undo);
+    CHECK(app.annotations().specs->size() == 2);
+    CHECK(app.annotations().specs->back().text == L"更新後");
+
+    // トリミング後も注釈はオブジェクトのまま維持され、座標が平行移動する
+    host.menuChoice = 0;  // トリミング
+    app.onRightDragStart({398, 285});  // 画像 (2,2)
+    app.onRightDragEnd({402, 289});    // 画像 (6,6) → 4x4 に切り出し
+    CHECK(app.currentImage()->width == 4);
+    CHECK(app.annotations().specs->size() == 2);
+    CHECK(nearly(app.annotations().specs->front().p1.x, -2));  // (0,0) → (-2,-2)
+    app.execute(Command::Undo);
+    CHECK(app.currentImage()->width == 8);
+    CHECK(nearly(app.annotations().specs->front().p1.x, 0));
+
+    // 保存は注釈を合成した画像を出力する(注釈の数だけラスタライズされる)
+    const int rasterizeBeforeSave = rasterizer.rasterizeCount;
+    host.savePath = std::filesystem::path(L"C:/out/annotated.png");
+    app.execute(Command::SaveImageAs);
+    CHECK(encoder.lastWidth == 8);
+    CHECK(rasterizer.rasterizeCount == rasterizeBeforeSave + 2);
+}
+
 void testAppEdit() {
     FakeDecoder decoder;
     ImageCache cache(decoder);
@@ -1030,8 +1248,8 @@ void testAppEdit() {
     app.onRightDragStart({396, 283});
     app.onRightDragEnd({400, 287});
     CHECK(host.menuCount == 1);
-    // 末端項目: 編集6種 + 太さ7 + 文字サイズ7 + 回転8 + 色1 = 29
-    CHECK(countMenuLeaves(host.lastMenuItems) == 29);
+    // 末端項目: 編集6種 + 太さ7 + 文字サイズ7 + 色1 = 21(回転角度はオブジェクト側へ移動)
+    CHECK(countMenuLeaves(host.lastMenuItems) == 21);
     CHECK(app.currentImage()->width == 8);
     CHECK(rasterizer.rasterizeCount == 0);
 
@@ -1052,106 +1270,124 @@ void testAppEdit() {
     CHECK(app.statusBar().leftText == L"取り消す編集はありません");
     app.onTimer();
 
-    // 矩形: ラスタライズ結果 (2x2 赤) が (1,1) へ合成される
+    // 矩形: 画像へは焼き込まず注釈オブジェクトとして追加され、追加直後は選択状態になる
     host.menuChoice = 1;
+    app.onRightDragStart({396, 283});
+    app.onRightDragEnd({400, 287});
+    CHECK(rasterizer.rasterizeCount == 0);  // 図形の追加ではラスタライズしない
+    {
+        const AnnotationsView view = app.annotations();
+        CHECK(view.specs && view.specs->size() == 1);
+        const AnnotationSpec& spec = view.specs->front();
+        CHECK(spec.kind == AnnotationSpec::Kind::Rect);
+        CHECK(nearly(spec.p1.x, 0) && nearly(spec.p2.x, 4));
+        CHECK(nearly(spec.strokeWidth, 3));  // 等倍表示なので画面基準の値のまま
+        CHECK(spec.colorRGB == 0xFF3B30);
+        CHECK(nearly(spec.angleDeg, 0));
+        CHECK(view.selected && *view.selected == 0);
+    }
+    CHECK(host.lastTitle.find(L"(編集済み)") != std::wstring::npos);
+    CHECK(app.currentImage()->pixels[(1 * 8 + 1) * 4 + 2] == 0);  // 画像自体は無変更
+
+    // コピーは注釈を合成した画像になる (2x2 赤 overlay が (1,1) へ)
     rasterizer.overlayWidth = 2;
     rasterizer.overlayHeight = 2;
     rasterizer.overlayX = 1;
     rasterizer.overlayY = 1;
-    app.onRightDragStart({396, 283});
-    app.onRightDragEnd({400, 287});
+    app.execute(Command::CopyImage);
     CHECK(rasterizer.rasterizeCount == 1);
-    CHECK(rasterizer.lastSpec.kind == AnnotationSpec::Kind::Rect);
-    CHECK(nearly(rasterizer.lastSpec.p1.x, 0) && nearly(rasterizer.lastSpec.p2.x, 4));
-    CHECK(nearly(rasterizer.lastSpec.strokeWidth, 3));  // 等倍表示なので画面基準の値のまま
-    CHECK(rasterizer.lastSpec.colorRGB == 0xFF3B30);
-    {
-        const DecodedImage& edited = *app.currentImage();
-        CHECK(edited.width == 8);
-        CHECK(edited.pixels[(1 * 8 + 1) * 4 + 2] == 255);  // (1,1) は赤
-        CHECK(edited.pixels[(1 * 8 + 1) * 4 + 0] == 0);
-        CHECK(edited.pixels[2] == 0);  // (0,0) は青のまま
-    }
-    // 貼り付け元(キャッシュ相当)の画像は書き換えられていない
+    CHECK(clipboard.lastWidth == 8);
+    CHECK(clipboard.lastPixels[(1 * 8 + 1) * 4 + 2] == 255);  // (1,1) は赤
+    CHECK(clipboard.lastPixels[2] == 0);                      // (0,0) は青のまま
+    CHECK(app.currentImage()->pixels[(1 * 8 + 1) * 4 + 2] == 0);  // 元画像は無変更
+    // 貼り付け元(キャッシュ相当)の画像も書き換えられていない
     CHECK(source->pixels[(1 * 8 + 1) * 4 + 2] == 0);
 
-    // テキスト: 入力キャンセルなら何もしない。入力があれば合成される
+    // テキスト: 入力キャンセルなら何もしない。入力があれば実測(1回のラスタライズ)して追加
     host.menuChoice = 5;
     host.textInput = std::nullopt;
     app.onRightDragStart({396, 283});
     app.onRightDragEnd({400, 287});
     CHECK(rasterizer.rasterizeCount == 1);
+    CHECK(app.annotations().specs->size() == 1);
     host.textInput = L"メモ";
+    rasterizer.overlayWidth = 24;   // 実測境界: 24-4 x 12-4 (テキスト余白 2px x 両側)
+    rasterizer.overlayHeight = 12;
     app.onRightDragStart({396, 283});
     app.onRightDragEnd({400, 287});
     CHECK(rasterizer.rasterizeCount == 2);
     CHECK(rasterizer.lastSpec.kind == AnnotationSpec::Kind::Text);
     CHECK(rasterizer.lastSpec.text == L"メモ");
-    CHECK(nearly(rasterizer.lastSpec.fontSize, 18));  // 既定値 (等倍表示)
-    CHECK(nearly(rasterizer.lastSpec.angleDeg, 0));
+    CHECK(host.lastTextInitial.empty());  // 新規追加は空の初期値
+    {
+        const AnnotationSpec& text = app.annotations().specs->back();
+        CHECK(nearly(text.fontSize, 18));  // 既定値 (等倍表示)
+        CHECK(nearly(text.p1.x, 0) && nearly(text.p1.y, 0));
+        CHECK(nearly(text.p2.x, 20) && nearly(text.p2.y, 8));  // 実測境界が p2 に入る
+    }
 
     // 設定変更を選ぶとメニューが再表示され、選択領域を保ったまま続けて編集できる。
     // 末端 index: 0-5 編集, 6-12 太さ {1,2,3,5,8,12,20}, 13-19 文字サイズ
-    // {12,14,18,24,36,48,72}, 20-27 回転 {0,15,30,45,90,135,180,270}, 28 色
+    // {12,14,18,24,36,48,72}, 20 色
     host.menuChoice = std::nullopt;
-    host.menuQueue = {10 /*太さ8px*/, 24 /*回転90°*/, 1 /*矩形*/};
+    host.menuQueue = {10 /*太さ8px*/, 1 /*矩形*/};
     app.onRightDragStart({396, 283});
     app.onRightDragEnd({400, 287});
     CHECK(host.menuQueue.empty());
-    CHECK(rasterizer.rasterizeCount == 3);
-    CHECK(nearly(rasterizer.lastSpec.strokeWidth, 8));
-    CHECK(nearly(rasterizer.lastSpec.angleDeg, 90));
+    CHECK(nearly(app.annotations().specs->back().strokeWidth, 8));
 
-    // 文字サイズ 24px + 複数行テキスト。変更済みの太さ・回転も引き継がれる
+    // 文字サイズ 24px + 複数行テキスト。変更済みの設定も引き継がれる
     host.textInput = L"1行目\n2行目";
     host.menuQueue = {16 /*文字24px*/, 5 /*テキスト*/};
     app.onRightDragStart({396, 283});
     app.onRightDragEnd({400, 287});
-    CHECK(rasterizer.rasterizeCount == 4);
-    CHECK(rasterizer.lastSpec.text == L"1行目\n2行目");
-    CHECK(nearly(rasterizer.lastSpec.fontSize, 24));
-    CHECK(nearly(rasterizer.lastSpec.angleDeg, 90));
+    CHECK(app.annotations().specs->back().text == L"1行目\n2行目");
+    CHECK(nearly(app.annotations().specs->back().fontSize, 24));
 
     // 色の変更: ダイアログの結果が以降の編集に使われる。キャンセルなら元のまま
     host.colorChoice = 0x00CC66;
-    host.menuQueue = {28 /*色*/, 4 /*直線*/};
+    host.menuQueue = {20 /*色*/, 4 /*直線*/};
     app.onRightDragStart({396, 283});
     app.onRightDragEnd({400, 287});
     CHECK(host.colorPickerCount == 1);
     CHECK(host.lastColorPickerInitial == 0xFF3B30);
-    CHECK(rasterizer.lastSpec.colorRGB == 0x00CC66);
+    CHECK(app.annotations().specs->back().colorRGB == 0x00CC66);
     host.colorChoice = std::nullopt;
-    host.menuQueue = {28 /*色 (キャンセル)*/, 4 /*直線*/};
+    host.menuQueue = {20 /*色 (キャンセル)*/, 4 /*直線*/};
     app.onRightDragStart({396, 283});
     app.onRightDragEnd({400, 287});
     CHECK(host.colorPickerCount == 2);
-    CHECK(rasterizer.lastSpec.colorRGB == 0x00CC66);
+    CHECK(app.annotations().specs->back().colorRGB == 0x00CC66);
 
     // 設定変更だけしてメニューをキャンセル → 編集は適用されず設定は残る
-    const int rasterizeCountBefore = rasterizer.rasterizeCount;
+    const size_t annotationCountBefore = app.annotations().specs->size();
     host.menuQueue = {8 /*太さ3px*/};  // 続くメニュー再表示は menuChoice = nullopt で閉じる
     app.onRightDragStart({396, 283});
     app.onRightDragEnd({400, 287});
-    CHECK(rasterizer.rasterizeCount == rasterizeCountBefore);
+    CHECK(app.annotations().specs->size() == annotationCountBefore);
     CHECK(!app.selection().visible);
     host.menuQueue = {1 /*矩形*/};
     app.onRightDragStart({396, 283});
     app.onRightDragEnd({400, 287});
-    CHECK(nearly(rasterizer.lastSpec.strokeWidth, 3));  // 3px に戻っている
+    CHECK(nearly(app.annotations().specs->back().strokeWidth, 3));  // 3px に戻っている
 
-    // ラスタライズ失敗はメッセージのみ
+    // テキストの実測(ラスタライズ)失敗はメッセージのみで追加されない
     rasterizer.ok = false;
-    host.menuChoice = 3;  // 矢印
+    host.textInput = L"失敗するテキスト";
+    host.menuChoice = 5;
+    const size_t countBeforeFail = app.annotations().specs->size();
     app.onRightDragStart({396, 283});
     app.onRightDragEnd({400, 287});
     CHECK(app.statusBar().leftText == L"描画に失敗しました");
+    CHECK(app.annotations().specs->size() == countBeforeFail);
     rasterizer.ok = true;
     app.onTimer();
 
-    // 画像移動で編集は破棄される(一覧が空なので表示もなくなる)
+    // 画像移動で編集(注釈含む)は破棄される(一覧が空なので表示もなくなる)
     app.execute(Command::NextImage);
     CHECK(app.statusBar().leftText == L"編集を破棄しました");
     CHECK(app.currentImage() == nullptr);
+    CHECK(app.annotations().specs->empty());
     CHECK(host.lastTitle == L"Blinker");
     app.execute(Command::Undo);
     CHECK(app.statusBar().leftText == L"取り消す編集はありません");
@@ -1174,6 +1410,8 @@ int main() {
     testAppPasteSave();
     testAppSidebar();
     testEditFunctions();
+    testAnnotationGeometry();
+    testAppAnnotationObjects();
     testAppEdit();
 
     if (g_failures == 0) {

@@ -48,8 +48,9 @@ public:
     // サブメニュー親を除く)を深さ優先で数えた通し番号。モーダル(選択されるまで返らない)
     virtual std::optional<size_t> showContextMenu(const std::vector<MenuItem>& items,
                                                   Point screenPos) = 0;
-    // テキスト入力ダイアログ(複数行)。キャンセル時 nullopt。改行は L'\n'
-    virtual std::optional<std::wstring> showTextInput() = 0;
+    // テキスト入力ダイアログ(複数行)。initial を初期値として表示する(再編集用)。
+    // キャンセル時 nullopt。改行は L'\n'
+    virtual std::optional<std::wstring> showTextInput(const std::wstring& initial) = 0;
     // 色選択ダイアログ。キャンセル時 nullopt
     virtual std::optional<uint32_t> showColorPicker(uint32_t initialRGB) = 0;
     virtual void startTimer(unsigned milliseconds) = 0;  // 単発。満了で App::onTimer が呼ばれる
@@ -71,12 +72,16 @@ public:
     bool onKey(const KeyChord& chord);  // バインドがあれば実行して true
     void onResize(float width, float height);
     void onWheel(float wheelNotches, Point screenPos);  // 正で拡大。サイドバー上ではスクロール
-    bool onMouseDown(Point screenPos);  // サイドバーのクリックを消費したら true(パンを開始しない)
+    // サイドバーのクリックや注釈の選択・ドラッグ開始を消費したら true(パンを開始しない)
+    bool onMouseDown(Point screenPos);
+    void onMouseUp();                   // 注釈の移動・回転ドラッグを終了する
+    bool onDoubleClick(Point screenPos);  // Text 注釈上なら再編集して true
     void onRightDragStart(Point screenPos);  // 編集領域の選択開始(画像外・サイドバー上は無視)
     void onRightDragMove(Point screenPos);
     void onRightDragEnd(Point screenPos);  // メニューを表示し、選ばれた編集を適用する
     void onDragPan(float dx, float dy);
-    void onMouseMove(Point screenPos);  // ステータスバーの座標・色表示を更新
+    // 注釈ドラッグ中は移動・回転を適用。それ以外はステータスバーの座標・色表示を更新
+    void onMouseMove(Point screenPos, bool shift = false);
     void onMouseLeave();
     void onTimer();                // host のタイマー満了(通知メッセージを消す)
     void onDecodeCompleted();  // UI スレッドで呼ぶこと
@@ -89,6 +94,7 @@ public:
     StatusBarView statusBar() const;
     SidebarView sidebar() const;
     SelectionView selection() const;  // 選択中のラバーバンド(スクリーン座標)
+    AnnotationsView annotations() const;  // 注釈オブジェクト一覧と選択状態(画像座標)
 
 private:
     static constexpr float kPanStepPx = 64.0f;
@@ -112,17 +118,34 @@ private:
 
     // 編集メニューの末端項目が表す操作。設定系はメニューを再表示して続けて選択できる
     struct EditMenuEntry {
-        enum class Action { Crop, Annotate, StrokeWidth, FontSize, Angle, PickColor };
+        enum class Action { Crop, Annotate, StrokeWidth, FontSize, PickColor };
         Action action;
         AnnotationSpec::Kind kind = AnnotationSpec::Kind::Rect;  // Annotate 用
         float value = 0;                                         // 設定系の値
     };
+    // 注釈オブジェクトを右クリックしたときのメニューの末端項目
+    struct ObjectMenuEntry {
+        enum class Action { EditText, Delete, Angle, StrokeWidth, FontSize, PickColor };
+        Action action;
+        float value = 0;  // Angle/StrokeWidth/FontSize の値
+    };
     // メニュー構造を組み立てる。entries[i] が末端項目 i(showContextMenu の返す index)に対応
     std::vector<MenuItem> buildEditMenu(std::vector<EditMenuEntry>& entries) const;
     bool applyEditChoice(const EditMenuEntry& entry);  // true ならメニューを閉じる
+    std::vector<MenuItem> buildObjectMenu(const AnnotationSpec& spec,
+                                          std::vector<ObjectMenuEntry>& entries) const;
+    void showObjectMenu(Point screenPos);  // selected_ のオブジェクトメニューを表示・適用
     void applyCrop();
     void applyAnnotation(AnnotationSpec::Kind kind);
-    void pushUndo();       // 現在の画像を undo 履歴へ積む(上限あり)
+    // Text 注釈の実測サイズを rasterize で求め p2 へ反映する(ヒットテスト・選択枠用)
+    bool measureTextExtent(AnnotationSpec& spec);
+    void editAnnotationText(size_t index);   // テキスト入力ダイアログで再編集
+    void deleteSelectedAnnotation();
+    // 注釈を合成した保存・コピー用の画像。注釈がなければ current_ をそのまま返す
+    std::shared_ptr<DecodedImage> compositeImage() const;
+    void markEdited();     // edited_ を立ててタイトルを更新する
+    void pushUndo();       // 現在の画像と注釈一覧を undo 履歴へ積む(上限あり)
+    void pushDragUndoOnce();  // ドラッグ(移動・回転)の最初の変更時に1回だけ積む
     void executeUndo();
     void discardEdits();   // 画像切替時に編集を破棄する(あれば通知)
 
@@ -153,16 +176,38 @@ private:
     // 編集(トリミング・図形・テキスト)の状態
     static constexpr float kDragThresholdPx = 4.0f;  // これ未満の右ドラッグは無視(画面px)
     static constexpr size_t kUndoLimit = 10;
+    static constexpr float kHitTolerancePx = 4.0f;         // 注釈ヒットテストの許容(画面px)
+    static constexpr float kRotationHandleOffsetPx = 20.0f;  // 選択枠上辺からハンドルまで
+    static constexpr float kRotationHandleRadiusPx = 5.0f;
+    static constexpr float kRotationHandleHitPx = 9.0f;
+    static constexpr float kAngleSnapDeg = 15.0f;  // Shift ドラッグ時のスナップ
     bool selecting_ = false;    // 右ドラッグで領域選択中
     Point selStartImage_{};     // 選択の始点・現在点(画像座標。ズーム中も不変)
     Point selEndImage_{};
     Point selStartScreen_{};    // ドラッグ量の閾値判定用
-    bool edited_ = false;       // current_ に未保存の編集がある
-    std::vector<std::shared_ptr<DecodedImage>> undoStack_;
+    bool edited_ = false;       // current_ に未保存の編集(トリミング・注釈)がある
+
+    // 注釈オブジェクト。current_ には焼き込まず、描画時に重ね、保存/コピー時に合成する
+    std::vector<AnnotationSpec> annotations_;
+    std::optional<size_t> selected_;  // 選択中の注釈 index
+    enum class ObjectDrag { None, Move, Rotate };
+    ObjectDrag objectDrag_ = ObjectDrag::None;
+    bool dragUndoPushed_ = false;  // ドラッグ中の undo 記録は最初の変更時の1回だけ
+    Point dragStartImage_{};       // Move: 掴んだ画像座標
+    Point dragOrigP1_{};           // ドラッグ開始時の端点
+    Point dragOrigP2_{};
+    float dragOrigAngleDeg_ = 0;   // Rotate: 開始時の注釈角度
+    float dragStartAngleDeg_ = 0;  // Rotate: 開始時のポインタ角度(スクリーン)
+
+    // undo は画像(トリミング用)と注釈一覧のスナップショット
+    struct UndoState {
+        std::shared_ptr<DecodedImage> image;
+        std::vector<AnnotationSpec> annotations;
+    };
+    std::vector<UndoState> undoStack_;
     uint32_t editColorRGB_ = 0xFF3B30;
     float editStrokeWidth_ = 3.0f;  // 画面px基準(適用時に 1/zoom で画像座標へ換算)
     float editFontSize_ = 18.0f;    // 同上
-    float editAngleDeg_ = 0.0f;     // 図形・テキストの回転角(時計回り、度)
 };
 
 } // namespace blinker

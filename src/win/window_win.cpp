@@ -18,15 +18,32 @@ constexpr int kIconResourceId = 101;  // blinker.rc の IDI_APPICON
 constexpr UINT_PTR kMessageTimerId = 1;
 constexpr WORD kTextInputEditId = 1000;
 
-// テキスト入力ダイアログのプロシージャ。lParam で受けた std::wstring* に結果を書く
+// テキスト入力ダイアログの入出力。initial を初期表示し、OK なら result に書く
+struct TextInputParams {
+    const std::wstring* initial;
+    std::wstring* result;
+};
+
 INT_PTR CALLBACK textInputDlgProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
-    case WM_INITDIALOG:
+    case WM_INITDIALOG: {
         SetWindowLongPtrW(dlg, DWLP_USER, lp);
+        const auto* params = reinterpret_cast<const TextInputParams*>(lp);
+        if (params->initial && !params->initial->empty()) {
+            // 複数行エディットは CRLF 区切りのため '\n' を戻して設定する
+            std::wstring text = *params->initial;
+            for (size_t pos = 0; (pos = text.find(L'\n', pos)) != std::wstring::npos;
+                 pos += 2) {
+                text.replace(pos, 1, L"\r\n");
+            }
+            SetDlgItemTextW(dlg, kTextInputEditId, text.c_str());
+        }
         return TRUE;  // 最初の WS_TABSTOP (エディット) にフォーカスさせる
+    }
     case WM_COMMAND:
         if (LOWORD(wp) == IDOK) {
-            auto* result = reinterpret_cast<std::wstring*>(GetWindowLongPtrW(dlg, DWLP_USER));
+            auto* result =
+                reinterpret_cast<TextInputParams*>(GetWindowLongPtrW(dlg, DWLP_USER))->result;
             const HWND edit = GetDlgItem(dlg, kTextInputEditId);
             const int length = GetWindowTextLengthW(edit);
             result->assign(static_cast<size_t>(std::max(length, 0)), L'\0');
@@ -73,7 +90,7 @@ std::vector<WORD> buildTextInputTemplate() {
     pushW(96);   // cy
     pushW(0);    // メニューなし
     pushW(0);    // 既定のダイアログクラス
-    pushStr(L"テキストを追加 (Enter で改行)");
+    pushStr(L"テキスト (Enter で改行)");
     pushW(9);  // フォントサイズ (pt)
     pushStr(L"MS Shell Dlg");
 
@@ -112,7 +129,7 @@ std::vector<WORD> buildTextInputTemplate() {
 
 bool MainWindow::create(HINSTANCE hinstance, int showCommand, bool darkTitleBar) {
     WNDCLASSEXW wc{sizeof(wc)};
-    wc.style = CS_HREDRAW | CS_VREDRAW;
+    wc.style = CS_HREDRAW | CS_VREDRAW | CS_DBLCLKS;  // ダブルクリックでテキスト再編集
     wc.lpfnWndProc = wndProc;
     wc.hInstance = hinstance;
     wc.hIcon = LoadIconW(hinstance, MAKEINTRESOURCEW(kIconResourceId));
@@ -184,15 +201,16 @@ LRESULT MainWindow::handleMessage(UINT msg, WPARAM wp, LPARAM lp) {
         }
         return 0;
     }
-    case WM_LBUTTONDOWN: {
+    case WM_LBUTTONDOWN:
+        handleLeftDown({GET_X_LPARAM(lp), GET_Y_LPARAM(lp)});
+        return 0;
+    case WM_LBUTTONDBLCLK: {
         const POINT pt{GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
-        // サイドバー上のクリック(項目ジャンプ)ならパンを開始しない
-        if (app_ && app_->onMouseDown({static_cast<float>(pt.x), static_cast<float>(pt.y)})) {
+        if (app_ &&
+            app_->onDoubleClick({static_cast<float>(pt.x), static_cast<float>(pt.y)})) {
             return 0;
         }
-        dragging_ = true;
-        lastDragPos_ = pt;
-        SetCapture(hwnd_);
+        handleLeftDown(pt);  // テキスト注釈以外の上では通常のクリックとして扱う
         return 0;
     }
     case WM_MOUSEMOVE: {
@@ -210,7 +228,8 @@ LRESULT MainWindow::handleMessage(UINT msg, WPARAM wp, LPARAM lp) {
             if (rightDragging_) {
                 app_->onRightDragMove({static_cast<float>(pt.x), static_cast<float>(pt.y)});
             }
-            app_->onMouseMove({static_cast<float>(pt.x), static_cast<float>(pt.y)});
+            app_->onMouseMove({static_cast<float>(pt.x), static_cast<float>(pt.y)},
+                              (GetKeyState(VK_SHIFT) & 0x8000) != 0);
         }
         return 0;
     }
@@ -240,10 +259,9 @@ LRESULT MainWindow::handleMessage(UINT msg, WPARAM wp, LPARAM lp) {
         }
         return 0;
     case WM_LBUTTONUP:
-        if (dragging_) {
-            dragging_ = false;
-            ReleaseCapture();
-        }
+        dragging_ = false;
+        if (GetCapture() == hwnd_) ReleaseCapture();
+        if (app_) app_->onMouseUp();  // 注釈の移動・回転ドラッグを終了する
         return 0;
     case WM_DROPFILES:
         onDropFiles(wp);
@@ -268,13 +286,24 @@ LRESULT MainWindow::handleMessage(UINT msg, WPARAM wp, LPARAM lp) {
     return DefWindowProcW(hwnd_, msg, wp, lp);
 }
 
+void MainWindow::handleLeftDown(POINT pt) {
+    // サイドバー上のクリック(項目ジャンプ)や注釈のドラッグ開始ならパンを開始しない。
+    // 注釈ドラッグ中の移動・ボタン解放を受けるため、消費されてもキャプチャは取る
+    SetCapture(hwnd_);
+    if (app_ && app_->onMouseDown({static_cast<float>(pt.x), static_cast<float>(pt.y)})) {
+        return;
+    }
+    dragging_ = true;
+    lastDragPos_ = pt;
+}
+
 void MainWindow::onPaint() {
     PAINTSTRUCT ps;
     BeginPaint(hwnd_, &ps);
     if (app_ && renderer_) {
         renderer_->render(app_->currentImage(), app_->imageToScreen(), app_->zoom(),
-                          app_->backgroundRGB(), app_->selection(), app_->sidebar(),
-                          app_->statusBar());
+                          app_->backgroundRGB(), app_->annotations(), app_->selection(),
+                          app_->sidebar(), app_->statusBar());
     }
     EndPaint(hwnd_, &ps);
 }
@@ -495,13 +524,14 @@ std::optional<uint32_t> MainWindow::showColorPicker(uint32_t initialRGB) {
            static_cast<uint32_t>(GetBValue(cc.rgbResult));
 }
 
-std::optional<std::wstring> MainWindow::showTextInput() {
+std::optional<std::wstring> MainWindow::showTextInput(const std::wstring& initial) {
     const std::vector<WORD> dlgTemplate = buildTextInputTemplate();
     std::wstring result;
+    TextInputParams params{&initial, &result};
     const INT_PTR code = DialogBoxIndirectParamW(
         reinterpret_cast<HINSTANCE>(GetWindowLongPtrW(hwnd_, GWLP_HINSTANCE)),
         reinterpret_cast<const DLGTEMPLATE*>(dlgTemplate.data()), hwnd_, textInputDlgProc,
-        reinterpret_cast<LPARAM>(&result));
+        reinterpret_cast<LPARAM>(&params));
     if (code != IDOK) return std::nullopt;
     return result;
 }

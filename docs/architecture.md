@@ -47,30 +47,40 @@
 
 マウスの編集操作(右ドラッグ)も同じ形で App に集まる:
 `onRightDragStart/Move/End` → `IAppHost::showContextMenu` で機能選択 →
-トリミングは core の `cropImage`、図形・テキストは `IAnnotationRasterizer` で
-ラスタライズして `blendOverlay` で合成 → `current_` を差し替えて再描画依頼。
+トリミングは core の `cropImage` で `current_` を差し替え、図形・テキストは
+**非破壊の注釈オブジェクト**(`std::vector<AnnotationSpec>`)として App が保持する。
+注釈は描画時に `AnnotationsView` として RendererD2D へ渡されベクター描画で重なり
+(`current_` のピクセルは変更しない)、保存 (Ctrl+S)・コピー (Ctrl+C) 時にだけ
+`App::compositeImage` が `IAnnotationRasterizer` + `blendOverlay` で合成する。
+トリミングは注釈座標を平行移動してオブジェクトのまま維持する。
 メニューは階層構造(`MenuItem` の木、選択結果は末端項目の深さ優先通し番号)で、
-設定系の項目(線の太さ・文字サイズ・回転角度・色 = `IAppHost::showColorPicker`)を
-選んだ場合は選択領域を保ったままメニューを再表示して続けて編集を選べる。
-編集は表示中画像のコピーに対して行い(キャッシュとは共有しない)、Ctrl+Z で
-1段階ずつ取り消せる(履歴は画像スナップショット、上限10)。保存は Ctrl+S のみで
-元ファイルは自動では書き換えない。
+設定系の項目(線の太さ・文字サイズ・色 = `IAppHost::showColorPicker`)を
+選んだ場合は選択領域を保ったままメニューを再表示して続けて編集を選べる
+(設定は新規作成の既定値)。
+
+追加済みの注釈は左クリックで選択して編集できる(ヒットテスト・回転幾何は core の
+`annotation_edit.cpp`、純粋関数、単体テスト対象):
+左ドラッグで移動、選択枠上の回転ハンドルで自由回転(Shift で 15° スナップ)、
+右クリックでオブジェクトメニュー(回転角度プリセット・太さ・文字サイズ・色・削除)、
+テキストはダブルクリックで再編集(`IAppHost::showTextInput` に初期値を渡す)。
+Ctrl+Z で1段階ずつ取り消せる(履歴は画像 + 注釈一覧のスナップショット、上限10)。
+保存は Ctrl+S のみで元ファイルは自動では書き換えない。
 
 ## 主要コンポーネント
 
 | コンポーネント | 責務 |
 |---|---|
-| `App` | 状態機械の中心。Command を受けて状態更新、host へ再描画依頼。ステータスバー (`StatusBarView`) とサイドバー (`SidebarView`、可視範囲の項目のみ) の表示内容もここで組み立てる。貼り付け画像はフォルダ一覧から独立した表示状態(`clipboardImage_`)で持ち、移動系コマンドで一覧表示へ戻る。編集(右ドラッグ選択→トリミング・図形・テキスト、`SelectionView`・undo 履歴)もここで管理し、画像切替で破棄する |
+| `App` | 状態機械の中心。Command を受けて状態更新、host へ再描画依頼。ステータスバー (`StatusBarView`) とサイドバー (`SidebarView`、可視範囲の項目のみ) の表示内容もここで組み立てる。貼り付け画像はフォルダ一覧から独立した表示状態(`clipboardImage_`)で持ち、移動系コマンドで一覧表示へ戻る。編集(右ドラッグ選択→トリミング・図形・テキスト、`SelectionView`・注釈オブジェクトの選択/移動/回転ドラッグ状態・undo 履歴)もここで管理し、画像切替で破棄する |
 | `Viewport` | ズーム/パン/フィット/回転の座標変換(純粋計算、テスト容易) |
 | `ImageList` | フォルダ内画像の一覧・現在位置・先読み候補の順序付け |
 | `ImageCache` | ワーカースレッド1本で非同期デコード。LRU(既定: 8枚 or 512MB) |
 | `Keymap` | KeyChord → Command。デフォルト表 + ini 上書き |
 | `MainWindow` | Win32 メッセージ変換、フルスクリーン、ダイアログ(開く・保存・色選択)・編集メニュー(サブメニュー対応)・複数行テキスト入力(IAppHost 実装) |
-| `RendererD2D` | BGRA ピクセル → ID2D1Bitmap(±1枚をGPU側にキャッシュ)して描画。選択領域のラバーバンド(`SelectionView`)もここで描く。サイドバー・ステータスバーの文字は DirectWrite |
+| `RendererD2D` | BGRA ピクセル → ID2D1Bitmap(±1枚をGPU側にキャッシュ)して描画。注釈オブジェクト(`AnnotationsView`、選択枠・回転ハンドル含む)と選択領域のラバーバンド(`SelectionView`)もここで描く。図形の描画コードは焼き込みと共通(win/annotation_draw)。サイドバー・ステータスバーの文字は DirectWrite |
 | `DecoderWic` | WIC で 32bpp PBGRA に統一デコード。EXIF 回転適用、16384px 超は縮小 |
 | `EncoderWic` | WIC で PNG/JPEG/BMP 保存 (Ctrl+S)。PNG は逆乗算してアルファ保持、JPEG/BMP は白背景に合成 |
 | `ClipboardWin` | クリップボード読み書き。書き込みは CF_DIBV5(アルファ)+ CF_DIB(白合成24bpp)の2形式。読み取り (Ctrl+V) は CF_DIBV5 優先で、DIB → PBGRA 変換は core の `imageFromDib`(純粋関数、単体テスト対象) |
-| `AnnotationD2D` | 図形(矩形・楕円・矢印・直線)とテキスト(複数行可)を D2D/DirectWrite で WIC ビットマップへ AA 描画し、PBGRA overlay として返す(`IAnnotationRasterizer` 実装)。`AnnotationSpec::angleDeg` によるバウンディングボックス中心周りの回転にも対応。トリミング・合成は core の `edit.cpp`(`cropImage` / `blendOverlay`、純粋関数、単体テスト対象) |
+| `AnnotationD2D` | 図形(矩形・楕円・矢印・直線)とテキスト(複数行可)を D2D/DirectWrite で WIC ビットマップへ AA 描画し、PBGRA overlay として返す(`IAnnotationRasterizer` 実装)。描画コードはライブ表示と共通の `win/annotation_draw` を使い、`AnnotationSpec::angleDeg` によるバウンディングボックス中心周りの回転にも対応。テキスト注釈の実測サイズ取得(`App::measureTextExtent`)にも使われる。トリミング・合成は core の `edit.cpp`(`cropImage` / `blendOverlay`)、注釈のヒットテスト・回転幾何は core の `annotation_edit.cpp`(いずれも純粋関数、単体テスト対象) |
 
 ## スレッドモデル
 

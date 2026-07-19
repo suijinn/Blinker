@@ -7,6 +7,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 # core: プラットフォーム非依存層。単体テストからもリンクする
 add_library(blinker_core STATIC
+    src/core/annotation_edit.cpp
     src/core/app.cpp
     src/core/config.cpp
     src/core/dib.cpp
@@ -27,6 +28,7 @@ if(WIN32)
         src/win/main_win.cpp
         src/win/window_win.cpp
         src/win/annotation_d2d.cpp
+        src/win/annotation_draw.cpp
         src/win/renderer_d2d.cpp
         src/win/decoder_wic.cpp
         src/win/encoder_wic.cpp
