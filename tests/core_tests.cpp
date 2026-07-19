@@ -1065,6 +1065,50 @@ void testAnnotationGeometry() {
     CHECK(nearly(snapAngleDeg(83, 15), 90));
     CHECK(nearly(normalizeAngleDeg(-90), 270));
     CHECK(nearly(normalizeAngleDeg(370), 10));
+
+    // サイズ変更ハンドル: 図形は8個、テキストは上下辺なしの6個、直線・矢印は端点2個
+    CHECK(resizeHandlePositions(plain).size() == 8);
+    CHECK(resizeHandlePositions(text).size() == 6);
+    CHECK(resizeHandlePositions(line).size() == 2);
+
+    // 無回転の BR ドラッグは p2 だけ動く。辺ハンドルは一方向のみ
+    AnnotationSpec r2 = resizeAnnotation(plain, ResizeHandle::BottomRight, {14, 16}, false);
+    CHECK(nearly(r2.p1.x, 0) && nearly(r2.p1.y, 0));
+    CHECK(nearly(r2.p2.x, 14) && nearly(r2.p2.y, 16));
+    r2 = resizeAnnotation(plain, ResizeHandle::Left, {-4, 100}, false);
+    CHECK(nearly(r2.p1.x, -4) && nearly(r2.p1.y, 0));
+    CHECK(nearly(r2.p2.x, 10) && nearly(r2.p2.y, 10));
+
+    // 反対側の辺は越えない(最小1px)
+    r2 = resizeAnnotation(plain, ResizeHandle::Right, {-100, 5}, false);
+    CHECK(nearly(r2.p2.x - r2.p1.x, 1));
+
+    // Shift(縦横比維持)は大きい方の倍率に合わせる
+    r2 = resizeAnnotation(plain, ResizeHandle::BottomRight, {20, 15}, true);
+    CHECK(nearly(r2.p2.x, 20) && nearly(r2.p2.y, 20));
+
+    // 回転中のリサイズはアンカー(反対側の角)の見た目の位置が変わらない
+    AnnotationSpec rot = plain;
+    rot.angleDeg = 30;
+    const Point tlBefore = rotatedCorners(rot)[0];
+    const AnnotationSpec rotResized =
+        resizeAnnotation(rot, ResizeHandle::BottomRight, {20, 18}, false);
+    CHECK(nearly(rotResized.angleDeg, 30));
+    const Point tlAfter = rotatedCorners(rotResized)[0];
+    CHECK(nearly(tlAfter.x, tlBefore.x, 0.01f) && nearly(tlAfter.y, tlBefore.y, 0.01f));
+
+    // 端点ドラッグ (Line/Arrow): 他端の見た目の位置は固定される
+    AnnotationSpec rline;
+    rline.kind = AnnotationSpec::Kind::Line;
+    rline.p1 = {0, 0};
+    rline.p2 = {10, 0};
+    rline.angleDeg = 90;  // 見た目は (5,-5)-(5,5)
+    const AnnotationSpec dragged = resizeAnnotation(rline, ResizeHandle::P2, {5, 9}, false);
+    CHECK(nearly(dragged.p1.x, -2) && nearly(dragged.p1.y, 2));
+    CHECK(nearly(dragged.p2.x, 12) && nearly(dragged.p2.y, 2));
+    const auto endpoints = resizeHandlePositions(dragged);
+    CHECK(nearly(endpoints[0].pos.x, 5) && nearly(endpoints[0].pos.y, -5));  // P1 は不動
+    CHECK(nearly(endpoints[1].pos.x, 5) && nearly(endpoints[1].pos.y, 9));
 }
 
 void testAppAnnotationObjects() {
@@ -1120,6 +1164,21 @@ void testAppAnnotationObjects() {
     CHECK(!app.annotations().selected.has_value());
     app.onMouseUp();
 
+    // サイズ変更: 選択中の右下ハンドル(画像 (4,4) = スクリーン (400,287))をドラッグ
+    CHECK(app.onMouseDown({396, 283}));  // まず本体クリックで選択
+    app.onMouseUp();
+    CHECK(app.onMouseDown({400, 287}));  // 右下ハンドルを掴む
+    app.onMouseMove({402, 289});
+    {
+        const AnnotationSpec& spec = app.annotations().specs->front();
+        CHECK(nearly(spec.p1.x, 0) && nearly(spec.p1.y, 0));
+        CHECK(nearly(spec.p2.x, 6) && nearly(spec.p2.y, 6));
+    }
+    app.onMouseUp();
+    app.execute(Command::Undo);  // リサイズ1回で undo 1段
+    CHECK(nearly(app.annotations().specs->front().p2.x, 4));
+    CHECK(!app.annotations().selected.has_value());
+
     // 回転ハンドル(枠上辺中央の 20px 上)のドラッグで回転する
     CHECK(app.onMouseDown({396, 283}));  // 選択し直す
     app.onMouseUp();
@@ -1155,7 +1214,7 @@ void testAppAnnotationObjects() {
     host.menuChoice = 5;  // テキスト
     host.textInput = L"元のテキスト";
     rasterizer.overlayWidth = 24;
-    rasterizer.overlayHeight = 12;
+    rasterizer.overlayHeight = 44;  // 実測境界 20x40(リサイズテストでハンドルを離すため縦長)
     const int measureCount = rasterizer.rasterizeCount;
     app.onRightDragStart({401, 286});  // 画像 (5,3)
     app.onRightDragEnd({404, 290});    // 閾値以上のドラッグで編集メニューを出す
@@ -1195,6 +1254,21 @@ void testAppAnnotationObjects() {
     app.execute(Command::SaveImageAs);
     CHECK(encoder.lastWidth == 8);
     CHECK(rasterizer.rasterizeCount == rasterizeBeforeSave + 2);
+
+    // テキストのリサイズ: 右ハンドルで折り返し幅を変え、確定時に実寸へ揃える。
+    // テキストは (5,3)-(25,43)、右ハンドルは画像 (25,23) = スクリーン (421,306)
+    CHECK(app.onMouseDown({402, 288}));  // 本体クリックで選択(最前面のテキスト)
+    app.onMouseUp();
+    CHECK(app.annotations().selected == std::optional<size_t>(1));
+    CHECK(app.onMouseDown({421, 306}));
+    const int beforeResize = rasterizer.rasterizeCount;
+    app.onMouseMove({431, 306});
+    CHECK(nearly(app.annotations().specs->back().p2.x, 35));  // ドラッグ中は掴んだ幅のまま
+    CHECK(rasterizer.rasterizeCount == beforeResize);
+    app.onMouseUp();  // 確定時に折り返し後の実寸を測り直す
+    CHECK(rasterizer.rasterizeCount == beforeResize + 1);
+    CHECK(nearly(app.annotations().specs->back().p2.x, 25));
+    CHECK(nearly(app.annotations().specs->back().p2.y, 43));
 }
 
 void testAppEdit() {

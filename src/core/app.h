@@ -7,6 +7,7 @@
 #include <string>
 #include <vector>
 
+#include "core/annotation_edit.h"
 #include "core/command.h"
 #include "core/config.h"
 #include "core/geometry.h"
@@ -180,6 +181,8 @@ private:
     static constexpr float kRotationHandleOffsetPx = 20.0f;  // 選択枠上辺からハンドルまで
     static constexpr float kRotationHandleRadiusPx = 5.0f;
     static constexpr float kRotationHandleHitPx = 9.0f;
+    static constexpr float kResizeHandleSizePx = 7.0f;  // サイズ変更ハンドル(正方形)の一辺
+    static constexpr float kResizeHandleHitPx = 8.0f;   // 同・ヒット判定の半径
     static constexpr float kAngleSnapDeg = 15.0f;  // Shift ドラッグ時のスナップ
     bool selecting_ = false;    // 右ドラッグで領域選択中
     Point selStartImage_{};     // 選択の始点・現在点(画像座標。ズーム中も不変)
@@ -190,14 +193,13 @@ private:
     // 注釈オブジェクト。current_ には焼き込まず、描画時に重ね、保存/コピー時に合成する
     std::vector<AnnotationSpec> annotations_;
     std::optional<size_t> selected_;  // 選択中の注釈 index
-    enum class ObjectDrag { None, Move, Rotate };
+    enum class ObjectDrag { None, Move, Rotate, Resize };
     ObjectDrag objectDrag_ = ObjectDrag::None;
     bool dragUndoPushed_ = false;  // ドラッグ中の undo 記録は最初の変更時の1回だけ
     Point dragStartImage_{};       // Move: 掴んだ画像座標
-    Point dragOrigP1_{};           // ドラッグ開始時の端点
-    Point dragOrigP2_{};
-    float dragOrigAngleDeg_ = 0;   // Rotate: 開始時の注釈角度
+    AnnotationSpec dragOrigSpec_;  // ドラッグ開始時の注釈(移動・回転・リサイズの基準)
     float dragStartAngleDeg_ = 0;  // Rotate: 開始時のポインタ角度(スクリーン)
+    ResizeHandle dragResizeHandle_ = ResizeHandle::BottomRight;  // Resize: 掴んだハンドル
 
     // undo は画像(トリミング用)と注釈一覧のスナップショット
     struct UndoState {

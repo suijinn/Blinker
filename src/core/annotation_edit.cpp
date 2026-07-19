@@ -103,6 +103,104 @@ void translateAnnotation(AnnotationSpec& spec, float dx, float dy) {
     spec.p2.y += dy;
 }
 
+std::vector<ResizeHandlePos> resizeHandlePositions(const AnnotationSpec& spec) {
+    if (spec.kind == AnnotationSpec::Kind::Line || spec.kind == AnnotationSpec::Kind::Arrow) {
+        const Point c = annotationCenter(spec);
+        return {{ResizeHandle::P1, rotateAround(spec.p1, c, spec.angleDeg)},
+                {ResizeHandle::P2, rotateAround(spec.p2, c, spec.angleDeg)}};
+    }
+    const auto corners = rotatedCorners(spec);  // TL TR BR BL
+    const auto mid = [](Point a, Point b) {
+        return Point{(a.x + b.x) * 0.5f, (a.y + b.y) * 0.5f};
+    };
+    std::vector<ResizeHandlePos> handles{
+        {ResizeHandle::TopLeft, corners[0]},     {ResizeHandle::TopRight, corners[1]},
+        {ResizeHandle::BottomRight, corners[2]}, {ResizeHandle::BottomLeft, corners[3]},
+        {ResizeHandle::Left, mid(corners[3], corners[0])},
+        {ResizeHandle::Right, mid(corners[1], corners[2])},
+    };
+    // テキストの高さは内容から決まるため上下辺のハンドルは出さない
+    if (spec.kind != AnnotationSpec::Kind::Text) {
+        handles.push_back({ResizeHandle::Top, mid(corners[0], corners[1])});
+        handles.push_back({ResizeHandle::Bottom, mid(corners[2], corners[3])});
+    }
+    return handles;
+}
+
+AnnotationSpec resizeAnnotation(const AnnotationSpec& orig, ResizeHandle handle,
+                                Point mouseImage, bool keepAspect) {
+    AnnotationSpec spec = orig;
+    const Point c0 = annotationCenter(orig);
+
+    // 端点ドラッグ (Line/Arrow): 他端の見た目の位置を固定したまま端点を mouse へ。
+    // 線分の bbox 中心 = 端点の中点で、回転で中点は不変なので新しい中心は
+    // world 上の両端点の中点になる
+    if (handle == ResizeHandle::P1 || handle == ResizeHandle::P2) {
+        const Point otherWorld = rotateAround(
+            handle == ResizeHandle::P1 ? orig.p2 : orig.p1, c0, orig.angleDeg);
+        const Point c1{(mouseImage.x + otherWorld.x) * 0.5f,
+                       (mouseImage.y + otherWorld.y) * 0.5f};
+        const Point movedLocal = rotateAround(mouseImage, c1, -orig.angleDeg);
+        const Point otherLocal = rotateAround(otherWorld, c1, -orig.angleDeg);
+        if (handle == ResizeHandle::P1) {
+            spec.p1 = movedLocal;
+            spec.p2 = otherLocal;
+        } else {
+            spec.p1 = otherLocal;
+            spec.p2 = movedLocal;
+        }
+        return spec;
+    }
+
+    const bool left = handle == ResizeHandle::TopLeft || handle == ResizeHandle::Left ||
+                      handle == ResizeHandle::BottomLeft;
+    const bool right = handle == ResizeHandle::TopRight || handle == ResizeHandle::Right ||
+                       handle == ResizeHandle::BottomRight;
+    const bool top = handle == ResizeHandle::TopLeft || handle == ResizeHandle::Top ||
+                     handle == ResizeHandle::TopRight;
+    const bool bottom = handle == ResizeHandle::BottomLeft || handle == ResizeHandle::Bottom ||
+                        handle == ResizeHandle::BottomRight;
+
+    // マウスを回転前のローカル座標へ戻し、掴んだ辺だけを動かす(反対側は越えない)
+    const BoundsF b = annotationBounds(orig);
+    const Point m = rotateAround(mouseImage, c0, -orig.angleDeg);
+    constexpr float kMinSize = 1.0f;
+    BoundsF nb = b;
+    if (left) nb.minX = std::min(m.x, b.maxX - kMinSize);
+    if (right) nb.maxX = std::max(m.x, b.minX + kMinSize);
+    if (top) nb.minY = std::min(m.y, b.maxY - kMinSize);
+    if (bottom) nb.maxY = std::max(m.y, b.minY + kMinSize);
+
+    if (keepAspect && (left || right) && (top || bottom)) {
+        const float w0 = b.maxX - b.minX;
+        const float h0 = b.maxY - b.minY;
+        if (w0 > 0 && h0 > 0) {
+            const float scale =
+                std::max((nb.maxX - nb.minX) / w0, (nb.maxY - nb.minY) / h0);
+            if (left) nb.minX = nb.maxX - w0 * scale;
+            if (right) nb.maxX = nb.minX + w0 * scale;
+            if (top) nb.minY = nb.maxY - h0 * scale;
+            if (bottom) nb.maxY = nb.minY + h0 * scale;
+        }
+    }
+
+    // 回転はサイズで動く bbox 中心周りのため、そのままだと反対側がずれる。
+    // アンカー(掴んだ辺の反対側の角/辺中点)の world 位置を保つよう平行移動する
+    const auto anchorLocal = [left, right, top, bottom](const BoundsF& r) {
+        const float x = left ? r.maxX : right ? r.minX : (r.minX + r.maxX) * 0.5f;
+        const float y = top ? r.maxY : bottom ? r.minY : (r.minY + r.maxY) * 0.5f;
+        return Point{x, y};
+    };
+    const Point anchor0 = rotateAround(anchorLocal(b), c0, orig.angleDeg);
+    const Point c1{(nb.minX + nb.maxX) * 0.5f, (nb.minY + nb.maxY) * 0.5f};
+    const Point anchor1 = rotateAround(anchorLocal(nb), c1, orig.angleDeg);
+    const float dx = anchor0.x - anchor1.x;
+    const float dy = anchor0.y - anchor1.y;
+    spec.p1 = {nb.minX + dx, nb.minY + dy};
+    spec.p2 = {nb.maxX + dx, nb.maxY + dy};
+    return spec;
+}
+
 Point rotationHandlePos(const AnnotationSpec& spec, const Matrix3x2& imageToScreen,
                         float offsetPx) {
     const auto corners = rotatedCorners(spec);

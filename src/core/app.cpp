@@ -250,7 +250,7 @@ bool App::onMouseDown(Point screenPos) {
     if (screenPos.y >= clientSize_.h - barHeight) return false;
     objectDrag_ = ObjectDrag::None;
     dragUndoPushed_ = false;
-    // 回転ハンドル(スクリーン座標で判定)→ 回転ドラッグ開始
+    // 選択中オブジェクトのハンドル(スクリーン座標で判定)→ 回転 / リサイズ開始
     if (selected_ && *selected_ < annotations_.size()) {
         const AnnotationSpec& spec = annotations_[*selected_];
         const Point handle = rotationHandlePos(spec, imageToScreen(), kRotationHandleOffsetPx);
@@ -258,9 +258,29 @@ bool App::onMouseDown(Point screenPos) {
         const float dy = screenPos.y - handle.y;
         if (dx * dx + dy * dy <= kRotationHandleHitPx * kRotationHandleHitPx) {
             objectDrag_ = ObjectDrag::Rotate;
-            dragOrigAngleDeg_ = spec.angleDeg;
+            dragOrigSpec_ = spec;
             dragStartAngleDeg_ =
                 angleDegFrom(imageToScreen().apply(annotationCenter(spec)), screenPos);
+            return true;
+        }
+        // ヒット領域が重なりうる(小さいオブジェクト)ため最も近いハンドルを掴む
+        const std::vector<ResizeHandlePos> handles = resizeHandlePositions(spec);
+        const ResizeHandlePos* nearest = nullptr;
+        float bestDistSq = kResizeHandleHitPx * kResizeHandleHitPx;
+        for (const ResizeHandlePos& h : handles) {
+            const Point pos = imageToScreen().apply(h.pos);
+            const float hx = screenPos.x - pos.x;
+            const float hy = screenPos.y - pos.y;
+            const float distSq = hx * hx + hy * hy;
+            if (distSq <= bestDistSq) {
+                bestDistSq = distSq;
+                nearest = &h;
+            }
+        }
+        if (nearest) {
+            objectDrag_ = ObjectDrag::Resize;
+            dragResizeHandle_ = nearest->handle;
+            dragOrigSpec_ = spec;
             return true;
         }
     }
@@ -271,8 +291,7 @@ bool App::onMouseDown(Point screenPos) {
         selected_ = hit;
         objectDrag_ = ObjectDrag::Move;
         dragStartImage_ = imagePos;
-        dragOrigP1_ = annotations_[*hit].p1;
-        dragOrigP2_ = annotations_[*hit].p2;
+        dragOrigSpec_ = annotations_[*hit];
         host_.requestRedraw();
         return true;
     }
@@ -284,6 +303,12 @@ bool App::onMouseDown(Point screenPos) {
 }
 
 void App::onMouseUp() {
+    // テキストの高さは内容で決まるため、リサイズ確定時に折り返し後の実寸へ揃える
+    if (objectDrag_ == ObjectDrag::Resize && dragUndoPushed_ && selected_ &&
+        *selected_ < annotations_.size() &&
+        annotations_[*selected_].kind == AnnotationSpec::Kind::Text) {
+        if (measureTextExtent(annotations_[*selected_])) host_.requestRedraw();
+    }
     objectDrag_ = ObjectDrag::None;
     dragUndoPushed_ = false;
 }
@@ -710,6 +735,7 @@ AnnotationsView App::annotations() const {
     view.selectionRGB = 0x3399FF;
     view.handleOffsetPx = kRotationHandleOffsetPx;
     view.handleRadiusPx = kRotationHandleRadiusPx;
+    view.resizeHandleSizePx = kResizeHandleSizePx;
     return view;
 }
 
@@ -727,15 +753,22 @@ void App::onMouseMove(Point screenPos, bool shift) {
             const float dx = imagePos.x - dragStartImage_.x;
             const float dy = imagePos.y - dragStartImage_.y;
             pushDragUndoOnce();
-            spec.p1 = {dragOrigP1_.x + dx, dragOrigP1_.y + dy};
-            spec.p2 = {dragOrigP2_.x + dx, dragOrigP2_.y + dy};
-        } else {
+            spec.p1 = {dragOrigSpec_.p1.x + dx, dragOrigSpec_.p1.y + dy};
+            spec.p2 = {dragOrigSpec_.p2.x + dx, dragOrigSpec_.p2.y + dy};
+        } else if (objectDrag_ == ObjectDrag::Rotate) {
             const Point center = imageToScreen().apply(annotationCenter(spec));
-            float angle =
-                dragOrigAngleDeg_ + angleDegFrom(center, screenPos) - dragStartAngleDeg_;
+            float angle = dragOrigSpec_.angleDeg + angleDegFrom(center, screenPos) -
+                          dragStartAngleDeg_;
             if (shift) angle = snapAngleDeg(angle, kAngleSnapDeg);
             pushDragUndoOnce();
             spec.angleDeg = normalizeAngleDeg(angle);
+        } else {
+            const Point imagePos = imageToScreen().inverted().apply(screenPos);
+            pushDragUndoOnce();
+            const AnnotationSpec resized =
+                resizeAnnotation(dragOrigSpec_, dragResizeHandle_, imagePos, shift);
+            spec.p1 = resized.p1;
+            spec.p2 = resized.p2;
         }
         markEdited();
         host_.requestRedraw();

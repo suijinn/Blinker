@@ -171,6 +171,13 @@ void RendererD2D::drawAnnotations(const AnnotationsView& annotations,
     target_->FillEllipse(D2D1::Ellipse(D2D1::Point2F(handle.x, handle.y),
                                        annotations.handleRadiusPx, annotations.handleRadiusPx),
                          brush_.Get());
+    // サイズ変更ハンドル(四隅・辺・端点の小さな正方形)
+    const float half = annotations.resizeHandleSizePx * 0.5f;
+    for (const ResizeHandlePos& h : resizeHandlePositions(spec)) {
+        const Point s = imageToScreen.apply(h.pos);
+        target_->FillRectangle(D2D1::RectF(s.x - half, s.y - half, s.x + half, s.y + half),
+                               brush_.Get());
+    }
 }
 
 void RendererD2D::drawSelection(const SelectionView& selection) {

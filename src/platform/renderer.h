@@ -53,6 +53,7 @@ struct AnnotationsView {
     uint32_t selectionRGB = 0;       // 選択枠・回転ハンドルの色
     float handleOffsetPx = 0;        // 回転ハンドルの枠上辺からの距離(画面px)
     float handleRadiusPx = 0;        // 回転ハンドルの半径(画面px)
+    float resizeHandleSizePx = 0;    // サイズ変更ハンドル(正方形)の一辺(画面px)
 };
 
 // 編集用の選択領域(ラバーバンド)の描画内容。App が画像座標→スクリーン座標へ変換済み。

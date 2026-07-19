@@ -36,6 +36,25 @@ std::optional<size_t> hitTestAnnotations(const std::vector<AnnotationSpec>& spec
 
 void translateAnnotation(AnnotationSpec& spec, float dx, float dy);
 
+// サイズ変更ハンドル。Rect/Ellipse は四隅+四辺、Text は四隅+左右
+// (高さは内容から決まる)、Line/Arrow は両端点(P1/P2)
+enum class ResizeHandle {
+    TopLeft, Top, TopRight, Right, BottomRight, Bottom, BottomLeft, Left, P1, P2
+};
+
+struct ResizeHandlePos {
+    ResizeHandle handle;
+    Point pos;  // 画像座標(angleDeg 回転済み)
+};
+
+std::vector<ResizeHandlePos> resizeHandlePositions(const AnnotationSpec& spec);
+
+// handle を mouseImage(画像座標)までドラッグした結果を返す。回転中でも
+// アンカー(反対側の角/辺中点、端点ドラッグでは他端)の見た目の位置を固定する。
+// keepAspect は四隅ハンドルで縦横比を維持する(Shift ドラッグ用)
+AnnotationSpec resizeAnnotation(const AnnotationSpec& orig, ResizeHandle handle,
+                                Point mouseImage, bool keepAspect);
+
 // 回転ハンドルの位置(スクリーン座標)。選択枠上辺の中点から外側へ offsetPx 離れた点
 Point rotationHandlePos(const AnnotationSpec& spec, const Matrix3x2& imageToScreen,
                         float offsetPx);
