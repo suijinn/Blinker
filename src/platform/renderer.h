@@ -2,10 +2,12 @@
 
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
 #include "core/geometry.h"
+#include "platform/annotation.h"
 #include "platform/decoder.h"
 
 namespace blinker {
@@ -43,6 +45,17 @@ struct SidebarView {
     std::vector<SidebarItem> items;  // 可視範囲のみ
 };
 
+// 注釈オブジェクトのライブ描画内容。specs は画像座標のまま渡し、レンダラが
+// imageToScreen を適用して描く(保存/コピー時の焼き込みと同じ見た目になる)。
+struct AnnotationsView {
+    const std::vector<AnnotationSpec>* specs = nullptr;  // nullptr = 注釈なし
+    std::optional<size_t> selected;  // 選択中の index(選択枠とハンドルを描く)
+    uint32_t selectionRGB = 0;       // 選択枠・回転ハンドルの色
+    float handleOffsetPx = 0;        // 回転ハンドルの枠上辺からの距離(画面px)
+    float handleRadiusPx = 0;        // 回転ハンドルの半径(画面px)
+    float resizeHandleSizePx = 0;    // サイズ変更ハンドル(正方形)の一辺(画面px)
+};
+
 // 編集用の選択領域(ラバーバンド)の描画内容。App が画像座標→スクリーン座標へ変換済み。
 struct SelectionView {
     bool visible = false;
@@ -63,8 +76,8 @@ public:
     // image は nullptr 可(背景のみ描画)。zoom は補間モード選択のヒント。
     virtual void render(const std::shared_ptr<const DecodedImage>& image,
                         const Matrix3x2& imageToScreen, float zoom, uint32_t backgroundRGB,
-                        const SelectionView& selection, const SidebarView& sidebar,
-                        const StatusBarView& statusBar) = 0;
+                        const AnnotationsView& annotations, const SelectionView& selection,
+                        const SidebarView& sidebar, const StatusBarView& statusBar) = 0;
 };
 
 } // namespace blinker

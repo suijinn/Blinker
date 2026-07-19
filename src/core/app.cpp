@@ -2,8 +2,10 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
 #include <format>
 
+#include "core/annotation_edit.h"
 #include "core/edit.h"
 #include "core/pixel_convert.h"
 
@@ -118,7 +120,7 @@ void App::execute(Command command) {
     case Command::CopyImage:
         if (!current_) {
             showMessage(L"コピーする画像がありません");
-        } else if (clipboard_.setImage(*current_)) {
+        } else if (clipboard_.setImage(*compositeImage())) {
             showMessage(L"画像をクリップボードにコピーしました");
         } else {
             showMessage(L"画像のコピーに失敗しました");
@@ -157,7 +159,7 @@ void App::execute(Command command) {
                                              ? L"クリップボード.png"
                                              : list_.current().stem().wstring() + L".png";
         if (const auto path = host_.showSaveDialog(defaultName)) {
-            if (encoder_.encode(*current_, *path)) {
+            if (encoder_.encode(*compositeImage(), *path)) {
                 showMessage(L"保存しました: " + path->wstring());
             } else {
                 showMessage(L"保存に失敗しました: " + path->wstring());
@@ -167,6 +169,9 @@ void App::execute(Command command) {
     }
     case Command::Undo:
         executeUndo();
+        break;
+    case Command::DeleteAnnotation:
+        deleteSelectedAnnotation();
         break;
     case Command::ToggleSidebar:
         sidebarEnabled_ = !sidebarEnabled_;
@@ -180,7 +185,11 @@ void App::execute(Command command) {
         onViewChanged();  // フィット再計算でズーム率表示が変わりうる
         break;
     case Command::Escape:
-        if (selecting_) {
+        if (selected_) {
+            selected_.reset();
+            objectDrag_ = ObjectDrag::None;
+            host_.requestRedraw();
+        } else if (selecting_) {
             selecting_ = false;
             host_.requestRedraw();
         } else if (host_.isFullscreen()) {
@@ -225,14 +234,97 @@ void App::onWheel(float wheelNotches, Point screenPos) {
 }
 
 bool App::onMouseDown(Point screenPos) {
-    if (!sidebarVisible() || screenPos.x >= sidebarOffset()) return false;
-    // ステータスバー上(サイドバー領域外)はどちらの操作でもないため消費だけする
-    if (screenPos.y >= 0 && screenPos.y < sidebarViewHeight()) {
-        const size_t index =
-            static_cast<size_t>((screenPos.y + sidebarScroll_) / kSidebarItemHeight);
-        if (index < list_.size() && (list_.jumpTo(index) || clipboardImage_)) refreshCurrent();
+    if (sidebarVisible() && screenPos.x < sidebarOffset()) {
+        // ステータスバー上(サイドバー領域外)はどちらの操作でもないため消費だけする
+        if (screenPos.y >= 0 && screenPos.y < sidebarViewHeight()) {
+            const size_t index =
+                static_cast<size_t>((screenPos.y + sidebarScroll_) / kSidebarItemHeight);
+            if (index < list_.size() && (list_.jumpTo(index) || clipboardImage_)) {
+                refreshCurrent();
+            }
+        }
+        return true;  // サイドバー上のクリックはパン開始にしない
     }
-    return true;  // サイドバー上のクリックはパン開始にしない
+    if (!current_) return false;
+    const float barHeight = statusBarVisible() ? kStatusBarHeight : 0.0f;
+    if (screenPos.y >= clientSize_.h - barHeight) return false;
+    objectDrag_ = ObjectDrag::None;
+    dragUndoPushed_ = false;
+    // 選択中オブジェクトのハンドル(スクリーン座標で判定)→ 回転 / リサイズ開始
+    if (selected_ && *selected_ < annotations_.size()) {
+        const AnnotationSpec& spec = annotations_[*selected_];
+        const Point handle = rotationHandlePos(spec, imageToScreen(), kRotationHandleOffsetPx);
+        const float dx = screenPos.x - handle.x;
+        const float dy = screenPos.y - handle.y;
+        if (dx * dx + dy * dy <= kRotationHandleHitPx * kRotationHandleHitPx) {
+            objectDrag_ = ObjectDrag::Rotate;
+            dragOrigSpec_ = spec;
+            dragStartAngleDeg_ =
+                angleDegFrom(imageToScreen().apply(annotationCenter(spec)), screenPos);
+            return true;
+        }
+        // ヒット領域が重なりうる(小さいオブジェクト)ため最も近いハンドルを掴む
+        const std::vector<ResizeHandlePos> handles = resizeHandlePositions(spec);
+        const ResizeHandlePos* nearest = nullptr;
+        float bestDistSq = kResizeHandleHitPx * kResizeHandleHitPx;
+        for (const ResizeHandlePos& h : handles) {
+            const Point pos = imageToScreen().apply(h.pos);
+            const float hx = screenPos.x - pos.x;
+            const float hy = screenPos.y - pos.y;
+            const float distSq = hx * hx + hy * hy;
+            if (distSq <= bestDistSq) {
+                bestDistSq = distSq;
+                nearest = &h;
+            }
+        }
+        if (nearest) {
+            objectDrag_ = ObjectDrag::Resize;
+            dragResizeHandle_ = nearest->handle;
+            dragOrigSpec_ = spec;
+            return true;
+        }
+    }
+    // 注釈本体 → 選択して移動ドラッグ開始。外れたら選択解除してパンに回す
+    const Point imagePos = imageToScreen().inverted().apply(screenPos);
+    const float tolerance = kHitTolerancePx / std::max(viewport_.zoom(), 0.001f);
+    if (const auto hit = hitTestAnnotations(annotations_, imagePos, tolerance)) {
+        selected_ = hit;
+        objectDrag_ = ObjectDrag::Move;
+        dragStartImage_ = imagePos;
+        dragOrigSpec_ = annotations_[*hit];
+        host_.requestRedraw();
+        return true;
+    }
+    if (selected_) {
+        selected_.reset();
+        host_.requestRedraw();
+    }
+    return false;
+}
+
+void App::onMouseUp() {
+    // テキストの高さは内容で決まるため、リサイズ確定時に折り返し後の実寸へ揃える
+    if (objectDrag_ == ObjectDrag::Resize && dragUndoPushed_ && selected_ &&
+        *selected_ < annotations_.size() &&
+        annotations_[*selected_].kind == AnnotationSpec::Kind::Text) {
+        if (measureTextExtent(annotations_[*selected_])) host_.requestRedraw();
+    }
+    objectDrag_ = ObjectDrag::None;
+    dragUndoPushed_ = false;
+}
+
+bool App::onDoubleClick(Point screenPos) {
+    if (!current_) return false;
+    if (sidebarVisible() && screenPos.x < sidebarOffset()) return false;
+    const Point imagePos = imageToScreen().inverted().apply(screenPos);
+    const float tolerance = kHitTolerancePx / std::max(viewport_.zoom(), 0.001f);
+    const auto hit = hitTestAnnotations(annotations_, imagePos, tolerance);
+    if (!hit || annotations_[*hit].kind != AnnotationSpec::Kind::Text) return false;
+    selected_ = hit;
+    objectDrag_ = ObjectDrag::None;
+    host_.requestRedraw();
+    editAnnotationText(*hit);
+    return true;
 }
 
 void App::onRightDragStart(Point screenPos) {
@@ -259,8 +351,17 @@ void App::onRightDragEnd(Point screenPos) {
     const float dx = screenPos.x - selStartScreen_.x;
     const float dy = screenPos.y - selStartScreen_.y;
     if (dx * dx + dy * dy < kDragThresholdPx * kDragThresholdPx) {
-        selecting_ = false;  // 単なる右クリック(移動量が小さい)は何もしない
-        host_.requestRedraw();
+        // 単なる右クリック(移動量が小さい): 注釈の上ならオブジェクトメニューを表示する
+        selecting_ = false;
+        const Point imagePos = imageToScreen().inverted().apply(screenPos);
+        const float tolerance = kHitTolerancePx / std::max(viewport_.zoom(), 0.001f);
+        if (const auto hit = hitTestAnnotations(annotations_, imagePos, tolerance)) {
+            selected_ = hit;
+            host_.requestRedraw();
+            showObjectMenu(screenPos);
+        } else {
+            host_.requestRedraw();
+        }
         return;
     }
     // メニュー表示中(モーダル)もラバーバンドは描画されたまま残る。
@@ -320,19 +421,114 @@ std::vector<MenuItem> App::buildEditMenu(std::vector<EditMenuEntry>& entries) co
     }
     items.push_back(std::move(font));
 
-    MenuItem angle;
-    angle.text = std::format(L"回転角度 ({}°)", static_cast<int>(editAngleDeg_));
-    for (const int a : {0, 15, 30, 45, 90, 135, 180, 270}) {
-        angle.children.push_back(
-            leaf(std::format(L"{}°", a),
-                 {Action::Angle, AnnotationSpec::Kind::Rect, static_cast<float>(a)},
-                 static_cast<float>(a) == editAngleDeg_));
-    }
-    items.push_back(std::move(angle));
-
     items.push_back(
         leaf(std::format(L"色の変更... (#{:06X})", editColorRGB_), {Action::PickColor}));
     return items;
+}
+
+std::vector<MenuItem> App::buildObjectMenu(const AnnotationSpec& spec,
+                                           std::vector<ObjectMenuEntry>& entries) const {
+    const auto leaf = [&entries](std::wstring text, ObjectMenuEntry entry,
+                                 bool checked = false) {
+        entries.push_back(entry);
+        MenuItem item;
+        item.text = std::move(text);
+        item.checked = checked;
+        return item;
+    };
+    using Action = ObjectMenuEntry::Action;
+
+    std::vector<MenuItem> items;
+    if (spec.kind == AnnotationSpec::Kind::Text) {
+        items.push_back(leaf(L"テキストを編集...", {Action::EditText}));
+    }
+    items.push_back(leaf(L"削除", {Action::Delete}));
+    items.push_back({.separator = true});
+
+    MenuItem angle;
+    angle.text = std::format(L"回転角度 ({}°)", static_cast<int>(std::lround(spec.angleDeg)));
+    for (const int a : {0, 15, 30, 45, 90, 135, 180, 270}) {
+        angle.children.push_back(leaf(std::format(L"{}°", a),
+                                      {Action::Angle, static_cast<float>(a)},
+                                      static_cast<float>(a) == spec.angleDeg));
+    }
+    items.push_back(std::move(angle));
+
+    // 太さ・文字サイズは画像px単位でオブジェクトへ直接適用する
+    if (spec.kind == AnnotationSpec::Kind::Text) {
+        MenuItem font;
+        font.text =
+            std::format(L"文字サイズ ({}px)", static_cast<int>(std::lround(spec.fontSize)));
+        for (const int s : {12, 14, 18, 24, 36, 48, 72}) {
+            font.children.push_back(leaf(std::format(L"{}px", s),
+                                         {Action::FontSize, static_cast<float>(s)},
+                                         static_cast<float>(s) == spec.fontSize));
+        }
+        items.push_back(std::move(font));
+    } else {
+        MenuItem stroke;
+        stroke.text =
+            std::format(L"線の太さ ({}px)", static_cast<int>(std::lround(spec.strokeWidth)));
+        for (const int w : {1, 2, 3, 5, 8, 12, 20}) {
+            stroke.children.push_back(leaf(std::format(L"{}px", w),
+                                           {Action::StrokeWidth, static_cast<float>(w)},
+                                           static_cast<float>(w) == spec.strokeWidth));
+        }
+        items.push_back(std::move(stroke));
+    }
+    items.push_back(
+        leaf(std::format(L"色の変更... (#{:06X})", spec.colorRGB), {Action::PickColor}));
+    return items;
+}
+
+void App::showObjectMenu(Point screenPos) {
+    if (!selected_ || *selected_ >= annotations_.size()) return;
+    std::vector<ObjectMenuEntry> entries;
+    const std::vector<MenuItem> items = buildObjectMenu(annotations_[*selected_], entries);
+    const auto choice = host_.showContextMenu(items, screenPos);
+    if (!choice || *choice >= entries.size()) return;
+    const ObjectMenuEntry entry = entries[*choice];
+    AnnotationSpec& spec = annotations_[*selected_];
+    switch (entry.action) {
+    case ObjectMenuEntry::Action::EditText:
+        editAnnotationText(*selected_);
+        return;
+    case ObjectMenuEntry::Action::Delete:
+        deleteSelectedAnnotation();
+        return;
+    case ObjectMenuEntry::Action::Angle:
+        if (spec.angleDeg == entry.value) return;
+        pushUndo();
+        spec.angleDeg = entry.value;
+        break;
+    case ObjectMenuEntry::Action::StrokeWidth:
+        if (spec.strokeWidth == entry.value) return;
+        pushUndo();
+        spec.strokeWidth = entry.value;
+        break;
+    case ObjectMenuEntry::Action::FontSize: {
+        if (spec.fontSize == entry.value) return;
+        // 文字サイズで実測境界が変わるため測り直す(失敗時は変更しない)
+        AnnotationSpec updated = spec;
+        updated.fontSize = entry.value;
+        if (!measureTextExtent(updated)) {
+            showMessage(L"描画に失敗しました");
+            return;
+        }
+        pushUndo();
+        spec = std::move(updated);
+        break;
+    }
+    case ObjectMenuEntry::Action::PickColor: {
+        const auto rgb = host_.showColorPicker(spec.colorRGB);
+        if (!rgb || *rgb == spec.colorRGB) return;
+        pushUndo();
+        spec.colorRGB = *rgb;
+        break;
+    }
+    }
+    markEdited();
+    host_.requestRedraw();
 }
 
 bool App::applyEditChoice(const EditMenuEntry& entry) {
@@ -348,9 +544,6 @@ bool App::applyEditChoice(const EditMenuEntry& entry) {
         return false;
     case EditMenuEntry::Action::FontSize:
         editFontSize_ = entry.value;
-        return false;
-    case EditMenuEntry::Action::Angle:
-        editAngleDeg_ = entry.value;
         return false;
     case EditMenuEntry::Action::PickColor:
         if (const auto rgb = host_.showColorPicker(editColorRGB_)) editColorRGB_ = *rgb;
@@ -370,6 +563,10 @@ void App::applyCrop() {
     if (!cropped) return;
     pushUndo();
     current_ = std::move(cropped);
+    // 注釈はオブジェクトのまま維持し、切り出した原点ぶんだけ平行移動する
+    for (AnnotationSpec& spec : annotations_) {
+        translateAnnotation(spec, static_cast<float>(-x0), static_cast<float>(-y0));
+    }
     viewport_.setImage(
         {static_cast<float>(current_->width), static_cast<float>(current_->height)});
     edited_ = true;
@@ -383,32 +580,97 @@ void App::applyAnnotation(AnnotationSpec::Kind kind) {
     spec.p1 = selStartImage_;
     spec.p2 = selEndImage_;
     spec.colorRGB = editColorRGB_;
-    spec.angleDeg = editAngleDeg_;
     // 線幅・文字サイズは「画面上での見た目」基準で画像座標へ換算する
     const float zoom = std::max(viewport_.zoom(), 0.001f);
     spec.strokeWidth = std::max(1.0f, editStrokeWidth_ / zoom);
     spec.fontSize = std::max(4.0f, editFontSize_ / zoom);
     if (kind == AnnotationSpec::Kind::Text) {
-        const auto text = host_.showTextInput();
+        const auto text = host_.showTextInput({});
         if (!text || text->empty()) return;
         spec.text = *text;
+        if (!measureTextExtent(spec)) {
+            showMessage(L"描画に失敗しました");
+            return;
+        }
     }
-    const AnnotationOverlay overlay = rasterizer_.rasterize(spec);
-    if (!overlay.image) {
+    pushUndo();
+    annotations_.push_back(std::move(spec));
+    selected_ = annotations_.size() - 1;  // 追加直後から移動・回転できるよう選択する
+    markEdited();
+    host_.requestRedraw();
+}
+
+bool App::measureTextExtent(AnnotationSpec& spec) {
+    // 焼き込みと同じ経路(ラスタライザ)で実測する。回転前の境界がほしいので角度は外す
+    AnnotationSpec probe = spec;
+    probe.angleDeg = 0;
+    const AnnotationOverlay overlay = rasterizer_.rasterize(probe);
+    if (!overlay.image) return false;
+    constexpr float kTextMargin = 2.0f;  // ラスタライザのテキスト用余白と同じ
+    const float w =
+        std::max(static_cast<float>(overlay.image->width) - kTextMargin * 2, 1.0f);
+    const float h =
+        std::max(static_cast<float>(overlay.image->height) - kTextMargin * 2, 1.0f);
+    const Point origin{std::min(spec.p1.x, spec.p2.x), std::min(spec.p1.y, spec.p2.y)};
+    spec.p1 = origin;
+    spec.p2 = {origin.x + w, origin.y + h};
+    return true;
+}
+
+void App::editAnnotationText(size_t index) {
+    if (index >= annotations_.size()) return;
+    const auto text = host_.showTextInput(annotations_[index].text);
+    if (!text || text->empty() || *text == annotations_[index].text) return;
+    AnnotationSpec updated = annotations_[index];
+    updated.text = *text;
+    if (!measureTextExtent(updated)) {
         showMessage(L"描画に失敗しました");
         return;
     }
     pushUndo();
-    auto edited = std::make_shared<DecodedImage>(*current_);  // キャッシュ共有のためコピー
-    blendOverlay(*edited, *overlay.image, overlay.x, overlay.y);
-    current_ = std::move(edited);
+    annotations_[index] = std::move(updated);
+    markEdited();
+    host_.requestRedraw();
+}
+
+void App::deleteSelectedAnnotation() {
+    if (!selected_ || *selected_ >= annotations_.size()) {
+        showMessage(L"削除する注釈がありません");
+        return;
+    }
+    pushUndo();
+    annotations_.erase(annotations_.begin() + static_cast<std::ptrdiff_t>(*selected_));
+    selected_.reset();
+    objectDrag_ = ObjectDrag::None;
+    markEdited();
+    host_.requestRedraw();
+}
+
+std::shared_ptr<DecodedImage> App::compositeImage() const {
+    if (!current_ || annotations_.empty()) return current_;
+    auto out = std::make_shared<DecodedImage>(*current_);  // キャッシュ共有のためコピー
+    for (const AnnotationSpec& spec : annotations_) {
+        const AnnotationOverlay overlay = rasterizer_.rasterize(spec);
+        if (overlay.image) blendOverlay(*out, *overlay.image, overlay.x, overlay.y);
+    }
+    return out;
+}
+
+void App::markEdited() {
+    if (edited_) return;
     edited_ = true;
     updateTitle();
 }
 
 void App::pushUndo() {
-    undoStack_.push_back(current_);
+    undoStack_.push_back({current_, annotations_});
     if (undoStack_.size() > kUndoLimit) undoStack_.erase(undoStack_.begin());
+}
+
+void App::pushDragUndoOnce() {
+    if (dragUndoPushed_) return;
+    pushUndo();
+    dragUndoPushed_ = true;
 }
 
 void App::executeUndo() {
@@ -416,10 +678,15 @@ void App::executeUndo() {
         showMessage(L"取り消す編集はありません");
         return;
     }
-    const bool sizeChanged = current_ && (current_->width != undoStack_.back()->width ||
-                                          current_->height != undoStack_.back()->height);
-    current_ = std::move(undoStack_.back());
+    UndoState& state = undoStack_.back();
+    const bool sizeChanged =
+        current_ && state.image &&
+        (current_->width != state.image->width || current_->height != state.image->height);
+    current_ = std::move(state.image);
+    annotations_ = std::move(state.annotations);
     undoStack_.pop_back();
+    selected_.reset();  // index が指す対象が変わりうるため選択は解除する
+    objectDrag_ = ObjectDrag::None;
     // トリミングの取り消しでサイズが戻るときだけビューを再設定する(回転等を保つ)
     if (sizeChanged) {
         viewport_.setImage(
@@ -432,6 +699,9 @@ void App::executeUndo() {
 
 void App::discardEdits() {
     selecting_ = false;
+    selected_.reset();
+    objectDrag_ = ObjectDrag::None;
+    annotations_.clear();
     if (undoStack_.empty() && !edited_) return;
     undoStack_.clear();
     if (edited_) {
@@ -458,12 +728,52 @@ SelectionView App::selection() const {
     return sel;
 }
 
+AnnotationsView App::annotations() const {
+    AnnotationsView view;
+    view.specs = &annotations_;
+    if (selected_ && *selected_ < annotations_.size()) view.selected = selected_;
+    view.selectionRGB = 0x3399FF;
+    view.handleOffsetPx = kRotationHandleOffsetPx;
+    view.handleRadiusPx = kRotationHandleRadiusPx;
+    view.resizeHandleSizePx = kResizeHandleSizePx;
+    return view;
+}
+
 void App::onDragPan(float dx, float dy) {
     viewport_.panBy(dx, dy);
     host_.requestRedraw();
 }
 
-void App::onMouseMove(Point screenPos) {
+void App::onMouseMove(Point screenPos, bool shift) {
+    // 注釈の移動・回転ドラッグ中はホバー表示より優先する
+    if (objectDrag_ != ObjectDrag::None && selected_ && *selected_ < annotations_.size()) {
+        AnnotationSpec& spec = annotations_[*selected_];
+        if (objectDrag_ == ObjectDrag::Move) {
+            const Point imagePos = imageToScreen().inverted().apply(screenPos);
+            const float dx = imagePos.x - dragStartImage_.x;
+            const float dy = imagePos.y - dragStartImage_.y;
+            pushDragUndoOnce();
+            spec.p1 = {dragOrigSpec_.p1.x + dx, dragOrigSpec_.p1.y + dy};
+            spec.p2 = {dragOrigSpec_.p2.x + dx, dragOrigSpec_.p2.y + dy};
+        } else if (objectDrag_ == ObjectDrag::Rotate) {
+            const Point center = imageToScreen().apply(annotationCenter(spec));
+            float angle = dragOrigSpec_.angleDeg + angleDegFrom(center, screenPos) -
+                          dragStartAngleDeg_;
+            if (shift) angle = snapAngleDeg(angle, kAngleSnapDeg);
+            pushDragUndoOnce();
+            spec.angleDeg = normalizeAngleDeg(angle);
+        } else {
+            const Point imagePos = imageToScreen().inverted().apply(screenPos);
+            pushDragUndoOnce();
+            const AnnotationSpec resized =
+                resizeAnnotation(dragOrigSpec_, dragResizeHandle_, imagePos, shift);
+            spec.p1 = resized.p1;
+            spec.p2 = resized.p2;
+        }
+        markEdited();
+        host_.requestRedraw();
+        return;
+    }
     std::wstring text = hoverInfoText(screenPos);
     if (text == hoverText_) return;  // 表示が変わるときだけ再描画する
     hoverText_ = std::move(text);

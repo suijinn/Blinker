@@ -36,6 +36,7 @@ constexpr std::array kCommandNames = {
     CommandName{"paste", Command::PasteImage},
     CommandName{"save_as", Command::SaveImageAs},
     CommandName{"undo", Command::Undo},
+    CommandName{"delete_annotation", Command::DeleteAnnotation},
     CommandName{"sidebar", Command::ToggleSidebar},
     CommandName{"statusbar", Command::ToggleStatusBar},
     CommandName{"escape", Command::Escape},
@@ -115,6 +116,7 @@ Keymap Keymap::defaults() {
     b(KeyCode{'V'}, Command::PasteImage, true);
     b(KeyCode{'S'}, Command::SaveImageAs, true);
     b(KeyCode{'Z'}, Command::Undo, true);
+    b(KeyCode::Delete, Command::DeleteAnnotation);
     b(KeyCode{'B'}, Command::ToggleSidebar, true);  // Ctrl+B
     b(KeyCode{'B'}, Command::ToggleStatusBar);
     b(KeyCode::Escape, Command::Escape);

@@ -18,9 +18,10 @@ fit_upscale = false
 prefetch_radius = 2
 
 [edit]
-# 右ドラッグで領域を選択→メニューでトリミング・図形・テキストを画像へ描き込める。
-# 以下は起動時の初期値で、編集メニュー(線の太さ・文字サイズ・回転角度・色の変更)から
-# その場で変更できる
+# 右ドラッグで領域を選択→メニューでトリミング・図形・テキストを追加できる。
+# 以下は新規作成時の初期値で、編集メニュー(線の太さ・文字サイズ・色の変更)から
+# その場で変更できる。追加済みオブジェクトは左クリックで選択して移動・回転・
+# 右クリックメニューで個別に変更できる
 # 図形・テキストの色 (RRGGBB)
 color = FF3B30
 # 線の太さ (画面px基準, 1-100。表示ズームに合わせて画像へ換算される)
@@ -37,7 +38,8 @@ font_size = 18
 # 使えるコマンド:
 #   next prev first last zoom_in zoom_out fit actual_size
 #   pan_left pan_right pan_up pan_down rotate_cw rotate_ccw
-#   fullscreen open copy_image copy_path paste save_as undo sidebar statusbar escape quit
+#   fullscreen open copy_image copy_path paste save_as undo delete_annotation
+#   sidebar statusbar escape quit
 #
 # 例: Vim風の移動にする場合
 #next = L, Right, Space

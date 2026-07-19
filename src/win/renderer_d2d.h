@@ -21,13 +21,14 @@ public:
     void resize(uint32_t width, uint32_t height) override;
     void render(const std::shared_ptr<const DecodedImage>& image,
                 const Matrix3x2& imageToScreen, float zoom, uint32_t backgroundRGB,
-                const SelectionView& selection, const SidebarView& sidebar,
-                const StatusBarView& statusBar) override;
+                const AnnotationsView& annotations, const SelectionView& selection,
+                const SidebarView& sidebar, const StatusBarView& statusBar) override;
 
 private:
     bool ensureTarget();
     void discardTarget();
     ID2D1Bitmap* bitmapFor(const std::shared_ptr<const DecodedImage>& image);
+    void drawAnnotations(const AnnotationsView& annotations, const Matrix3x2& imageToScreen);
     void drawSelection(const SelectionView& selection);
     void drawSidebar(const SidebarView& sidebar);
     void drawStatusBar(const StatusBarView& bar);
@@ -36,6 +37,7 @@ private:
     Microsoft::WRL::ComPtr<ID2D1Factory> factory_;
     Microsoft::WRL::ComPtr<IDWriteFactory> dwriteFactory_;
     Microsoft::WRL::ComPtr<IDWriteTextFormat> textFormat_;
+    Microsoft::WRL::ComPtr<ID2D1StrokeStyle> dashStroke_;  // 選択枠の破線
     Microsoft::WRL::ComPtr<ID2D1HwndRenderTarget> target_;
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brush_;  // target_ と同寿命
     // 直近使用したデコード画像の GPU ビットマップ(小さな LRU)。

@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cmath>
 
+#include "win/annotation_draw.h"
 #include "win/wic_factory.h"
 
 namespace blinker {
@@ -23,11 +24,6 @@ struct BoundsF {
     float minX = 0, minY = 0, maxX = 0, maxY = 0;
 };
 
-// 矢印ヘッド(塗りつぶし三角形)の長さ。線幅に比例させる
-float arrowHeadLength(float strokeWidth) {
-    return strokeWidth * 4.0f;
-}
-
 } // namespace
 
 AnnotationD2D::AnnotationD2D() {
@@ -43,24 +39,12 @@ AnnotationOverlay AnnotationD2D::rasterize(const AnnotationSpec& spec) {
     // テキストはレイアウトの実測、図形は端点+線幅からバウンディングボックスを決める
     BoundsF bounds{std::min(spec.p1.x, spec.p2.x), std::min(spec.p1.y, spec.p2.y),
                    std::max(spec.p1.x, spec.p2.x), std::max(spec.p1.y, spec.p2.y)};
-    ComPtr<IDWriteTextLayout> textLayout;
     if (spec.kind == AnnotationSpec::Kind::Text) {
-        ComPtr<IDWriteTextFormat> format;
-        if (FAILED(dwriteFactory_->CreateTextFormat(
-                L"Segoe UI", nullptr, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL,
-                DWRITE_FONT_STRETCH_NORMAL, spec.fontSize, L"ja-jp", &format))) {
-            return {};
-        }
-        // 選択領域の幅で折り返す(幅が小さすぎるときは1文字分を確保)
-        const float wrapWidth = std::max(bounds.maxX - bounds.minX, spec.fontSize);
-        if (FAILED(dwriteFactory_->CreateTextLayout(spec.text.c_str(),
-                                                    static_cast<UINT32>(spec.text.size()),
-                                                    format.Get(), wrapWidth, kMaxOverlaySize,
-                                                    &textLayout))) {
-            return {};
-        }
+        const ComPtr<IDWriteTextLayout> layout =
+            createAnnotationTextLayout(dwriteFactory_.Get(), spec, kMaxOverlaySize);
+        if (!layout) return {};
         DWRITE_TEXT_METRICS metrics{};
-        textLayout->GetMetrics(&metrics);
+        layout->GetMetrics(&metrics);
         bounds.maxX = bounds.minX + std::max(metrics.widthIncludingTrailingWhitespace, 1.0f);
         bounds.maxY = bounds.minY + std::max(metrics.height, 1.0f);
     }
@@ -111,65 +95,18 @@ AnnotationOverlay AnnotationD2D::rasterize(const AnnotationSpec& spec) {
     ComPtr<ID2D1SolidColorBrush> brush;
     if (FAILED(target->CreateSolidColorBrush(colorFromRGB(spec.colorRGB), &brush))) return {};
 
-    // ローカル座標 = 画像座標 - origin
-    const D2D1_POINT_2F p1{spec.p1.x - originX, spec.p1.y - originY};
-    const D2D1_POINT_2F p2{spec.p2.x - originX, spec.p2.y - originY};
-    const float left = std::min(p1.x, p2.x);
-    const float top = std::min(p1.y, p2.y);
-    const float right = std::max(p1.x, p2.x);
-    const float bottom = std::max(p1.y, p2.y);
-
     target->BeginDraw();
     target->Clear(D2D1::ColorF(0, 0.0f));
+    // 共通描画は画像座標で描くため、回転(bbox 中心周り)→ローカル座標への平行移動を設定
+    D2D1::Matrix3x2F transform = D2D1::Matrix3x2F::Translation(
+        -static_cast<float>(originX), -static_cast<float>(originY));
     if (spec.angleDeg != 0) {
-        target->SetTransform(D2D1::Matrix3x2F::Rotation(
-            spec.angleDeg, D2D1::Point2F(centerX - originX, centerY - originY)));
+        transform =
+            D2D1::Matrix3x2F::Rotation(spec.angleDeg, D2D1::Point2F(centerX, centerY)) *
+            transform;
     }
-    switch (spec.kind) {
-    case AnnotationSpec::Kind::Rect:
-        target->DrawRectangle(D2D1::RectF(left, top, right, bottom), brush.Get(),
-                              spec.strokeWidth);
-        break;
-    case AnnotationSpec::Kind::Ellipse:
-        target->DrawEllipse(D2D1::Ellipse(D2D1::Point2F((left + right) / 2, (top + bottom) / 2),
-                                          (right - left) / 2, (bottom - top) / 2),
-                            brush.Get(), spec.strokeWidth);
-        break;
-    case AnnotationSpec::Kind::Line:
-        target->DrawLine(p1, p2, brush.Get(), spec.strokeWidth);
-        break;
-    case AnnotationSpec::Kind::Arrow: {
-        const float dx = p2.x - p1.x;
-        const float dy = p2.y - p1.y;
-        const float length = std::sqrt(dx * dx + dy * dy);
-        if (length < 0.5f) {
-            target->DrawLine(p1, p2, brush.Get(), spec.strokeWidth);
-            break;
-        }
-        const float ux = dx / length;
-        const float uy = dy / length;
-        const float head = std::min(arrowHeadLength(spec.strokeWidth), length);
-        // ヘッドの根元まで線を引き、先端は塗りつぶし三角形にする
-        const D2D1_POINT_2F base{p2.x - ux * head, p2.y - uy * head};
-        target->DrawLine(p1, base, brush.Get(), spec.strokeWidth);
-        ComPtr<ID2D1PathGeometry> geometry;
-        ComPtr<ID2D1GeometrySink> sink;
-        if (SUCCEEDED(factory_->CreatePathGeometry(&geometry)) &&
-            SUCCEEDED(geometry->Open(&sink))) {
-            const float halfWidth = head * 0.5f;
-            sink->BeginFigure(p2, D2D1_FIGURE_BEGIN_FILLED);
-            sink->AddLine(D2D1::Point2F(base.x - uy * halfWidth, base.y + ux * halfWidth));
-            sink->AddLine(D2D1::Point2F(base.x + uy * halfWidth, base.y - ux * halfWidth));
-            sink->EndFigure(D2D1_FIGURE_END_CLOSED);
-            sink->Close();
-            target->FillGeometry(geometry.Get(), brush.Get());
-        }
-        break;
-    }
-    case AnnotationSpec::Kind::Text:
-        target->DrawTextLayout(D2D1::Point2F(left, top), textLayout.Get(), brush.Get());
-        break;
-    }
+    target->SetTransform(transform);
+    drawAnnotationShape(target.Get(), factory_.Get(), dwriteFactory_.Get(), spec, brush.Get());
     if (FAILED(target->EndDraw())) return {};
 
     auto image = std::make_shared<DecodedImage>();

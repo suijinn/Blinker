@@ -32,7 +32,7 @@ public:
         const std::wstring& defaultFileName) override;
     std::optional<size_t> showContextMenu(const std::vector<MenuItem>& items,
                                           Point screenPos) override;
-    std::optional<std::wstring> showTextInput() override;
+    std::optional<std::wstring> showTextInput(const std::wstring& initial) override;
     std::optional<uint32_t> showColorPicker(uint32_t initialRGB) override;
     void startTimer(unsigned milliseconds) override;
     void quit() override;
@@ -40,6 +40,7 @@ public:
 private:
     static LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp);
     LRESULT handleMessage(UINT msg, WPARAM wp, LPARAM lp);
+    void handleLeftDown(POINT pt);  // クリック位置の消費判定とパン/注釈ドラッグの開始
     void onPaint();
     void onSize(uint32_t width, uint32_t height);
     bool handleKey(WPARAM vk);
