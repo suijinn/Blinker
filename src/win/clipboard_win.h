@@ -14,7 +14,7 @@ public:
     void setOwner(HWND hwnd) { owner_ = hwnd; }
 
     bool setImage(const DecodedImage& image) override;
-    bool setText(const std::wstring& text) override;
+    bool setText(const std::string& text) override;
     std::shared_ptr<DecodedImage> getImage() override;
 
 private:

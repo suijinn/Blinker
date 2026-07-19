@@ -26,7 +26,7 @@ namespace blinker {
 // ポップアップメニューの1項目。children が空でなければサブメニューになる。
 // separator = true の項目は区切り線(text・children は無視)。
 struct MenuItem {
-    std::wstring text;
+    std::string text;  // UTF-8
     bool checked = false;
     bool separator = false;
     std::vector<MenuItem> children;
@@ -37,21 +37,21 @@ class IAppHost {
 public:
     virtual ~IAppHost() = default;
     virtual void requestRedraw() = 0;
-    virtual void setTitle(const std::wstring& title) = 0;
+    virtual void setTitle(const std::string& title) = 0;  // UTF-8
     virtual void setFullscreen(bool enabled) = 0;
     virtual bool isFullscreen() const = 0;
     virtual std::optional<std::filesystem::path> showOpenDialog() = 0;
     // 保存ダイアログ。キャンセル時 nullopt。返るパスには拡張子が付いていること
     virtual std::optional<std::filesystem::path> showSaveDialog(
-        const std::wstring& defaultFileName) = 0;
+        const std::string& defaultFileName) = 0;
     // ポップアップメニューをクライアント座標 screenPos に表示し、選択された項目の
     // index を返す(キャンセル時 nullopt)。index は選択可能な末端項目(separator と
     // サブメニュー親を除く)を深さ優先で数えた通し番号。モーダル(選択されるまで返らない)
     virtual std::optional<size_t> showContextMenu(const std::vector<MenuItem>& items,
                                                   Point screenPos) = 0;
     // テキスト入力ダイアログ(複数行)。initial を初期値として表示する(再編集用)。
-    // キャンセル時 nullopt。改行は L'\n'
-    virtual std::optional<std::wstring> showTextInput(const std::wstring& initial) = 0;
+    // キャンセル時 nullopt。文字列は UTF-8、改行は '\n'
+    virtual std::optional<std::string> showTextInput(const std::string& initial) = 0;
     // 色選択ダイアログ。キャンセル時 nullopt
     virtual std::optional<uint32_t> showColorPicker(uint32_t initialRGB) = 0;
     virtual void startTimer(unsigned milliseconds) = 0;  // 単発。満了で App::onTimer が呼ばれる
@@ -113,8 +113,8 @@ private:
     void clampSidebarScroll();
     void scrollSidebarToCurrent();    // 現在項目が見える位置までスクロール
     void applyLayout();  // サイドバー・ステータスバーの分だけビューポートを狭める
-    std::wstring hoverInfoText(Point screenPos) const;
-    void showMessage(std::wstring text);
+    std::string hoverInfoText(Point screenPos) const;
+    void showMessage(std::string text);
     Point clampToImage(Point imagePos) const;
 
     // 編集メニューの末端項目が表す操作。設定系はメニューを再表示して続けて選択できる
@@ -171,8 +171,8 @@ private:
     float sidebarWidth_ = 220.0f;
     float sidebarScroll_ = 0.0f;  // 一覧のスクロール量 (px)
     bool darkTheme_ = true;
-    std::wstring message_;      // ステータスバー左側の通知(タイマーで消える)
-    std::wstring hoverText_;    // ステータスバー右側(カーソル位置の座標・色)
+    std::string message_;      // ステータスバー左側の通知(タイマーで消える。UTF-8)
+    std::string hoverText_;    // ステータスバー右側(カーソル位置の座標・色。UTF-8)
 
     // 編集(トリミング・図形・テキスト)の状態
     static constexpr float kDragThresholdPx = 4.0f;  // これ未満の右ドラッグは無視(画面px)

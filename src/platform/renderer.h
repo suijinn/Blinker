@@ -18,14 +18,14 @@ struct StatusBarView {
     float height = 0;
     uint32_t backgroundRGB = 0;
     uint32_t textRGB = 0;
-    std::wstring leftText;   // 通知メッセージ or 画像情報
-    std::wstring rightText;  // カーソル位置の座標と色
+    std::string leftText;   // 通知メッセージ or 画像情報(UTF-8)
+    std::string rightText;  // カーソル位置の座標と色(UTF-8)
 };
 
 // サイドバー(ファイル名一覧)の描画内容。App が可視範囲の項目だけを組み立てる。
 // 領域はウィンドウ左端 (0, 0)-(width, height)。ステータスバーの高さは含まない。
 struct SidebarItem {
-    std::wstring text;
+    std::string text;  // UTF-8
     bool current = false;  // 表示中(一覧の現在位置)ならハイライト
 };
 

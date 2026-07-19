@@ -1,16 +1,22 @@
 #include "core/image_list.h"
 
 #include <algorithm>
-#include <cwctype>
+#include <cctype>
+#include <string>
+
+#include "core/unicode.h"
 
 namespace blinker {
 namespace {
 
-// Windows のパスは大文字小文字を区別しないため、無視して等価判定する
-bool equalsIgnoreCase(const std::wstring& a, const std::wstring& b) {
+// Windows のパスは大文字小文字を区別しないため、無視して等価判定する。
+// UTF-8 のマルチバイト部は 0x80 以上で ASCII と衝突しないため、ASCII のみの
+// 大文字小文字無視で安全に比較できる(非 ASCII はバイト一致)
+bool equalsIgnoreCase(const std::string& a, const std::string& b) {
     return a.size() == b.size() &&
-           std::equal(a.begin(), a.end(), b.begin(), [](wchar_t x, wchar_t y) {
-               return std::towlower(x) == std::towlower(y);
+           std::equal(a.begin(), a.end(), b.begin(), [](char x, char y) {
+               return std::tolower(static_cast<unsigned char>(x)) ==
+                      std::tolower(static_cast<unsigned char>(y));
            });
 }
 
@@ -21,9 +27,9 @@ void ImageList::set(std::vector<std::filesystem::path> files,
     files_ = std::move(files);
     index_ = 0;
     if (current.empty()) return;
-    const std::wstring target = current.generic_wstring();
+    const std::string target = pathToUtf8Generic(current);
     for (size_t i = 0; i < files_.size(); ++i) {
-        if (equalsIgnoreCase(files_[i].generic_wstring(), target)) {
+        if (equalsIgnoreCase(pathToUtf8Generic(files_[i]), target)) {
             index_ = i;
             break;
         }

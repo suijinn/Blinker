@@ -4,6 +4,7 @@
 #include <array>
 
 #include "core/annotation_edit.h"
+#include "core/unicode.h"
 #include "win/annotation_draw.h"
 
 namespace blinker {
@@ -211,7 +212,8 @@ void RendererD2D::drawSidebar(const SidebarView& sidebar) {
         brush_->SetColor(colorFromRGB(item.current ? sidebar.currentTextRGB : sidebar.textRGB));
         const auto rect =
             D2D1::RectF(kPadding, top, sidebar.width - kPadding - kScrollbarWidth, bottom);
-        target_->DrawText(item.text.c_str(), static_cast<UINT32>(item.text.size()),
+        const std::wstring text = utf8ToWide(item.text);
+        target_->DrawText(text.c_str(), static_cast<UINT32>(text.size()),
                           textFormat_.Get(), rect, brush_.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
     }
 
@@ -242,9 +244,10 @@ void RendererD2D::drawStatusBar(const StatusBarView& bar) {
     // 右側: 実測幅で右寄せ配置
     float rightStart = size.width - kPadding;
     if (!bar.rightText.empty()) {
+        const std::wstring rightText = utf8ToWide(bar.rightText);
         ComPtr<IDWriteTextLayout> layout;
         if (SUCCEEDED(dwriteFactory_->CreateTextLayout(
-                bar.rightText.c_str(), static_cast<UINT32>(bar.rightText.size()),
+                rightText.c_str(), static_cast<UINT32>(rightText.size()),
                 textFormat_.Get(), size.width, bar.height, &layout))) {
             DWRITE_TEXT_METRICS metrics{};
             layout->GetMetrics(&metrics);
@@ -257,7 +260,8 @@ void RendererD2D::drawStatusBar(const StatusBarView& bar) {
     // 左側: 右側テキストの手前まで。収まらなければ "…" で切り詰め
     if (!bar.leftText.empty() && rightStart > kPadding * 2) {
         const auto rect = D2D1::RectF(kPadding, top, rightStart - kPadding, size.height);
-        target_->DrawText(bar.leftText.c_str(), static_cast<UINT32>(bar.leftText.size()),
+        const std::wstring leftText = utf8ToWide(bar.leftText);
+        target_->DrawText(leftText.c_str(), static_cast<UINT32>(leftText.size()),
                           textFormat_.Get(), rect, brush_.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
     }
 }

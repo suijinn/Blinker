@@ -16,11 +16,19 @@ add_library(blinker_core STATIC
     src/core/image_list.cpp
     src/core/keymap.cpp
     src/core/pixel_convert.cpp
+    src/core/unicode.cpp
     src/core/viewport.cpp
 )
 target_include_directories(blinker_core PUBLIC src)
 if(MSVC)
     target_compile_options(blinker_core PUBLIC /W4 /utf-8 /permissive-)
+else()
+    target_compile_options(blinker_core PUBLIC -Wall -Wextra)
+endif()
+if(NOT WIN32)
+    # ImageCache のワーカースレッド (std::thread) 用
+    find_package(Threads REQUIRED)
+    target_link_libraries(blinker_core PUBLIC Threads::Threads)
 endif()
 
 if(WIN32)
@@ -41,6 +49,50 @@ if(WIN32)
     target_compile_definitions(blinker PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
     target_link_libraries(blinker PRIVATE blinker_core
         d2d1 dwrite windowscodecs shlwapi ole32 comdlg32 shell32 user32 gdi32 dwmapi advapi32)
+endif()
+
+# SDL3 バックエンド (Linux / macOS)。既定で非 Windows のとき有効。
+# システムに SDL3 があればそれを使い、なければ FetchContent でソース取得してビルドする
+if(WIN32)
+    option(BLINKER_SDL "Build the SDL3 backend" OFF)
+else()
+    option(BLINKER_SDL "Build the SDL3 backend" ON)
+endif()
+
+if(BLINKER_SDL)
+    find_package(SDL3 CONFIG QUIET)
+    if(NOT TARGET SDL3::SDL3)
+        include(FetchContent)
+        set(SDL_SHARED OFF CACHE BOOL "" FORCE)
+        set(SDL_STATIC ON CACHE BOOL "" FORCE)
+        set(SDL_TEST_LIBRARY OFF CACHE BOOL "" FORCE)
+        FetchContent_Declare(SDL3
+            GIT_REPOSITORY https://github.com/libsdl-org/SDL.git
+            GIT_TAG release-3.2.16
+            GIT_SHALLOW TRUE)
+        FetchContent_MakeAvailable(SDL3)
+    endif()
+
+    add_executable(blinker_sdl
+        src/sdl/main_sdl.cpp
+        src/sdl/window_sdl.cpp
+        src/sdl/renderer_sdl.cpp
+        src/sdl/font_stb.cpp
+        src/sdl/decoder_stb.cpp
+        src/sdl/encoder_stb.cpp
+        src/sdl/file_system_posix.cpp
+        src/sdl/clipboard_sdl.cpp
+        src/sdl/stb_impl.cpp
+    )
+    # stb ヘッダはライブラリ由来の警告が出るため、実装 TU のみ警告を抑止する
+    set_source_files_properties(src/sdl/stb_impl.cpp PROPERTIES
+        COMPILE_OPTIONS "$<IF:$<CXX_COMPILER_ID:MSVC>,/w,-w>")
+    target_include_directories(blinker_sdl PRIVATE third_party)
+    target_link_libraries(blinker_sdl PRIVATE blinker_core SDL3::SDL3)
+    if(NOT WIN32)
+        # 非 Windows では実行ファイル名は blinker(win 版と同じ使い勝手)
+        set_target_properties(blinker_sdl PROPERTIES OUTPUT_NAME blinker)
+    endif()
 endif()
 
 enable_testing()
