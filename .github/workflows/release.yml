@@ -6,6 +6,7 @@
 # vcvars を要求し、CI では第三者製アクションへの依存が増えるため。配布バイナリを
 # 生成する経路なのでサプライチェーンは公式アクションのみに絞る。
 # (両者の出力は 429,056 バイトで一致することを確認済み。サイズ上の不利はない)
+# ジェネレータのバージョンは決め打ちにしないこと(Configure ステップのコメント参照)。
 name: release
 
 on:
@@ -36,7 +37,13 @@ jobs:
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
       - name: Configure
-        run: cmake -S . -B build/ci -G "Visual Studio 17 2022" -A x64
+        # ジェネレータは指定せず CMake に検出させる。windows-latest のイメージが載せる
+        # Visual Studio は更新される(2026-07 に windows-2025-vs2026 へ変わり、
+        # "Visual Studio 17 2022" 決め打ちが "could not find any instance of
+        # Visual Studio" で壊れた)。検出結果はログに出るので追跡できる。
+        run: |
+          cmake --version
+          cmake -S . -B build/ci -A x64
 
       - name: Build
         run: cmake --build build/ci --config Release
