@@ -16,6 +16,9 @@ sidebar_width = 220
 fit_upscale = false
 # 前後何枚を先読みするか (0-8)
 prefetch_radius = 2
+# [Linux/macOS (SDL版) のみ] UI フォントのファイルパス (.ttf/.ttc/.otf)。
+# 未指定なら Noto CJK 等の既知のシステムフォントを自動探索する
+# font_path = /usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc
 
 [edit]
 # 右ドラッグで領域を選択→メニューでトリミング・図形・テキストを追加できる。

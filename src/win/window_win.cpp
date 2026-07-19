@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <vector>
 
+#include "core/unicode.h"
 #include "platform/image_formats.h"
 
 namespace blinker {
@@ -372,8 +373,8 @@ void MainWindow::requestRedraw() {
     InvalidateRect(hwnd_, nullptr, FALSE);
 }
 
-void MainWindow::setTitle(const std::wstring& title) {
-    SetWindowTextW(hwnd_, title.c_str());
+void MainWindow::setTitle(const std::string& title) {
+    SetWindowTextW(hwnd_, utf8ToWide(title).c_str());
 }
 
 void MainWindow::setFullscreen(bool enabled) {
@@ -403,7 +404,7 @@ std::optional<std::filesystem::path> MainWindow::showOpenDialog() {
     for (const auto ext : kImageExtensions) {
         if (!patterns.empty()) patterns += L';';
         patterns += L'*';
-        patterns += ext;
+        patterns += utf8ToWide(ext);  // 拡張子は ASCII
     }
     // OPENFILENAME のフィルタは NUL 区切り・二重 NUL 終端
     std::wstring filter;
@@ -428,7 +429,8 @@ std::optional<std::filesystem::path> MainWindow::showOpenDialog() {
 }
 
 std::optional<std::filesystem::path> MainWindow::showSaveDialog(
-    const std::wstring& defaultFileName) {
+    const std::string& defaultFileNameUtf8) {
+    const std::wstring defaultFileName = utf8ToWide(defaultFileNameUtf8);
     // フィルタ順は EncoderWic の対応形式と一致させる (1=PNG, 2=JPEG, 3=BMP)
     std::wstring filter;
     filter += L"PNG (*.png)";
@@ -482,11 +484,12 @@ bool appendMenuItems(HMENU menu, const std::vector<MenuItem>& items, UINT& nextI
                 DestroyMenu(sub);
                 return false;
             }
-            AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(sub), item.text.c_str());
+            AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(sub),
+                        utf8ToWide(item.text).c_str());
             continue;
         }
         AppendMenuW(menu, MF_STRING | (item.checked ? MF_CHECKED : 0u), nextId++,
-                    item.text.c_str());
+                    utf8ToWide(item.text).c_str());
     }
     return true;
 }
@@ -524,16 +527,17 @@ std::optional<uint32_t> MainWindow::showColorPicker(uint32_t initialRGB) {
            static_cast<uint32_t>(GetBValue(cc.rgbResult));
 }
 
-std::optional<std::wstring> MainWindow::showTextInput(const std::wstring& initial) {
+std::optional<std::string> MainWindow::showTextInput(const std::string& initial) {
     const std::vector<WORD> dlgTemplate = buildTextInputTemplate();
+    const std::wstring initialWide = utf8ToWide(initial);
     std::wstring result;
-    TextInputParams params{&initial, &result};
+    TextInputParams params{&initialWide, &result};
     const INT_PTR code = DialogBoxIndirectParamW(
         reinterpret_cast<HINSTANCE>(GetWindowLongPtrW(hwnd_, GWLP_HINSTANCE)),
         reinterpret_cast<const DLGTEMPLATE*>(dlgTemplate.data()), hwnd_, textInputDlgProc,
         reinterpret_cast<LPARAM>(&params));
     if (code != IDOK) return std::nullopt;
-    return result;
+    return wideToUtf8(result);
 }
 
 void MainWindow::startTimer(unsigned milliseconds) {

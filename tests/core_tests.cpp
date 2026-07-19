@@ -19,6 +19,8 @@
 #include "core/image_list.h"
 #include "core/keymap.h"
 #include "core/pixel_convert.h"
+#include "core/str_util.h"
+#include "core/unicode.h"
 #include "core/viewport.h"
 
 namespace {
@@ -198,7 +200,7 @@ void testImageList() {
     ImageList list;
     CHECK(list.empty());
 
-    list.set({L"C:/pics/1.png", L"C:/pics/2.png", L"C:/pics/10.png"}, L"C:/PICS/2.PNG");
+    list.set({"C:/pics/1.png", "C:/pics/2.png", "C:/pics/10.png"}, "C:/PICS/2.PNG");
     CHECK(list.size() == 3);
     CHECK(list.index() == 1);  // 大文字小文字を無視して一致
 
@@ -211,8 +213,8 @@ void testImageList() {
     CHECK(list.last());
     CHECK(list.index() == 2);
 
-    list.set({L"a.png", L"b.png", L"c.png", L"d.png", L"e.png"}, L"c.png");
-    CHECK(list.at(3).filename() == L"d.png");
+    list.set({"a.png", "b.png", "c.png", "d.png", "e.png"}, "c.png");
+    CHECK(list.at(3).filename() == "d.png");
     CHECK(list.jumpTo(4));
     CHECK(list.index() == 4);
     CHECK(!list.jumpTo(4));  // 同じ位置は false
@@ -222,10 +224,10 @@ void testImageList() {
 
     const auto order = list.prefetchOrder(2);
     CHECK(order.size() == 4);
-    CHECK(order[0].filename() == L"d.png");  // +1 が最優先
-    CHECK(order[1].filename() == L"b.png");
-    CHECK(order[2].filename() == L"e.png");
-    CHECK(order[3].filename() == L"a.png");
+    CHECK(order[0].filename() == "d.png");  // +1 が最優先
+    CHECK(order[1].filename() == "b.png");
+    CHECK(order[2].filename() == "e.png");
+    CHECK(order[3].filename() == "a.png");
 }
 
 // ---- DIB 変換 (クリップボード貼り付け用) ----
@@ -416,7 +418,7 @@ void testPixelConvert() {
 class FakeDecoder final : public IImageDecoder {
 public:
     std::shared_ptr<DecodedImage> decode(const std::filesystem::path& path) override {
-        if (path.wstring().find(L"fail") != std::wstring::npos) return nullptr;
+        if (pathToUtf8(path).find("fail") != std::string::npos) return nullptr;
         auto image = std::make_shared<DecodedImage>();
         image->width = 1;
         image->height = 1;
@@ -438,8 +440,8 @@ void testImageCache() {
         cv.notify_all();
     });
 
-    cache.requestNow(L"ok.png");
-    cache.requestNow(L"fail.png");
+    cache.requestNow("ok.png");
+    cache.requestNow("fail.png");
     {
         std::unique_lock lock(mutex);
         const bool done = cv.wait_for(lock, std::chrono::seconds(5),
@@ -448,27 +450,27 @@ void testImageCache() {
     }
 
     bool failed = false;
-    const auto image = cache.tryGet(L"ok.png", &failed);
+    const auto image = cache.tryGet("ok.png", &failed);
     CHECK(image != nullptr);
     CHECK(!failed);
     CHECK(image->width == 1);
 
-    const auto none = cache.tryGet(L"fail.png", &failed);
+    const auto none = cache.tryGet("fail.png", &failed);
     CHECK(none == nullptr);
     CHECK(failed);
 
-    CHECK(cache.tryGet(L"never_requested.png") == nullptr);
+    CHECK(cache.tryGet("never_requested.png") == nullptr);
 }
 
 class FakeHost final : public IAppHost {
 public:
     void requestRedraw() override {}
-    void setTitle(const std::wstring& title) override { lastTitle = title; }
+    void setTitle(const std::string& title) override { lastTitle = title; }
     void setFullscreen(bool enabled) override { fullscreen = enabled; }
     bool isFullscreen() const override { return fullscreen; }
     std::optional<std::filesystem::path> showOpenDialog() override { return std::nullopt; }
     std::optional<std::filesystem::path> showSaveDialog(
-        const std::wstring& defaultFileName) override {
+        const std::string& defaultFileName) override {
         ++saveDialogCount;
         lastDefaultName = defaultFileName;
         return savePath;
@@ -484,7 +486,7 @@ public:
         }
         return menuChoice;
     }
-    std::optional<std::wstring> showTextInput(const std::wstring& initial) override {
+    std::optional<std::string> showTextInput(const std::string& initial) override {
         lastTextInitial = initial;
         return textInput;
     }
@@ -498,16 +500,16 @@ public:
 
     bool fullscreen = false;
     unsigned lastTimerMs = 0;
-    std::wstring lastTitle;
+    std::string lastTitle;
     std::optional<std::filesystem::path> savePath;  // 保存ダイアログの応答 (nullopt = キャンセル)
     int saveDialogCount = 0;
-    std::wstring lastDefaultName;
+    std::string lastDefaultName;
     std::optional<size_t> menuChoice;  // メニューの応答 (nullopt = キャンセル)
     std::deque<size_t> menuQueue;      // 空でなければ menuChoice より優先
     int menuCount = 0;
     std::vector<MenuItem> lastMenuItems;
-    std::optional<std::wstring> textInput;  // テキスト入力の応答 (nullopt = キャンセル)
-    std::wstring lastTextInitial;           // テキスト入力ダイアログに渡された初期値
+    std::optional<std::string> textInput;  // テキスト入力の応答 (nullopt = キャンセル)
+    std::string lastTextInitial;           // テキスト入力ダイアログに渡された初期値
     std::optional<uint32_t> colorChoice;    // 色ダイアログの応答 (nullopt = キャンセル)
     uint32_t lastColorPickerInitial = 0;
     int colorPickerCount = 0;
@@ -544,7 +546,7 @@ public:
         lastPixels = image.pixels;
         return true;
     }
-    bool setText(const std::wstring& text) override {
+    bool setText(const std::string& text) override {
         lastText = text;
         return true;
     }
@@ -553,7 +555,7 @@ public:
     int imageCount = 0;
     uint32_t lastWidth = 0;
     std::vector<uint8_t> lastPixels;
-    std::wstring lastText;
+    std::string lastText;
     std::shared_ptr<DecodedImage> pasteImage;  // getImage の応答 (nullptr = 画像なし)
 };
 
@@ -626,7 +628,7 @@ void testAppClipboard() {
         decoded = true;
         cv.notify_all();
     });
-    const std::filesystem::path path = L"C:/pics/a.png";
+    const std::filesystem::path path = "C:/pics/a.png";
     fileSystem.files = {path};
     app.openPath(path);
     {
@@ -641,7 +643,7 @@ void testAppClipboard() {
     CHECK(clipboard.lastWidth == 1);  // FakeDecoder は 1x1 を返す
 
     app.execute(Command::CopyPath);
-    CHECK(clipboard.lastText == path.wstring());
+    CHECK(clipboard.lastText == pathToUtf8(path));
 }
 
 void testAppStatusBar() {
@@ -671,7 +673,7 @@ void testAppStatusBar() {
         decoded = true;
         cv.notify_all();
     });
-    const std::filesystem::path path = L"C:/pics/black.png";
+    const std::filesystem::path path = "C:/pics/black.png";
     fileSystem.files = {path};
     app.openPath(path);
     {
@@ -680,12 +682,12 @@ void testAppStatusBar() {
     }
     app.onDecodeCompleted();
     CHECK(app.currentImage() != nullptr);
-    CHECK(app.statusBar().leftText == L"1 x 1 px");
+    CHECK(app.statusBar().leftText == "1 x 1 px");
 
     // 1x1 画像はビューポート 800x(600-26) の中央 (400, 287) に等倍表示される。
     // その位置にカーソルを置くとピクセル (0,0) の座標と色が出る
     app.onMouseMove({400, 287});
-    CHECK(app.statusBar().rightText == L"(0, 0)  #000000  RGB(0, 0, 0)");
+    CHECK(app.statusBar().rightText == "(0, 0)  #000000  RGB(0, 0, 0)");
 
     // ステータスバー上・画像外では表示しない
     app.onMouseMove({400, 590});
@@ -697,12 +699,12 @@ void testAppStatusBar() {
 
     // コピーで通知が出て、タイマー満了で画像情報表示に戻る
     app.execute(Command::CopyImage);
-    CHECK(app.statusBar().leftText == L"画像をクリップボードにコピーしました");
+    CHECK(app.statusBar().leftText == "画像をクリップボードにコピーしました");
     CHECK(host.lastTimerMs == 3000);
     app.execute(Command::CopyPath);
-    CHECK(app.statusBar().leftText == L"パスをコピーしました: " + path.wstring());
+    CHECK(app.statusBar().leftText == "パスをコピーしました: " + pathToUtf8(path));
     app.onTimer();
-    CHECK(app.statusBar().leftText == L"1 x 1 px");
+    CHECK(app.statusBar().leftText == "1 x 1 px");
 
     // トグルとフルスクリーンで非表示になる
     app.execute(Command::ToggleStatusBar);
@@ -728,12 +730,12 @@ void testAppPasteSave() {
     // 画像なしでの保存: ダイアログは開かずメッセージ
     app.execute(Command::SaveImageAs);
     CHECK(host.saveDialogCount == 0);
-    CHECK(app.statusBar().leftText == L"保存する画像がありません");
+    CHECK(app.statusBar().leftText == "保存する画像がありません");
 
     // クリップボードが空のときの貼り付け
     app.execute(Command::PasteImage);
     CHECK(app.currentImage() == nullptr);
-    CHECK(app.statusBar().leftText == L"クリップボードに画像がありません");
+    CHECK(app.statusBar().leftText == "クリップボードに画像がありません");
 
     // フォルダの画像 (FakeDecoder の 1x1) を開く
     std::mutex mutex;
@@ -744,7 +746,7 @@ void testAppPasteSave() {
         decoded = true;
         cv.notify_all();
     });
-    const std::filesystem::path path = L"C:/pics/a.png";
+    const std::filesystem::path path = "C:/pics/a.png";
     fileSystem.files = {path};
     app.openPath(path);
     {
@@ -763,8 +765,8 @@ void testAppPasteSave() {
     app.onTimer();  // 直前の通知メッセージを消しておく
     app.execute(Command::PasteImage);
     CHECK(app.currentImage() && app.currentImage()->width == 2);
-    CHECK(host.lastTitle.find(L"(クリップボード)") == 0);
-    CHECK(app.statusBar().leftText == L"2 x 1 px");
+    CHECK(host.lastTitle.find("(クリップボード)") == 0);
+    CHECK(app.statusBar().leftText == "2 x 1 px");
 
     // デコード完了通知が来ても貼り付け画像は上書きされない
     app.onDecodeCompleted();
@@ -772,27 +774,27 @@ void testAppPasteSave() {
 
     // 貼り付け表示中はパスのコピーを拒否(一覧のパスとは無関係のため)
     app.execute(Command::CopyPath);
-    CHECK(app.statusBar().leftText == L"コピーするパスがありません");
+    CHECK(app.statusBar().leftText == "コピーするパスがありません");
 
     // 貼り付け画像の保存: 既定名は「クリップボード.png」
-    host.savePath = std::filesystem::path(L"C:/out/pasted.png");
+    host.savePath = std::filesystem::path("C:/out/pasted.png");
     app.execute(Command::SaveImageAs);
-    CHECK(host.lastDefaultName == L"クリップボード.png");
-    CHECK(encoder.lastPath == std::filesystem::path(L"C:/out/pasted.png"));
+    CHECK(host.lastDefaultName == "クリップボード.png");
+    CHECK(encoder.lastPath == std::filesystem::path("C:/out/pasted.png"));
     CHECK(encoder.lastWidth == 2);
-    CHECK(app.statusBar().leftText == L"保存しました: C:/out/pasted.png");
+    CHECK(app.statusBar().leftText == "保存しました: C:/out/pasted.png");
 
     // 次へ移動でフォルダ一覧の表示に戻る(1枚しかなくても)
     app.execute(Command::NextImage);
     CHECK(app.currentImage() && app.currentImage()->width == 1);
-    CHECK(host.lastTitle.find(L"a.png") != std::wstring::npos);
+    CHECK(host.lastTitle.find("a.png") != std::string::npos);
 
     // 通常画像の保存: 既定名は元ファイル名の .png 置き換え
-    host.savePath = std::filesystem::path(L"C:/out/copy.jpg");
+    host.savePath = std::filesystem::path("C:/out/copy.jpg");
     app.execute(Command::SaveImageAs);
-    CHECK(host.lastDefaultName == L"a.png");
+    CHECK(host.lastDefaultName == "a.png");
     CHECK(encoder.lastWidth == 1);
-    CHECK(app.statusBar().leftText == L"保存しました: C:/out/copy.jpg");
+    CHECK(app.statusBar().leftText == "保存しました: C:/out/copy.jpg");
 
     // ダイアログのキャンセル: エンコードもメッセージも発生しない
     app.onTimer();  // 前のメッセージを消す
@@ -800,13 +802,13 @@ void testAppPasteSave() {
     const int encodeCountBefore = encoder.encodeCount;
     app.execute(Command::SaveImageAs);
     CHECK(encoder.encodeCount == encodeCountBefore);
-    CHECK(app.statusBar().leftText == L"1 x 1 px");
+    CHECK(app.statusBar().leftText == "1 x 1 px");
 
     // 保存失敗
     encoder.ok = false;
-    host.savePath = std::filesystem::path(L"C:/out/x.png");
+    host.savePath = std::filesystem::path("C:/out/x.png");
     app.execute(Command::SaveImageAs);
-    CHECK(app.statusBar().leftText == L"保存に失敗しました: C:/out/x.png");
+    CHECK(app.statusBar().leftText == "保存に失敗しました: C:/out/x.png");
 }
 
 void testAppSidebar() {
@@ -833,7 +835,7 @@ void testAppSidebar() {
         cv.notify_all();
     });
     for (int i = 1; i <= 30; ++i) {
-        fileSystem.files.push_back(std::format(L"C:/pics/f{:02}.png", i));
+        fileSystem.files.push_back(std::format("C:/pics/f{:02}.png", i));
     }
     app.openPath(fileSystem.files[9]);
     {
@@ -853,7 +855,7 @@ void testAppSidebar() {
     CHECK(nearly(sb.contentHeight, 720));   // 30 * 24
     CHECK(nearly(sb.scrollOffset, 0));      // 10 枚目 (y=216..240) は視界内
     CHECK(sb.items.size() == 25);           // 可視範囲のみ (574/24 + 2)
-    CHECK(sb.items[0].text == L"f01.png");
+    CHECK(sb.items[0].text == "f01.png");
     CHECK(sb.items[9].current);
     CHECK(!sb.items[0].current);
 
@@ -886,12 +888,12 @@ void testAppSidebar() {
 
     // クリックでジャンプ: scroll=0 で y=100 → index 4 (f05.png)
     CHECK(app.onMouseDown({100, 100}));
-    CHECK(host.lastTitle.find(L"f05.png") == 0);
+    CHECK(host.lastTitle.find("f05.png") == 0);
     // ビューポート上のクリックは消費しない(パン開始に回す)
     CHECK(!app.onMouseDown({500, 300}));
     // サイドバー幅内でもステータスバーの高さでは消費のみ(ジャンプしない)
     CHECK(app.onMouseDown({100, 590}));
-    CHECK(host.lastTitle.find(L"f05.png") == 0);
+    CHECK(host.lastTitle.find("f05.png") == 0);
 
     // f05 のデコード完了を待って表示を確定させる(以降のチェックを決定的にする)
     {
@@ -909,9 +911,9 @@ void testAppSidebar() {
     pasted->pixels = {0, 0, 0, 255, 0, 0, 0, 255};
     clipboard.pasteImage = pasted;
     app.execute(Command::PasteImage);
-    CHECK(host.lastTitle.find(L"(クリップボード)") == 0);
+    CHECK(host.lastTitle.find("(クリップボード)") == 0);
     CHECK(app.onMouseDown({100, 100}));  // index 4 = 現在項目
-    CHECK(host.lastTitle.find(L"f05.png") == 0);
+    CHECK(host.lastTitle.find("f05.png") == 0);
     CHECK(app.currentImage() && app.currentImage()->width == 1);
 
     // フルスクリーン中は非表示
@@ -1144,7 +1146,8 @@ void testAppAnnotationObjects() {
     CHECK(app.annotations().selected == std::optional<size_t>(0));
     app.onMouseMove({398, 285});  // +2px 移動
     {
-        const AnnotationSpec& spec = app.annotations().specs->front();
+        const AnnotationsView view = app.annotations();
+        const AnnotationSpec& spec = view.specs->front();
         CHECK(nearly(spec.p1.x, 2) && nearly(spec.p1.y, 2));
         CHECK(nearly(spec.p2.x, 6) && nearly(spec.p2.y, 6));
     }
@@ -1170,7 +1173,8 @@ void testAppAnnotationObjects() {
     CHECK(app.onMouseDown({400, 287}));  // 右下ハンドルを掴む
     app.onMouseMove({402, 289});
     {
-        const AnnotationSpec& spec = app.annotations().specs->front();
+        const AnnotationsView view = app.annotations();
+        const AnnotationSpec& spec = view.specs->front();
         CHECK(nearly(spec.p1.x, 0) && nearly(spec.p1.y, 0));
         CHECK(nearly(spec.p2.x, 6) && nearly(spec.p2.y, 6));
     }
@@ -1212,7 +1216,7 @@ void testAppAnnotationObjects() {
 
     // テキスト注釈を追加し、ダブルクリックで初期値入りダイアログから再編集する
     host.menuChoice = 5;  // テキスト
-    host.textInput = L"元のテキスト";
+    host.textInput = "元のテキスト";
     rasterizer.overlayWidth = 24;
     rasterizer.overlayHeight = 44;  // 実測境界 20x40(リサイズテストでハンドルを離すため縦長)
     const int measureCount = rasterizer.rasterizeCount;
@@ -1220,10 +1224,10 @@ void testAppAnnotationObjects() {
     app.onRightDragEnd({404, 290});    // 閾値以上のドラッグで編集メニューを出す
     CHECK(rasterizer.rasterizeCount == measureCount + 1);
     CHECK(app.annotations().specs->size() == 2);
-    host.textInput = L"更新後";
+    host.textInput = "更新後";
     CHECK(app.onDoubleClick({402, 288}));
-    CHECK(host.lastTextInitial == L"元のテキスト");
-    CHECK(app.annotations().specs->back().text == L"更新後");
+    CHECK(host.lastTextInitial == "元のテキスト");
+    CHECK(app.annotations().specs->back().text == "更新後");
     CHECK(rasterizer.rasterizeCount == measureCount + 2);  // 再実測
     CHECK(!app.onDoubleClick({600, 450}));  // テキスト以外の場所では何もしない
 
@@ -1231,11 +1235,11 @@ void testAppAnnotationObjects() {
     app.execute(Command::DeleteAnnotation);  // ダブルクリックで選択済み
     CHECK(app.annotations().specs->size() == 1);
     app.execute(Command::DeleteAnnotation);
-    CHECK(app.statusBar().leftText == L"削除する注釈がありません");
+    CHECK(app.statusBar().leftText == "削除する注釈がありません");
     app.onTimer();
     app.execute(Command::Undo);
     CHECK(app.annotations().specs->size() == 2);
-    CHECK(app.annotations().specs->back().text == L"更新後");
+    CHECK(app.annotations().specs->back().text == "更新後");
 
     // トリミング後も注釈はオブジェクトのまま維持され、座標が平行移動する
     host.menuChoice = 0;  // トリミング
@@ -1250,7 +1254,7 @@ void testAppAnnotationObjects() {
 
     // 保存は注釈を合成した画像を出力する(注釈の数だけラスタライズされる)
     const int rasterizeBeforeSave = rasterizer.rasterizeCount;
-    host.savePath = std::filesystem::path(L"C:/out/annotated.png");
+    host.savePath = std::filesystem::path("C:/out/annotated.png");
     app.execute(Command::SaveImageAs);
     CHECK(encoder.lastWidth == 8);
     CHECK(rasterizer.rasterizeCount == rasterizeBeforeSave + 2);
@@ -1332,16 +1336,16 @@ void testAppEdit() {
     app.onRightDragStart({396, 283});
     app.onRightDragEnd({400, 287});
     CHECK(app.currentImage()->width == 4 && app.currentImage()->height == 4);
-    CHECK(app.statusBar().leftText == L"4 x 4 px");
-    CHECK(host.lastTitle.find(L"(編集済み)") != std::wstring::npos);
+    CHECK(app.statusBar().leftText == "4 x 4 px");
+    CHECK(host.lastTitle.find("(編集済み)") != std::string::npos);
     CHECK(!app.selection().visible);
 
     // Undo で元に戻る。履歴が空ならメッセージ
     app.execute(Command::Undo);
     CHECK(app.currentImage()->width == 8);
-    CHECK(host.lastTitle.find(L"(編集済み)") == std::wstring::npos);
+    CHECK(host.lastTitle.find("(編集済み)") == std::string::npos);
     app.execute(Command::Undo);
-    CHECK(app.statusBar().leftText == L"取り消す編集はありません");
+    CHECK(app.statusBar().leftText == "取り消す編集はありません");
     app.onTimer();
 
     // 矩形: 画像へは焼き込まず注釈オブジェクトとして追加され、追加直後は選択状態になる
@@ -1360,7 +1364,7 @@ void testAppEdit() {
         CHECK(nearly(spec.angleDeg, 0));
         CHECK(view.selected && *view.selected == 0);
     }
-    CHECK(host.lastTitle.find(L"(編集済み)") != std::wstring::npos);
+    CHECK(host.lastTitle.find("(編集済み)") != std::string::npos);
     CHECK(app.currentImage()->pixels[(1 * 8 + 1) * 4 + 2] == 0);  // 画像自体は無変更
 
     // コピーは注釈を合成した画像になる (2x2 赤 overlay が (1,1) へ)
@@ -1384,17 +1388,18 @@ void testAppEdit() {
     app.onRightDragEnd({400, 287});
     CHECK(rasterizer.rasterizeCount == 1);
     CHECK(app.annotations().specs->size() == 1);
-    host.textInput = L"メモ";
+    host.textInput = "メモ";
     rasterizer.overlayWidth = 24;   // 実測境界: 24-4 x 12-4 (テキスト余白 2px x 両側)
     rasterizer.overlayHeight = 12;
     app.onRightDragStart({396, 283});
     app.onRightDragEnd({400, 287});
     CHECK(rasterizer.rasterizeCount == 2);
     CHECK(rasterizer.lastSpec.kind == AnnotationSpec::Kind::Text);
-    CHECK(rasterizer.lastSpec.text == L"メモ");
+    CHECK(rasterizer.lastSpec.text == "メモ");
     CHECK(host.lastTextInitial.empty());  // 新規追加は空の初期値
     {
-        const AnnotationSpec& text = app.annotations().specs->back();
+        const AnnotationsView view = app.annotations();
+        const AnnotationSpec& text = view.specs->back();
         CHECK(nearly(text.fontSize, 18));  // 既定値 (等倍表示)
         CHECK(nearly(text.p1.x, 0) && nearly(text.p1.y, 0));
         CHECK(nearly(text.p2.x, 20) && nearly(text.p2.y, 8));  // 実測境界が p2 に入る
@@ -1411,11 +1416,11 @@ void testAppEdit() {
     CHECK(nearly(app.annotations().specs->back().strokeWidth, 8));
 
     // 文字サイズ 24px + 複数行テキスト。変更済みの設定も引き継がれる
-    host.textInput = L"1行目\n2行目";
+    host.textInput = "1行目\n2行目";
     host.menuQueue = {16 /*文字24px*/, 5 /*テキスト*/};
     app.onRightDragStart({396, 283});
     app.onRightDragEnd({400, 287});
-    CHECK(app.annotations().specs->back().text == L"1行目\n2行目");
+    CHECK(app.annotations().specs->back().text == "1行目\n2行目");
     CHECK(nearly(app.annotations().specs->back().fontSize, 24));
 
     // 色の変更: ダイアログの結果が以降の編集に使われる。キャンセルなら元のまま
@@ -1447,29 +1452,81 @@ void testAppEdit() {
 
     // テキストの実測(ラスタライズ)失敗はメッセージのみで追加されない
     rasterizer.ok = false;
-    host.textInput = L"失敗するテキスト";
+    host.textInput = "失敗するテキスト";
     host.menuChoice = 5;
     const size_t countBeforeFail = app.annotations().specs->size();
     app.onRightDragStart({396, 283});
     app.onRightDragEnd({400, 287});
-    CHECK(app.statusBar().leftText == L"描画に失敗しました");
+    CHECK(app.statusBar().leftText == "描画に失敗しました");
     CHECK(app.annotations().specs->size() == countBeforeFail);
     rasterizer.ok = true;
     app.onTimer();
 
     // 画像移動で編集(注釈含む)は破棄される(一覧が空なので表示もなくなる)
     app.execute(Command::NextImage);
-    CHECK(app.statusBar().leftText == L"編集を破棄しました");
+    CHECK(app.statusBar().leftText == "編集を破棄しました");
     CHECK(app.currentImage() == nullptr);
     CHECK(app.annotations().specs->empty());
-    CHECK(host.lastTitle == L"Blinker");
+    CHECK(host.lastTitle == "Blinker");
     app.execute(Command::Undo);
-    CHECK(app.statusBar().leftText == L"取り消す編集はありません");
+    CHECK(app.statusBar().leftText == "取り消す編集はありません");
+}
+
+void testUnicode() {
+    // ASCII・日本語・サロゲートペア(絵文字)の往復
+    const std::string utf8 = "ABC 日本語テスト 😀";
+    CHECK(wideToUtf8(utf8ToWide(utf8)) == utf8);
+    CHECK(utf32ToUtf8(utf8ToUtf32(utf8)) == utf8);
+
+    // コードポイント数の検証(😀 は1コードポイント)
+    CHECK(utf8ToUtf32("😀").size() == 1);
+    CHECK(utf8ToUtf32("日本語").size() == 3);
+
+    // wchar_t のサイズに応じた表現(Windows: UTF-16 サロゲートペア、他: UTF-32)
+    const std::wstring wide = utf8ToWide("😀");
+    if constexpr (sizeof(wchar_t) == 2) {
+        CHECK(wide.size() == 2);
+        CHECK(wide[0] == wchar_t(0xD83D) && wide[1] == wchar_t(0xDE00));
+    } else {
+        CHECK(wide.size() == 1);
+        CHECK(static_cast<char32_t>(wide[0]) == U'\U0001F600');
+    }
+
+    // 不正な UTF-8 は U+FFFD に置換される(例外なし・停止しない)
+    CHECK(utf8ToUtf32("\x80").front() == char32_t(0xFFFD));          // 継続バイト単独
+    CHECK(utf8ToUtf32("\xC2").front() == char32_t(0xFFFD));          // 途切れた2バイト列
+    CHECK(utf8ToUtf32("\xED\xA0\x80").front() == char32_t(0xFFFD));  // サロゲート領域
+    CHECK(utf8ToUtf32("\xC0\xAF").front() == char32_t(0xFFFD));      // 冗長表現 (overlong)
+
+    // パス変換の往復(日本語ファイル名)
+    const std::filesystem::path p = pathFromUtf8("フォルダ/画像 (1).png");
+    CHECK(pathToUtf8Generic(p) == "フォルダ/画像 (1).png");
+}
+
+void testNaturalCompare() {
+    // 数字の連続は数値として比較(エクスプローラ相当)
+    CHECK(naturalCompare("1.png", "2.png") < 0);
+    CHECK(naturalCompare("2.png", "10.png") < 0);
+    CHECK(naturalCompare("a2b", "a10b") < 0);
+    CHECK(naturalCompare("img9.png", "img10.png") < 0);
+    // 大文字小文字は無視(ASCII)
+    CHECK(naturalCompare("ABC", "abc") == 0);
+    CHECK(naturalCompare("a2", "B1") < 0);
+    // 数値が同じなら先頭ゼロが少ない方が先
+    CHECK(naturalCompare("1", "01") < 0);
+    CHECK(naturalCompare("01.png", "01.png") == 0);
+    // 前置詞・長さの違い
+    CHECK(naturalCompare("abc", "abcd") < 0);
+    CHECK(naturalCompare("", "a") < 0);
+    // 非 ASCII (UTF-8) はバイト順 = コードポイント順
+    CHECK(naturalCompare("あ", "い") < 0);
 }
 
 } // namespace
 
 int main() {
+    testUnicode();
+    testNaturalCompare();
     testMatrix();
     testViewportFit();
     testViewportZoomAt();

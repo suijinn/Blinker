@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "core/dib.h"
+#include "core/unicode.h"
 
 namespace blinker {
 namespace {
@@ -155,7 +156,8 @@ std::shared_ptr<DecodedImage> ClipboardWin::getImage() {
     return image;
 }
 
-bool ClipboardWin::setText(const std::wstring& text) {
+bool ClipboardWin::setText(const std::string& textUtf8) {
+    const std::wstring text = utf8ToWide(textUtf8);
     HGLOBAL handle = allocGlobal(text.c_str(), (text.size() + 1) * sizeof(wchar_t));
     if (!handle || !openClipboard(owner_)) {
         if (handle) GlobalFree(handle);

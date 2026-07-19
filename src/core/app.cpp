@@ -8,6 +8,7 @@
 #include "core/annotation_edit.h"
 #include "core/edit.h"
 #include "core/pixel_convert.h"
+#include "core/unicode.h"
 
 namespace blinker {
 
@@ -16,6 +17,14 @@ namespace fs = std::filesystem;
 namespace {
 
 constexpr unsigned kMessageDurationMs = 3000;
+
+// 区切り線のメニュー項目({.separator = true} は gcc の
+// -Wmissing-field-initializers 警告になるため関数にする)
+MenuItem menuSeparator() {
+    MenuItem item;
+    item.separator = true;
+    return item;
+}
 
 } // namespace
 
@@ -119,20 +128,20 @@ void App::execute(Command command) {
         break;
     case Command::CopyImage:
         if (!current_) {
-            showMessage(L"コピーする画像がありません");
+            showMessage("コピーする画像がありません");
         } else if (clipboard_.setImage(*compositeImage())) {
-            showMessage(L"画像をクリップボードにコピーしました");
+            showMessage("画像をクリップボードにコピーしました");
         } else {
-            showMessage(L"画像のコピーに失敗しました");
+            showMessage("画像のコピーに失敗しました");
         }
         break;
     case Command::CopyPath:
         if (clipboardImage_ || list_.empty()) {
-            showMessage(L"コピーするパスがありません");
-        } else if (clipboard_.setText(list_.current().wstring())) {
-            showMessage(L"パスをコピーしました: " + list_.current().wstring());
+            showMessage("コピーするパスがありません");
+        } else if (clipboard_.setText(pathToUtf8(list_.current()))) {
+            showMessage("パスをコピーしました: " + pathToUtf8(list_.current()));
         } else {
-            showMessage(L"パスのコピーに失敗しました");
+            showMessage("パスのコピーに失敗しました");
         }
         break;
     case Command::PasteImage:
@@ -147,22 +156,22 @@ void App::execute(Command command) {
             updateTitle();
             host_.requestRedraw();
         } else {
-            showMessage(L"クリップボードに画像がありません");
+            showMessage("クリップボードに画像がありません");
         }
         break;
     case Command::SaveImageAs: {
         if (!current_) {
-            showMessage(L"保存する画像がありません");
+            showMessage("保存する画像がありません");
             break;
         }
-        const std::wstring defaultName = clipboardImage_ || list_.empty()
-                                             ? L"クリップボード.png"
-                                             : list_.current().stem().wstring() + L".png";
+        const std::string defaultName = clipboardImage_ || list_.empty()
+                                            ? "クリップボード.png"
+                                            : pathToUtf8(list_.current().stem()) + ".png";
         if (const auto path = host_.showSaveDialog(defaultName)) {
             if (encoder_.encode(*compositeImage(), *path)) {
-                showMessage(L"保存しました: " + path->wstring());
+                showMessage("保存しました: " + pathToUtf8(*path));
             } else {
-                showMessage(L"保存に失敗しました: " + path->wstring());
+                showMessage("保存に失敗しました: " + pathToUtf8(*path));
             }
         }
         break;
@@ -379,56 +388,56 @@ void App::onRightDragEnd(Point screenPos) {
 }
 
 std::vector<MenuItem> App::buildEditMenu(std::vector<EditMenuEntry>& entries) const {
-    const auto leaf = [&entries](std::wstring text, EditMenuEntry entry, bool checked = false) {
+    const auto leaf = [&entries](std::string text, EditMenuEntry entry, bool checked = false) {
         entries.push_back(entry);
         MenuItem item;
         item.text = std::move(text);
         item.checked = checked;
         return item;
     };
-    const auto annotate = [&leaf](std::wstring text, AnnotationSpec::Kind kind) {
+    const auto annotate = [&leaf](std::string text, AnnotationSpec::Kind kind) {
         return leaf(std::move(text), {EditMenuEntry::Action::Annotate, kind, 0});
     };
     using Action = EditMenuEntry::Action;
 
     std::vector<MenuItem> items;
-    items.push_back(leaf(L"トリミング", {Action::Crop}));
-    items.push_back({.separator = true});
-    items.push_back(annotate(L"矩形", AnnotationSpec::Kind::Rect));
-    items.push_back(annotate(L"楕円", AnnotationSpec::Kind::Ellipse));
-    items.push_back(annotate(L"矢印", AnnotationSpec::Kind::Arrow));
-    items.push_back(annotate(L"直線", AnnotationSpec::Kind::Line));
-    items.push_back(annotate(L"テキスト", AnnotationSpec::Kind::Text));
-    items.push_back({.separator = true});
+    items.push_back(leaf("トリミング", {Action::Crop}));
+    items.push_back(menuSeparator());
+    items.push_back(annotate("矩形", AnnotationSpec::Kind::Rect));
+    items.push_back(annotate("楕円", AnnotationSpec::Kind::Ellipse));
+    items.push_back(annotate("矢印", AnnotationSpec::Kind::Arrow));
+    items.push_back(annotate("直線", AnnotationSpec::Kind::Line));
+    items.push_back(annotate("テキスト", AnnotationSpec::Kind::Text));
+    items.push_back(menuSeparator());
 
     MenuItem stroke;
-    stroke.text = std::format(L"線の太さ ({}px)", static_cast<int>(editStrokeWidth_));
+    stroke.text = std::format("線の太さ ({}px)", static_cast<int>(editStrokeWidth_));
     for (const int w : {1, 2, 3, 5, 8, 12, 20}) {
         stroke.children.push_back(
-            leaf(std::format(L"{}px", w),
+            leaf(std::format("{}px", w),
                  {Action::StrokeWidth, AnnotationSpec::Kind::Rect, static_cast<float>(w)},
                  static_cast<float>(w) == editStrokeWidth_));
     }
     items.push_back(std::move(stroke));
 
     MenuItem font;
-    font.text = std::format(L"文字サイズ ({}px)", static_cast<int>(editFontSize_));
+    font.text = std::format("文字サイズ ({}px)", static_cast<int>(editFontSize_));
     for (const int s : {12, 14, 18, 24, 36, 48, 72}) {
         font.children.push_back(
-            leaf(std::format(L"{}px", s),
+            leaf(std::format("{}px", s),
                  {Action::FontSize, AnnotationSpec::Kind::Rect, static_cast<float>(s)},
                  static_cast<float>(s) == editFontSize_));
     }
     items.push_back(std::move(font));
 
     items.push_back(
-        leaf(std::format(L"色の変更... (#{:06X})", editColorRGB_), {Action::PickColor}));
+        leaf(std::format("色の変更... (#{:06X})", editColorRGB_), {Action::PickColor}));
     return items;
 }
 
 std::vector<MenuItem> App::buildObjectMenu(const AnnotationSpec& spec,
                                            std::vector<ObjectMenuEntry>& entries) const {
-    const auto leaf = [&entries](std::wstring text, ObjectMenuEntry entry,
+    const auto leaf = [&entries](std::string text, ObjectMenuEntry entry,
                                  bool checked = false) {
         entries.push_back(entry);
         MenuItem item;
@@ -440,15 +449,15 @@ std::vector<MenuItem> App::buildObjectMenu(const AnnotationSpec& spec,
 
     std::vector<MenuItem> items;
     if (spec.kind == AnnotationSpec::Kind::Text) {
-        items.push_back(leaf(L"テキストを編集...", {Action::EditText}));
+        items.push_back(leaf("テキストを編集...", {Action::EditText}));
     }
-    items.push_back(leaf(L"削除", {Action::Delete}));
-    items.push_back({.separator = true});
+    items.push_back(leaf("削除", {Action::Delete}));
+    items.push_back(menuSeparator());
 
     MenuItem angle;
-    angle.text = std::format(L"回転角度 ({}°)", static_cast<int>(std::lround(spec.angleDeg)));
+    angle.text = std::format("回転角度 ({}°)", static_cast<int>(std::lround(spec.angleDeg)));
     for (const int a : {0, 15, 30, 45, 90, 135, 180, 270}) {
-        angle.children.push_back(leaf(std::format(L"{}°", a),
+        angle.children.push_back(leaf(std::format("{}°", a),
                                       {Action::Angle, static_cast<float>(a)},
                                       static_cast<float>(a) == spec.angleDeg));
     }
@@ -458,9 +467,9 @@ std::vector<MenuItem> App::buildObjectMenu(const AnnotationSpec& spec,
     if (spec.kind == AnnotationSpec::Kind::Text) {
         MenuItem font;
         font.text =
-            std::format(L"文字サイズ ({}px)", static_cast<int>(std::lround(spec.fontSize)));
+            std::format("文字サイズ ({}px)", static_cast<int>(std::lround(spec.fontSize)));
         for (const int s : {12, 14, 18, 24, 36, 48, 72}) {
-            font.children.push_back(leaf(std::format(L"{}px", s),
+            font.children.push_back(leaf(std::format("{}px", s),
                                          {Action::FontSize, static_cast<float>(s)},
                                          static_cast<float>(s) == spec.fontSize));
         }
@@ -468,16 +477,16 @@ std::vector<MenuItem> App::buildObjectMenu(const AnnotationSpec& spec,
     } else {
         MenuItem stroke;
         stroke.text =
-            std::format(L"線の太さ ({}px)", static_cast<int>(std::lround(spec.strokeWidth)));
+            std::format("線の太さ ({}px)", static_cast<int>(std::lround(spec.strokeWidth)));
         for (const int w : {1, 2, 3, 5, 8, 12, 20}) {
-            stroke.children.push_back(leaf(std::format(L"{}px", w),
+            stroke.children.push_back(leaf(std::format("{}px", w),
                                            {Action::StrokeWidth, static_cast<float>(w)},
                                            static_cast<float>(w) == spec.strokeWidth));
         }
         items.push_back(std::move(stroke));
     }
     items.push_back(
-        leaf(std::format(L"色の変更... (#{:06X})", spec.colorRGB), {Action::PickColor}));
+        leaf(std::format("色の変更... (#{:06X})", spec.colorRGB), {Action::PickColor}));
     return items;
 }
 
@@ -512,7 +521,7 @@ void App::showObjectMenu(Point screenPos) {
         AnnotationSpec updated = spec;
         updated.fontSize = entry.value;
         if (!measureTextExtent(updated)) {
-            showMessage(L"描画に失敗しました");
+            showMessage("描画に失敗しました");
             return;
         }
         pushUndo();
@@ -589,7 +598,7 @@ void App::applyAnnotation(AnnotationSpec::Kind kind) {
         if (!text || text->empty()) return;
         spec.text = *text;
         if (!measureTextExtent(spec)) {
-            showMessage(L"描画に失敗しました");
+            showMessage("描画に失敗しました");
             return;
         }
     }
@@ -624,7 +633,7 @@ void App::editAnnotationText(size_t index) {
     AnnotationSpec updated = annotations_[index];
     updated.text = *text;
     if (!measureTextExtent(updated)) {
-        showMessage(L"描画に失敗しました");
+        showMessage("描画に失敗しました");
         return;
     }
     pushUndo();
@@ -635,7 +644,7 @@ void App::editAnnotationText(size_t index) {
 
 void App::deleteSelectedAnnotation() {
     if (!selected_ || *selected_ >= annotations_.size()) {
-        showMessage(L"削除する注釈がありません");
+        showMessage("削除する注釈がありません");
         return;
     }
     pushUndo();
@@ -675,7 +684,7 @@ void App::pushDragUndoOnce() {
 
 void App::executeUndo() {
     if (undoStack_.empty()) {
-        showMessage(L"取り消す編集はありません");
+        showMessage("取り消す編集はありません");
         return;
     }
     UndoState& state = undoStack_.back();
@@ -706,7 +715,7 @@ void App::discardEdits() {
     undoStack_.clear();
     if (edited_) {
         edited_ = false;
-        showMessage(L"編集を破棄しました");
+        showMessage("編集を破棄しました");
     }
 }
 
@@ -774,7 +783,7 @@ void App::onMouseMove(Point screenPos, bool shift) {
         host_.requestRedraw();
         return;
     }
-    std::wstring text = hoverInfoText(screenPos);
+    std::string text = hoverInfoText(screenPos);
     if (text == hoverText_) return;  // 表示が変わるときだけ再描画する
     hoverText_ = std::move(text);
     if (statusBarVisible()) host_.requestRedraw();
@@ -890,7 +899,7 @@ Matrix3x2 App::imageToScreen() const {
     return viewport_.imageToScreen() * Matrix3x2::translation(sidebarOffset(), 0);
 }
 
-std::wstring App::hoverInfoText(Point screenPos) const {
+std::string App::hoverInfoText(Point screenPos) const {
     if (!current_) return {};
     // ビューポート外(サイドバー・ステータスバー上を含む)では表示しない
     const float barHeight = statusBarVisible() ? kStatusBarHeight : 0.0f;
@@ -911,13 +920,13 @@ std::wstring App::hoverInfoText(Point screenPos) const {
     const uint8_t r = unpremultiply(px[2], a);
     const uint8_t g = unpremultiply(px[1], a);
     const uint8_t b = unpremultiply(px[0], a);
-    std::wstring text = std::format(L"({}, {})  #{:02X}{:02X}{:02X}", x, y, r, g, b);
-    text += a == 255 ? std::format(L"  RGB({}, {}, {})", r, g, b)
-                     : std::format(L"  RGBA({}, {}, {}, {})", r, g, b, a);
+    std::string text = std::format("({}, {})  #{:02X}{:02X}{:02X}", x, y, r, g, b);
+    text += a == 255 ? std::format("  RGB({}, {}, {})", r, g, b)
+                     : std::format("  RGBA({}, {}, {}, {})", r, g, b, a);
     return text;
 }
 
-void App::showMessage(std::wstring text) {
+void App::showMessage(std::string text) {
     message_ = std::move(text);
     host_.startTimer(kMessageDurationMs);
     if (statusBarVisible()) host_.requestRedraw();
@@ -933,9 +942,9 @@ StatusBarView App::statusBar() const {
     if (!message_.empty()) {
         bar.leftText = message_;
     } else if (current_) {
-        bar.leftText = std::format(L"{} x {} px", current_->width, current_->height);
+        bar.leftText = std::format("{} x {} px", current_->width, current_->height);
     } else if (loadFailed_) {
-        bar.leftText = L"読み込み失敗";
+        bar.leftText = "読み込み失敗";
     }
     bar.rightText = hoverText_;
     return bar;
@@ -961,7 +970,7 @@ SidebarView App::sidebar() const {
     sb.firstItemY = static_cast<float>(first) * kSidebarItemHeight - sidebarScroll_;
     const size_t maxVisible = static_cast<size_t>(sb.height / kSidebarItemHeight) + 2;
     for (size_t i = first; i < list_.size() && i < first + maxVisible; ++i) {
-        sb.items.push_back({list_.at(i).filename().wstring(), i == list_.index()});
+        sb.items.push_back({pathToUtf8(list_.at(i).filename()), i == list_.index()});
     }
     return sb;
 }
@@ -972,26 +981,26 @@ void App::updatePrefetch() {
 
 void App::updateTitle() {
     if (clipboardImage_) {
-        host_.setTitle(std::format(L"(クリップボード){} {}% - Blinker",
-                                   edited_ ? L" (編集済み)" : L"",
+        host_.setTitle(std::format("(クリップボード){} {}% - Blinker",
+                                   edited_ ? " (編集済み)" : "",
                                    static_cast<int>(std::lround(viewport_.zoom() * 100))));
         return;
     }
     if (list_.empty()) {
-        host_.setTitle(L"Blinker");
+        host_.setTitle("Blinker");
         return;
     }
-    std::wstring title = std::format(L"{} [{}/{}]", list_.current().filename().wstring(),
-                                     list_.index() + 1, list_.size());
+    std::string title = std::format("{} [{}/{}]", pathToUtf8(list_.current().filename()),
+                                    list_.index() + 1, list_.size());
     if (loadFailed_) {
-        title += L" (読み込み失敗)";
+        title += " (読み込み失敗)";
     } else if (displayedPath_ != list_.current()) {
-        title += L" (読み込み中)";
+        title += " (読み込み中)";
     } else {
-        if (edited_) title += L" (編集済み)";
-        title += std::format(L" {}%", static_cast<int>(std::lround(viewport_.zoom() * 100)));
+        if (edited_) title += " (編集済み)";
+        title += std::format(" {}%", static_cast<int>(std::lround(viewport_.zoom() * 100)));
     }
-    title += L" - Blinker";
+    title += " - Blinker";
     host_.setTitle(title);
 }
 

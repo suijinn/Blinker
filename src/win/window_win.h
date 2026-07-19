@@ -24,15 +24,15 @@ public:
 
     // IAppHost
     void requestRedraw() override;
-    void setTitle(const std::wstring& title) override;
+    void setTitle(const std::string& title) override;
     void setFullscreen(bool enabled) override;
     bool isFullscreen() const override { return fullscreen_; }
     std::optional<std::filesystem::path> showOpenDialog() override;
     std::optional<std::filesystem::path> showSaveDialog(
-        const std::wstring& defaultFileName) override;
+        const std::string& defaultFileName) override;
     std::optional<size_t> showContextMenu(const std::vector<MenuItem>& items,
                                           Point screenPos) override;
-    std::optional<std::wstring> showTextInput(const std::wstring& initial) override;
+    std::optional<std::string> showTextInput(const std::string& initial) override;
     std::optional<uint32_t> showColorPicker(uint32_t initialRGB) override;
     void startTimer(unsigned milliseconds) override;
     void quit() override;

@@ -1,6 +1,6 @@
 # Blinker — 開発ガイド
 
-軽量・高速起動のWindows用画像ビューア。C++20 / Win32 API / Direct2D / WIC。外部ライブラリ依存ゼロの単一exe(約330KB)。
+軽量・高速起動の画像ビューア。C++20。Windows版は Win32 API / Direct2D / WIC で外部ライブラリ依存ゼロの単一exe(約330KB)。Linux/macOS版は SDL3 + stb(third_party/にベンダリング)の `src/sdl` バックエンド(閲覧専用、編集は未対応)。
 
 設計の詳細(層構造・コンポーネントの責務・データフロー・起動シーケンス)の正は
 [docs/architecture.md](docs/architecture.md)。ここにはビルド方法と、コードを触るたびに必要になる
@@ -23,12 +23,29 @@ cmd /c '"C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Bu
 
 - CMakeプリセット: `debug` / `release`(Ninja、`build/<preset>/` に出力)
 - CMake/NinjaはVS2022同梱のものが使われる(vcvars64がPATHに追加する)
-- `/W4 /utf-8 /permissive-` で警告ゼロを維持すること
+- `/W4 /utf-8 /permissive-` で警告ゼロを維持すること(gcc/clang では `-Wall -Wextra`)
+
+Linux (WSL2) では:
+
+```bash
+# WSL2 から /mnt/c/Users/hiroki/work/Blinker で実行
+cmake --preset linux-release && cmake --build --preset linux-release
+./build/linux-release/tests/core_tests   # 単体テスト
+./build/linux-release/blinker <画像 or フォルダ>   # WSLg でウィンドウ表示
+```
+
+- SDL3 はシステムに無ければ FetchContent で自動取得・静的リンクされる(初回は数分かかる)
+- SDLバックエンドのWindows上でのコンパイル・動作確認は `-DBLINKER_SDL=ON` で可能:
+  `cmake -S . -B build/sdl-test -G Ninja -DCMAKE_BUILD_TYPE=Release -DBLINKER_SDL=ON`
+  (blinker_sdl.exe ができる。タイトルバー検証の方法はWin版と同じ)
 
 ## 不変条件(壊してはならない)
 
-- **依存方向は win → platform → core の一方向のみ**。`src/core/` はOSヘッダをincludeしてはならない
+- **依存方向は win/sdl → platform → core の一方向のみ**。`src/core/` はOSヘッダをincludeしてはならない
   (単体テスト対象)。`src/platform/` は抽象インターフェースのヘッダのみ
+- **core/platform 層の文字列は UTF-8 の `std::string`**。`std::wstring` は win 層内部のみ。
+  Win32 境界の変換は `core/unicode.h`(`utf8ToWide`/`wideToUtf8`/`pathToUtf8`/`pathFromUtf8`、
+  純C++実装で単体テスト対象)を使う
 - **データフローは一方向**: 入力 → KeyChord → `Keymap` → `Command` → `App::execute` → 状態更新 →
   `IAppHost::requestRedraw` → WM_PAINTで描画
 - **スレッドモデル**: App/Viewport/ImageListはUIスレッド専用でスレッド安全ではない。
@@ -44,7 +61,8 @@ cmd /c '"C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Bu
 - 画像ピクセルは常に 32bpp PBGRA(事前乗算)。`DecodedImage` 参照は `shared_ptr` で持ち回る
   (RendererD2DのGPUビットマップキャッシュはshared_ptrをキーにしてアドレス再利用の取り違えを防いでいる)
 - 座標はすべて物理ピクセル(D2DはDPI 96固定でDIP=px)。DPI対応はmanifestのPerMonitorV2
-- パス比較は大文字小文字を無視(Windows準拠)。フォルダ内ソートは `StrCmpLogicalW`(エクスプローラと同じ自然順)
+- パス比較は大文字小文字を無視(Windows準拠)。フォルダ内ソートは Win版が `StrCmpLogicalW`、
+  SDL版が core の `naturalCompare`(いずれもエクスプローラと同じ自然順)
 - ソースはUTF-8(日本語コメント可)。`/utf-8` フラグ必須
 - 設定は `blinker.exe` と同階層の `blinker.ini`(書式: docs/blinker.ini.example)
 

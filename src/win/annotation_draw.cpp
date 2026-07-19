@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <cmath>
 
+#include "core/unicode.h"
+
 namespace blinker {
 
 using Microsoft::WRL::ComPtr;
@@ -21,9 +23,10 @@ ComPtr<IDWriteTextLayout> createAnnotationTextLayout(IDWriteFactory* dwrite,
         return nullptr;
     }
     const float wrapWidth = std::max(std::abs(spec.p2.x - spec.p1.x), spec.fontSize);
+    const std::wstring text = utf8ToWide(spec.text);
     ComPtr<IDWriteTextLayout> layout;
-    if (FAILED(dwrite->CreateTextLayout(spec.text.c_str(),
-                                        static_cast<UINT32>(spec.text.size()), format.Get(),
+    if (FAILED(dwrite->CreateTextLayout(text.c_str(),
+                                        static_cast<UINT32>(text.size()), format.Get(),
                                         wrapWidth, maxHeight, &layout))) {
         return nullptr;
     }

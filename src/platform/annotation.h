@@ -19,7 +19,7 @@ struct AnnotationSpec {
     float strokeWidth = 1;
     float angleDeg = 0;     // バウンディングボックス中心周りの回転(時計回り、度)
     float fontSize = 16;    // Text 用
-    std::wstring text;      // Text 用(改行 '\n' 可)
+    std::string text;       // Text 用(UTF-8。改行 '\n' 可)
 };
 
 // ラスタライズ結果。image はバウンディングボックス分の PBGRA で、
