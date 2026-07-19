@@ -9,6 +9,7 @@
 #include "core/edit.h"
 #include "core/pixel_convert.h"
 #include "core/unicode.h"
+#include "core/version.h"
 
 namespace blinker {
 
@@ -980,14 +981,15 @@ void App::updatePrefetch() {
 }
 
 void App::updateTitle() {
+    const std::string appName = std::format("Blinker v{} ({})", kAppVersion, kAppGitSha);
     if (clipboardImage_) {
-        host_.setTitle(std::format("(クリップボード){} {}% - Blinker",
+        host_.setTitle(std::format("(クリップボード){} {}% - {}",
                                    edited_ ? " (編集済み)" : "",
-                                   static_cast<int>(std::lround(viewport_.zoom() * 100))));
+                                   static_cast<int>(std::lround(viewport_.zoom() * 100)), appName));
         return;
     }
     if (list_.empty()) {
-        host_.setTitle("Blinker");
+        host_.setTitle(appName);
         return;
     }
     std::string title = std::format("{} [{}/{}]", pathToUtf8(list_.current().filename()),
@@ -1000,7 +1002,7 @@ void App::updateTitle() {
         if (edited_) title += " (編集済み)";
         title += std::format(" {}%", static_cast<int>(std::lround(viewport_.zoom() * 100)));
     }
-    title += " - Blinker";
+    title += " - " + appName;
     host_.setTitle(title);
 }
 

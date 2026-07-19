@@ -1,12 +1,13 @@
+// CMake の configure_file で生成される(手編集しないこと)。CMakeLists.txt 参照。
 #include <windows.h>
 
 #define IDI_APPICON 101
 
-IDI_APPICON ICON "../../assets/blinker.ico"
+IDI_APPICON ICON "@BLINKER_ICON_PATH@"
 
 VS_VERSION_INFO VERSIONINFO
- FILEVERSION 0,1,0,0
- PRODUCTVERSION 0,1,0,0
+ FILEVERSION @PROJECT_VERSION_MAJOR@,@PROJECT_VERSION_MINOR@,@PROJECT_VERSION_PATCH@,0
+ PRODUCTVERSION @PROJECT_VERSION_MAJOR@,@PROJECT_VERSION_MINOR@,@PROJECT_VERSION_PATCH@,0
  FILEFLAGSMASK 0x3fL
  FILEFLAGS 0x0L
  FILEOS VOS_NT_WINDOWS32
@@ -18,11 +19,11 @@ BEGIN
         BLOCK "041104b0"
         BEGIN
             VALUE "FileDescription", "Blinker Image Viewer"
-            VALUE "FileVersion", "0.1.0"
+            VALUE "FileVersion", "@PROJECT_VERSION@ (@BLINKER_GIT_SHA@)"
             VALUE "InternalName", "blinker"
             VALUE "OriginalFilename", "blinker.exe"
             VALUE "ProductName", "Blinker"
-            VALUE "ProductVersion", "0.1.0"
+            VALUE "ProductVersion", "@PROJECT_VERSION@ (@BLINKER_GIT_SHA@)"
         END
     END
     BLOCK "VarFileInfo"
