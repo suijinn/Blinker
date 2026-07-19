@@ -1,0 +1,44 @@
+# CMakeLists.txt の project() バージョンからリリースタグを導出する。
+# リリース手順は「CMakeLists.txt の VERSION を書き換えて main に push する」だけ。
+# タグは派生物であり、手で打たない(version.h / blinker.rc と同じ扱い)。
+name: tag
+
+on:
+  push:
+    branches: [main]
+    paths: ['CMakeLists.txt']
+
+permissions:
+  contents: write
+
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # 既存タグの有無を判定するため全履歴とタグが要る
+
+      - name: CMakeLists.txt からバージョンを抽出
+        id: ver
+        run: |
+          version=$(sed -n 's/^project(Blinker VERSION \([0-9]\+\.[0-9]\+\.[0-9]\+\).*/\1/p' CMakeLists.txt)
+          if [ -z "$version" ]; then
+            echo "::error file=CMakeLists.txt::project(Blinker VERSION x.y.z ...) を解析できなかった"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: タグが未作成なら作成して push
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          if git rev-parse -q --verify "refs/tags/v$VERSION" >/dev/null; then
+            echo "v$VERSION は既に存在するため何もしない"
+            exit 0
+          fi
+          git config user.name  'github-actions[bot]'
+          git config user.email 'github-actions[bot]@users.noreply.github.com'
+          git tag -a "v$VERSION" -m "Blinker v$VERSION"
+          git push origin "v$VERSION"
+          echo "v$VERSION を作成した" >> "$GITHUB_STEP_SUMMARY"
