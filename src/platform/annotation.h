@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "core/geometry.h"
+#include "core/text_style.h"
 #include "platform/decoder.h"
 
 /**
@@ -32,6 +33,9 @@ struct AnnotationSpec {
     float angleDeg = 0;      ///< バウンディングボックス中心周りの回転(時計回り、度)
     float fontSize = 16;     ///< Text 用のフォントサイズ(画像座標)
     std::string text;        ///< Text 用の文字列(UTF-8。改行 LF 可)
+    /// Text 用の部分書式(色・太字・斜体・下線)。位置は text 内の UTF-8 バイト位置。
+    /// 覆われていない部分は colorRGB と標準の字形(太字・斜体・下線なし)で描かれる
+    std::vector<TextStyleRun> styles;
 };
 
 /**

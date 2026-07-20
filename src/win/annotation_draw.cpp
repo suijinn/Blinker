@@ -13,6 +13,17 @@ float arrowHeadLength(float strokeWidth) {
     return strokeWidth * 4.0f;
 }
 
+namespace {
+
+/// 部分書式の UTF-8 バイト範囲を、レイアウトが使う UTF-16 の範囲へ変換する
+DWRITE_TEXT_RANGE toTextRange(const std::string& text, const TextStyleRun& run) {
+    const UINT32 begin = static_cast<UINT32>(utf8ToUtf16Offset(text, run.begin));
+    const UINT32 end = static_cast<UINT32>(utf8ToUtf16Offset(text, run.end));
+    return {begin, end > begin ? end - begin : 0};
+}
+
+} // namespace
+
 ComPtr<IDWriteTextLayout> createAnnotationTextLayout(IDWriteFactory* dwrite,
                                                      const AnnotationSpec& spec,
                                                      float maxHeight) {
@@ -30,7 +41,32 @@ ComPtr<IDWriteTextLayout> createAnnotationTextLayout(IDWriteFactory* dwrite,
                                         wrapWidth, maxHeight, &layout))) {
         return nullptr;
     }
+    // 太字・斜体・下線は文字送りや行の高さに影響するため、計測に使うレイアウトにも
+    // 反映する(色は見た目だけなので、描画時に drawing effect として与える)
+    for (const TextStyleRun& run : spec.styles) {
+        const DWRITE_TEXT_RANGE range = toTextRange(spec.text, run);
+        if (range.length == 0) continue;
+        if (run.bold) layout->SetFontWeight(DWRITE_FONT_WEIGHT_BOLD, range);
+        if (run.italic) layout->SetFontStyle(DWRITE_FONT_STYLE_ITALIC, range);
+        if (run.underline) layout->SetUnderline(TRUE, range);
+    }
     return layout;
+}
+
+void applyTextColorEffects(ID2D1RenderTarget* target, IDWriteTextLayout* layout,
+                           const AnnotationSpec& spec) {
+    for (const TextStyleRun& run : spec.styles) {
+        if (!run.hasColor) continue;
+        const DWRITE_TEXT_RANGE range = toTextRange(spec.text, run);
+        if (range.length == 0) continue;
+        // D2D の既定テキストレンダラは drawing effect のブラシで描いてくれる
+        ComPtr<ID2D1SolidColorBrush> brush;
+        const D2D1_COLOR_F color =
+            D2D1::ColorF(((run.colorRGB >> 16) & 0xFF) / 255.0f,
+                         ((run.colorRGB >> 8) & 0xFF) / 255.0f, (run.colorRGB & 0xFF) / 255.0f);
+        if (FAILED(target->CreateSolidColorBrush(color, &brush))) continue;
+        layout->SetDrawingEffect(brush.Get(), range);
+    }
 }
 
 void drawAnnotationShape(ID2D1RenderTarget* target, ID2D1Factory* factory,
@@ -87,7 +123,10 @@ void drawAnnotationShape(ID2D1RenderTarget* target, ID2D1Factory* factory,
         // レイアウトの高さ制限は不要なため十分大きい値を渡す
         const ComPtr<IDWriteTextLayout> layout =
             createAnnotationTextLayout(dwrite, spec, 16384.0f);
-        if (layout) target->DrawTextLayout(D2D1::Point2F(left, top), layout.Get(), brush);
+        if (!layout) break;
+        // 部分書式の色。指定の無い範囲は brush(注釈全体の色)のまま描かれる
+        applyTextColorEffects(target, layout.Get(), spec);
+        target->DrawTextLayout(D2D1::Point2F(left, top), layout.Get(), brush);
         break;
     }
     }

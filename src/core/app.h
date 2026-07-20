@@ -493,6 +493,13 @@ private:
      */
     void showObjectMenu(Point screenPos);
 
+    /**
+     * @brief 編集中テキストの選択部分に対する書式メニューを表示し、選ばれた書式を適用する。
+     * @param[in] screenPos メニューの表示位置(スクリーン座標)。
+     * @note 編集中で選択範囲があるときだけ意味を持つ(それ以外は何もしない)。
+     */
+    void showTextStyleMenu(Point screenPos);
+
     /// @brief 選択領域で現在の画像をトリミングする。
     void applyCrop();
 
@@ -552,6 +559,13 @@ private:
      * @return 編集中の文字列に、変換中文字列をキャレット位置へ挿入したもの(UTF-8)。
      */
     std::string textEditDisplayText() const;
+
+    /**
+     * @brief 描画に使う部分書式を組み立てる。
+     * @return 編集中の部分書式を、変換中文字列の挿入分だけずらしたもの。
+     * @note 変換中文字列そのものは直前の文字の書式を継ぐ(adjustTextStyles と同じ規則)。
+     */
+    std::vector<TextStyleRun> textEditDisplayStyles() const;
 
     /**
      * @brief 表示用テキスト内でのキャレット位置を返す。
@@ -673,6 +687,8 @@ private:
     bool textEditCreated_ = false;  ///< 新規作成中(空のまま終了したら注釈を消す)
     bool textEditCaretOn_ = true;   ///< キャレット点滅の表示相
     bool textEditMouseSelect_ = false;  ///< 左ドラッグで選択範囲を広げている最中
+    /// 右ボタンを選択範囲の上で押した。離した位置で書式メニューを出す(編集は確定しない)
+    bool textStyleMenuPending_ = false;
     bool textUndoPushed_ = false;   ///< 編集中の undo 記録は最初の変更時の1回だけ
     UndoState textUndoState_;       ///< 上記で積む編集前のスナップショット
     /// IME の変換中文字列(UTF-8)。確定するまで textBuffer_ には入れず、表示にだけ混ぜる

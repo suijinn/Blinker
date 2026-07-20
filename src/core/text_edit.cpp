@@ -24,7 +24,9 @@ CharClass classify(const std::string& s, size_t pos) {
 
 } // namespace
 
-TextEditBuffer::TextEditBuffer(std::string text) : text_(std::move(text)) {
+TextEditBuffer::TextEditBuffer(std::string text, std::vector<TextStyleRun> styles)
+    : text_(std::move(text)), styles_(std::move(styles)) {
+    normalizeTextStyles(styles_);
     caret_ = text_.size();
     anchor_ = caret_;
 }
@@ -47,6 +49,7 @@ void TextEditBuffer::setCaret(size_t offset, bool extendSelection) {
 void TextEditBuffer::insert(std::string_view utf8) {
     deleteSelection();
     text_.insert(caret_, utf8);
+    adjustTextStyles(styles_, caret_, 0, utf8.size());
     caret_ += utf8.size();
     anchor_ = caret_;
 }
@@ -54,7 +57,9 @@ void TextEditBuffer::insert(std::string_view utf8) {
 bool TextEditBuffer::deleteSelection() {
     if (!hasSelection()) return false;
     const size_t begin = selectionBegin();
-    text_.erase(begin, selectionEnd() - begin);
+    const size_t length = selectionEnd() - begin;
+    text_.erase(begin, length);
+    adjustTextStyles(styles_, begin, length, 0);
     caret_ = begin;
     anchor_ = begin;
     return true;
@@ -66,6 +71,7 @@ bool TextEditBuffer::backspace() {
     size_t prev = caret_ - 1;
     while (prev > 0 && isContinuation(text_[prev])) --prev;
     text_.erase(prev, caret_ - prev);
+    adjustTextStyles(styles_, prev, caret_ - prev, 0);
     caret_ = prev;
     anchor_ = prev;
     return true;
@@ -77,8 +83,31 @@ bool TextEditBuffer::deleteForward() {
     size_t next = caret_ + 1;
     while (next < text_.size() && isContinuation(text_[next])) ++next;
     text_.erase(caret_, next - caret_);
+    adjustTextStyles(styles_, caret_, next - caret_, 0);
     anchor_ = caret_;
     return true;
+}
+
+bool TextEditBuffer::selectionHasFlag(TextStyleFlag flag) const {
+    return isTextStyleFlagSet(styles_, selectionBegin(), selectionEnd(), flag);
+}
+
+bool TextEditBuffer::toggleSelectionFlag(TextStyleFlag flag) {
+    if (!hasSelection()) return false;
+    const std::vector<TextStyleRun> before = styles_;
+    setTextStyleFlag(styles_, selectionBegin(), selectionEnd(), flag, !selectionHasFlag(flag));
+    return styles_ != before;
+}
+
+bool TextEditBuffer::setSelectionColor(uint32_t colorRGB) {
+    if (!hasSelection()) return false;
+    const std::vector<TextStyleRun> before = styles_;
+    setTextStyleColor(styles_, selectionBegin(), selectionEnd(), colorRGB);
+    return styles_ != before;
+}
+
+TextStyleRun TextEditBuffer::selectionStyle() const {
+    return textStyleAt(styles_, selectionBegin());
 }
 
 void TextEditBuffer::moveLeft(bool extendSelection) {

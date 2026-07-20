@@ -35,6 +35,7 @@ add_library(blinker_core STATIC
     src/core/keymap.cpp
     src/core/pixel_convert.cpp
     src/core/text_edit.cpp
+    src/core/text_style.cpp
     src/core/unicode.cpp
     src/core/viewport.cpp
 )
