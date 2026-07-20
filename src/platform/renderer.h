@@ -72,6 +72,10 @@ struct TextEditView {
     Point caretTop;        ///< キャレット上端(画像座標)
     Point caretBottom;     ///< キャレット下端(画像座標)
     std::vector<TextRangeRect> selectionRects;  ///< 選択範囲のハイライト(画像座標)
+    /// IME 変換中文字列の範囲(画像座標)。細い下線を引く。空なら変換中でない
+    std::vector<TextRangeRect> compositionRects;
+    /// 変換対象の節の範囲(画像座標)。太い下線を引く。無ければ空
+    std::vector<TextRangeRect> compositionTargetRects;
     uint32_t caretRGB = 0;        ///< キャレットの色(0xRRGGBB)
     uint32_t selectionARGB = 0;   ///< 選択ハイライトの色。上位バイト = アルファ
 };
