@@ -20,6 +20,7 @@
 #include "core/keymap.h"
 #include "core/pixel_convert.h"
 #include "core/str_util.h"
+#include "core/text_edit.h"
 #include "core/unicode.h"
 #include "core/version.h"
 #include "core/viewport.h"
@@ -487,9 +488,11 @@ public:
         }
         return menuChoice;
     }
-    std::optional<std::string> showTextInput(const std::string& initial) override {
-        lastTextInitial = initial;
-        return textInput;
+    void setTextEditing(bool active, Point caretScreenPos, float caretHeightPx) override {
+        textEditing = active;
+        ++textEditingCalls;
+        lastCaretPos = caretScreenPos;
+        lastCaretHeight = caretHeightPx;
     }
     std::optional<uint32_t> showColorPicker(uint32_t initialRGB) override {
         ++colorPickerCount;
@@ -509,8 +512,10 @@ public:
     std::deque<size_t> menuQueue;      // 空でなければ menuChoice より優先
     int menuCount = 0;
     std::vector<MenuItem> lastMenuItems;
-    std::optional<std::string> textInput;  // テキスト入力の応答 (nullopt = キャンセル)
-    std::string lastTextInitial;           // テキスト入力ダイアログに渡された初期値
+    bool textEditing = false;    // setTextEditing が最後に通知した状態
+    int textEditingCalls = 0;    // setTextEditing の呼び出し回数
+    Point lastCaretPos;          // 最後に通知されたキャレット位置
+    float lastCaretHeight = 0;   // 最後に通知されたキャレット高さ
     std::optional<uint32_t> colorChoice;    // 色ダイアログの応答 (nullopt = キャンセル)
     uint32_t lastColorPickerInitial = 0;
     int colorPickerCount = 0;
@@ -552,8 +557,10 @@ public:
         return true;
     }
     std::shared_ptr<DecodedImage> getImage() override { return pasteImage; }
+    std::string getText() override { return pasteText; }
 
     int imageCount = 0;
+    std::string pasteText;  // getText の応答
     uint32_t lastWidth = 0;
     std::vector<uint8_t> lastPixels;
     std::string lastText;
@@ -593,6 +600,29 @@ public:
             image->pixels[i + 3] = 255;  // A
         }
         return {std::move(image), overlayX, overlayY};
+    }
+
+    // テキスト計測は「1 行・1 文字 kCharWidth px・行高 kLineHeight px」の単純な模型にする
+    static constexpr float kCharWidth = 10.0f;
+    static constexpr float kLineHeight = 20.0f;
+
+    TextCaretMetrics caretMetrics(const AnnotationSpec& spec, size_t utf16Offset) override {
+        const size_t length = utf8ToUtf16Offset(spec.text, spec.text.size());
+        return {static_cast<float>(std::min(utf16Offset, length)) * kCharWidth, 0.0f,
+                kLineHeight};
+    }
+
+    size_t hitTestTextOffset(const AnnotationSpec& spec, float localX, float) override {
+        const size_t length = utf8ToUtf16Offset(spec.text, spec.text.size());
+        if (localX <= 0) return 0;
+        return std::min(static_cast<size_t>(localX / kCharWidth + 0.5f), length);
+    }
+
+    std::vector<TextRangeRect> selectionRects(const AnnotationSpec&, size_t utf16Begin,
+                                              size_t utf16End) override {
+        if (utf16End <= utf16Begin) return {};
+        return {{static_cast<float>(utf16Begin) * kCharWidth, 0.0f,
+                 static_cast<float>(utf16End) * kCharWidth, kLineHeight}};
     }
 
     bool ok = true;
@@ -1219,21 +1249,29 @@ void testAppAnnotationObjects() {
     app.onRightDragEnd({396, 283});
     CHECK(app.annotations().specs->front().colorRGB == 0x123456);
 
-    // テキスト注釈を追加し、ダブルクリックで初期値入りダイアログから再編集する
+    // テキスト注釈はその場で入力して追加し、ダブルクリックで再編集する
     host.menuChoice = 5;  // テキスト
-    host.textInput = "元のテキスト";
     rasterizer.overlayWidth = 24;
     rasterizer.overlayHeight = 44;  // 実測境界 20x40(リサイズテストでハンドルを離すため縦長)
     const int measureCount = rasterizer.rasterizeCount;
     app.onRightDragStart({401, 286});  // 画像 (5,3)
     app.onRightDragEnd({404, 290});    // 閾値以上のドラッグで編集メニューを出す
-    CHECK(rasterizer.rasterizeCount == measureCount + 1);
+    CHECK(app.isTextEditing());        // 空のテキストボックスができ、その場で入力できる
+    CHECK(host.textEditing);           // host には編集開始が伝わる (IME 有効化)
+    CHECK(rasterizer.rasterizeCount == measureCount);  // 内容が空の間は実測しない
+    app.insertText("元のテキスト");
+    app.onKey({KeyCode::Escape});      // Esc で確定
+    CHECK(!app.isTextEditing());
+    CHECK(!host.textEditing);
+    CHECK(rasterizer.rasterizeCount == measureCount + 2);  // 高さ合わせ + 確定時の実測
     CHECK(app.annotations().specs->size() == 2);
-    host.textInput = "更新後";
-    CHECK(app.onDoubleClick({402, 288}));
-    CHECK(host.lastTextInitial == "元のテキスト");
+    CHECK(app.annotations().specs->back().text == "元のテキスト");
+
+    CHECK(app.onDoubleClick({402, 288}));  // テキスト上のダブルクリックで再編集を始める
+    CHECK(app.isTextEditing());
+    app.insertText("更新後");  // ダブルクリックで語が選択されているため置き換わる
+    app.onKey({KeyCode::Escape});
     CHECK(app.annotations().specs->back().text == "更新後");
-    CHECK(rasterizer.rasterizeCount == measureCount + 2);  // 再実測
     CHECK(!app.onDoubleClick({600, 450}));  // テキスト以外の場所では何もしない
 
     // Delete で選択中の注釈を削除。選択なしはメッセージのみ。undo で復活する
@@ -1386,22 +1424,24 @@ void testAppEdit() {
     // 貼り付け元(キャッシュ相当)の画像も書き換えられていない
     CHECK(source->pixels[(1 * 8 + 1) * 4 + 2] == 0);
 
-    // テキスト: 入力キャンセルなら何もしない。入力があれば実測(1回のラスタライズ)して追加
+    // テキスト: 空のまま確定すると追加されない。入力があれば実測して追加される
     host.menuChoice = 5;
-    host.textInput = std::nullopt;
     app.onRightDragStart({396, 283});
     app.onRightDragEnd({400, 287});
-    CHECK(rasterizer.rasterizeCount == 1);
-    CHECK(app.annotations().specs->size() == 1);
-    host.textInput = "メモ";
+    CHECK(app.isTextEditing());
+    CHECK(app.annotations().specs->size() == 2);  // 編集中は空のテキストボックスが入る
+    app.onKey({KeyCode::Escape});
+    CHECK(rasterizer.rasterizeCount == 1);        // 空なので実測は走らない
+    CHECK(app.annotations().specs->size() == 1);  // 空の箱は残さない
     rasterizer.overlayWidth = 24;   // 実測境界: 24-4 x 12-4 (テキスト余白 2px x 両側)
     rasterizer.overlayHeight = 12;
     app.onRightDragStart({396, 283});
     app.onRightDragEnd({400, 287});
-    CHECK(rasterizer.rasterizeCount == 2);
+    app.insertText("メモ");
+    app.onKey({KeyCode::Escape});
+    CHECK(rasterizer.rasterizeCount == 3);  // 高さ合わせ + 確定時の実測
     CHECK(rasterizer.lastSpec.kind == AnnotationSpec::Kind::Text);
     CHECK(rasterizer.lastSpec.text == "メモ");
-    CHECK(host.lastTextInitial.empty());  // 新規追加は空の初期値
     {
         const AnnotationsView view = app.annotations();
         const AnnotationSpec& text = view.specs->back();
@@ -1421,10 +1461,13 @@ void testAppEdit() {
     CHECK(nearly(app.annotations().specs->back().strokeWidth, 8));
 
     // 文字サイズ 24px + 複数行テキスト。変更済みの設定も引き継がれる
-    host.textInput = "1行目\n2行目";
     host.menuQueue = {16 /*文字24px*/, 5 /*テキスト*/};
     app.onRightDragStart({396, 283});
     app.onRightDragEnd({400, 287});
+    app.insertText("1行目");
+    app.onKey({KeyCode::Enter});  // 編集中の Enter は改行
+    app.insertText("2行目");
+    app.onKey({KeyCode::Escape});
     CHECK(app.annotations().specs->back().text == "1行目\n2行目");
     CHECK(nearly(app.annotations().specs->back().fontSize, 24));
 
@@ -1455,15 +1498,17 @@ void testAppEdit() {
     app.onRightDragEnd({400, 287});
     CHECK(nearly(app.annotations().specs->back().strokeWidth, 3));  // 3px に戻っている
 
-    // テキストの実測(ラスタライズ)失敗はメッセージのみで追加されない
+    // 確定時の実測(ラスタライズ)失敗はメッセージを出す。入力済みの内容は残す
     rasterizer.ok = false;
-    host.textInput = "失敗するテキスト";
     host.menuChoice = 5;
     const size_t countBeforeFail = app.annotations().specs->size();
     app.onRightDragStart({396, 283});
     app.onRightDragEnd({400, 287});
+    app.insertText("失敗するテキスト");
+    app.onKey({KeyCode::Escape});
     CHECK(app.statusBar().leftText == "描画に失敗しました");
-    CHECK(app.annotations().specs->size() == countBeforeFail);
+    CHECK(app.annotations().specs->size() == countBeforeFail + 1);
+    CHECK(app.annotations().specs->back().text == "失敗するテキスト");
     rasterizer.ok = true;
     app.onTimer();
 
@@ -1508,6 +1553,242 @@ void testUnicode() {
     CHECK(pathToUtf8Generic(p) == "フォルダ/画像 (1).png");
 }
 
+void testUtf16Offsets() {
+    // "あ" は UTF-8 で 3 バイト / UTF-16 で 1 単位、"😀" は 4 バイト / 2 単位
+    const std::string s = "aあ😀b";
+    CHECK(utf8ToUtf16Offset(s, 0) == 0);
+    CHECK(utf8ToUtf16Offset(s, 1) == 1);   // 'a' の後
+    CHECK(utf8ToUtf16Offset(s, 4) == 2);   // "あ" の後
+    CHECK(utf8ToUtf16Offset(s, 8) == 4);   // "😀" の後(サロゲートペアで +2)
+    CHECK(utf8ToUtf16Offset(s, 9) == 5);   // 末尾
+    CHECK(utf8ToUtf16Offset(s, 999) == 5); // 範囲外は末尾へ丸める
+
+    CHECK(utf16ToUtf8Offset(s, 0) == 0);
+    CHECK(utf16ToUtf8Offset(s, 1) == 1);
+    CHECK(utf16ToUtf8Offset(s, 2) == 4);
+    CHECK(utf16ToUtf8Offset(s, 4) == 8);
+    CHECK(utf16ToUtf8Offset(s, 999) == s.size());
+    // サロゲートペアの途中(3)を指したらペアの先頭へ切り下げる
+    CHECK(utf16ToUtf8Offset(s, 3) == 4);
+}
+
+void testTextEditBuffer() {
+    // 構築時のキャレットは末尾。挿入はキャレット位置に入る
+    TextEditBuffer buf("あい");
+    CHECK(buf.caret() == 6 && !buf.hasSelection());
+    buf.insert("う");
+    CHECK(buf.text() == "あいう" && buf.caret() == 9);
+
+    // Backspace / Delete はマルチバイト 1 文字ずつ動く
+    CHECK(buf.backspace());
+    CHECK(buf.text() == "あい" && buf.caret() == 6);
+    buf.setCaret(0, false);
+    CHECK(!buf.backspace());  // 先頭では何も起きない
+    CHECK(buf.deleteForward());
+    CHECK(buf.text() == "い" && buf.caret() == 0);
+    buf.setCaret(buf.text().size(), false);
+    CHECK(!buf.deleteForward());  // 末尾では何も起きない
+
+    // 左右移動もコードポイント単位。範囲外へは出ない
+    TextEditBuffer moves("a😀b");
+    moves.setCaret(0, false);
+    moves.moveRight(false);
+    CHECK(moves.caret() == 1);
+    moves.moveRight(false);
+    CHECK(moves.caret() == 5);  // 絵文字は 4 バイトまとめて飛ぶ
+    moves.moveLeft(false);
+    CHECK(moves.caret() == 1);
+    moves.moveLeft(false);
+    moves.moveLeft(false);
+    CHECK(moves.caret() == 0);
+
+    // Shift 付き移動で選択が伸び、選択中の挿入は置き換えになる
+    TextEditBuffer sel("abcdef");
+    sel.setCaret(1, false);
+    sel.moveRight(true);
+    sel.moveRight(true);
+    CHECK(sel.hasSelection() && sel.selectedText() == "bc");
+    CHECK(sel.selectionBegin() == 1 && sel.selectionEnd() == 3);
+    sel.insert("X");
+    CHECK(sel.text() == "aXdef" && !sel.hasSelection() && sel.caret() == 2);
+
+    // 選択中の Backspace は選択を消すだけ(直前の文字は消さない)
+    sel.selectAll();
+    CHECK(sel.selectedText() == "aXdef");
+    CHECK(sel.backspace());
+    CHECK(sel.text().empty() && sel.caret() == 0);
+
+    // 選択解除の左右移動は選択の端へ寄る
+    TextEditBuffer collapse("abcdef");
+    collapse.setCaret(1, false);
+    collapse.setCaret(4, true);
+    collapse.moveLeft(false);
+    CHECK(collapse.caret() == 1 && !collapse.hasSelection());
+    collapse.setCaret(1, false);
+    collapse.setCaret(4, true);
+    collapse.moveRight(false);
+    CHECK(collapse.caret() == 4 && !collapse.hasSelection());
+
+    // Home / End は論理行(LF 区切り)の端へ動く
+    TextEditBuffer lines("abc\ndef");
+    lines.setCaret(5, false);  // 2 行目の 'e' の後
+    lines.moveLineStart(false);
+    CHECK(lines.caret() == 4);
+    lines.moveLineEnd(false);
+    CHECK(lines.caret() == 7);
+    lines.setCaret(1, false);
+    lines.moveLineEnd(false);
+    CHECK(lines.caret() == 3);  // LF の手前で止まる
+    lines.moveLineStart(false);
+    CHECK(lines.caret() == 0);
+
+    // 語の選択: 空白・ASCII 英数字・それ以外の連なりをそれぞれ 1 語として扱う
+    TextEditBuffer words("abc def");
+    words.selectWordAt(1);
+    CHECK(words.selectedText() == "abc");
+    words.selectWordAt(3);
+    CHECK(words.selectedText() == " ");
+    words.selectWordAt(5);
+    CHECK(words.selectedText() == "def");
+    words.selectWordAt(999);  // 末尾クリックは直前の語
+    CHECK(words.selectedText() == "def");
+    TextEditBuffer jp("あいう abc");
+    jp.selectWordAt(0);
+    CHECK(jp.selectedText() == "あいう");  // 非 ASCII の連なりはまとめて 1 語
+    TextEditBuffer empty("");
+    empty.selectWordAt(0);
+    CHECK(!empty.hasSelection());
+
+    // 位置はコードポイント境界へ丸められる(マルチバイトの途中を指しても壊れない)
+    TextEditBuffer clamp("あ");
+    clamp.setCaret(2, false);
+    CHECK(clamp.caret() == 0);
+    clamp.setCaret(999, false);
+    CHECK(clamp.caret() == 3);
+}
+
+void testAppTextEditing() {
+    FakeDecoder decoder;
+    ImageCache cache(decoder);
+    FakeHost host;
+    FakeFileSystem fs;
+    FakeClipboard clipboard;
+    FakeEncoder encoder;
+    FakeAnnotationRasterizer rasterizer;
+    App app(host, fs, cache, clipboard, encoder, rasterizer);
+
+    app.onResize(800, 600);
+    // 100x100 の画像を貼り付け、等倍表示にしてスクリーン座標を素直にする
+    auto source = std::make_shared<DecodedImage>();
+    source->width = 100;
+    source->height = 100;
+    source->pixels.resize(100 * 100 * 4);
+    clipboard.pasteImage = source;
+    app.execute(Command::PasteImage);
+    app.execute(Command::ZoomActual);
+    const Matrix3x2 toScreen = app.imageToScreen();
+    // 実測境界 40x20(テキスト余白 2px x 両側)。枠を現実的な高さにしてクリック判定を安定させる
+    rasterizer.overlayWidth = 44;
+    rasterizer.overlayHeight = 24;
+    const auto screenOf = [&toScreen](float x, float y) { return toScreen.apply({x, y}); };
+
+    // テキストボックスを作って入力する
+    host.menuChoice = 5;  // テキスト
+    app.onRightDragStart(screenOf(10, 10));
+    app.onRightDragEnd(screenOf(50, 30));
+    CHECK(app.isTextEditing());
+    app.insertText("abcdef");
+    CHECK(app.annotations().specs->back().text == "abcdef");
+
+    // キャレットは末尾。編集ビューにはキャレットの位置が入る(選択中は非表示)
+    {
+        const AnnotationsView view = app.annotations();
+        CHECK(view.textEdit.active);
+        CHECK(view.textEdit.index == 0);
+        CHECK(view.textEdit.selectionRects.empty());
+        // 枠の左端 (10) + 6 文字 x 10px
+        CHECK(nearly(view.textEdit.caretTop.x, 70));
+    }
+
+    // 左矢印でキャレットが戻り、Shift + 左で選択が伸びる
+    app.onKey({KeyCode::Left});
+    app.onKey({KeyChord{KeyCode::Left, false, true, false}});
+    {
+        const AnnotationsView view = app.annotations();
+        CHECK(!view.textEdit.caretVisible);  // 選択中はキャレットを出さない
+        CHECK(view.textEdit.selectionRects.size() == 1);
+        CHECK(nearly(view.textEdit.selectionRects[0].left, 10 + 40));
+        CHECK(nearly(view.textEdit.selectionRects[0].right, 10 + 50));
+    }
+
+    // 選択範囲の切り取り → クリップボードへ渡り、本文からは消える
+    app.onKey({KeyChord{static_cast<KeyCode>('X'), true, false, false}});
+    CHECK(clipboard.lastText == "e");
+    CHECK(app.annotations().specs->back().text == "abcdf");
+
+    // 貼り付けはキャレット位置に入る
+    clipboard.pasteText = "XY";
+    app.onKey({KeyChord{static_cast<KeyCode>('V'), true, false, false}});
+    CHECK(app.annotations().specs->back().text == "abcdXYf");
+
+    // 全選択して置き換え
+    app.onKey({KeyChord{static_cast<KeyCode>('A'), true, false, false}});
+    app.insertText("Z");
+    CHECK(app.annotations().specs->back().text == "Z");
+
+    // 枠内クリックでキャレットが動き、ドラッグで範囲選択できる
+    app.onKey({KeyChord{static_cast<KeyCode>('A'), true, false, false}});
+    app.insertText("0123456789");
+    app.onMouseDown(screenOf(10 + 25, 15));  // 枠内 2.5 文字目 → 境界 3
+    CHECK(app.isTextEditing());
+    app.onMouseMove(screenOf(10 + 55, 15));  // 5.5 文字目 → 境界 6
+    app.onMouseUp();
+    app.onKey({KeyChord{static_cast<KeyCode>('C'), true, false, false}});
+    CHECK(clipboard.lastText == "345");  // [3,6) の 3 文字
+
+    // 編集中はコマンドが暴発しない(次の画像へ移動しない・タイトルが変わらない)
+    const std::string titleWhileEditing = host.lastTitle;
+    app.onKey({KeyCode::Space});
+    CHECK(app.isTextEditing());
+    CHECK(host.lastTitle == titleWhileEditing);
+
+    // キャレットは点滅する(タイマー通知で表示相が入れ替わる)
+    app.onKey({KeyCode::End});  // 選択を解除してキャレットを出す
+    const bool before = app.annotations().textEdit.caretVisible;
+    app.onCaretBlink();
+    CHECK(app.annotations().textEdit.caretVisible != before);
+
+    // 枠の外のクリックで確定して編集が終わる
+    app.onMouseDown(screenOf(90, 90));
+    CHECK(!app.isTextEditing());
+    CHECK(!host.textEditing);
+    CHECK(app.annotations().specs->back().text == "0123456789");
+    CHECK(!app.annotations().textEdit.active);
+
+    // 編集中の Ctrl+Z は編集開始前へ戻す(新規作成なら注釈ごと消える)
+    const size_t countBeforeUndo = app.annotations().specs->size();
+    host.menuChoice = 5;
+    app.onRightDragStart(screenOf(10, 60));
+    app.onRightDragEnd(screenOf(50, 80));
+    app.insertText("捨てる");
+    app.onKey({KeyChord{static_cast<KeyCode>('Z'), true, false, false}});
+    CHECK(!app.isTextEditing());
+    CHECK(app.annotations().specs->size() == countBeforeUndo);
+
+    // 画像が切り替わると編集は破棄され、host にも終了が伝わる
+    host.menuChoice = 5;
+    app.onRightDragStart(screenOf(10, 60));
+    app.onRightDragEnd(screenOf(50, 80));
+    app.insertText("破棄される");
+    CHECK(app.isTextEditing());
+    fs.files = {"a.png"};
+    app.openPath("a.png");
+    app.onDecodeCompleted();
+    CHECK(!app.isTextEditing());
+    CHECK(!host.textEditing);
+    CHECK(app.annotations().specs->empty());
+}
+
 void testNaturalCompare() {
     // 数字の連続は数値として比較(エクスプローラ相当)
     CHECK(naturalCompare("1.png", "2.png") < 0);
@@ -1531,7 +1812,9 @@ void testNaturalCompare() {
 
 int main() {
     testUnicode();
+    testUtf16Offsets();
     testNaturalCompare();
+    testTextEditBuffer();
     testMatrix();
     testViewportFit();
     testViewportZoomAt();
@@ -1549,6 +1832,7 @@ int main() {
     testAnnotationGeometry();
     testAppAnnotationObjects();
     testAppEdit();
+    testAppTextEditing();
 
     if (g_failures == 0) {
         std::cout << "all tests passed\n";

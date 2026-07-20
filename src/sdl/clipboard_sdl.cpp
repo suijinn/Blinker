@@ -2,6 +2,7 @@
 
 #include <SDL3/SDL.h>
 
+#include <algorithm>
 #include <cstring>
 #include <vector>
 
@@ -51,6 +52,15 @@ bool ClipboardSdl::setImage(const DecodedImage& image) {
 
 bool ClipboardSdl::setText(const std::string& text) {
     return SDL_SetClipboardText(text.c_str());
+}
+
+std::string ClipboardSdl::getText() {
+    char* text = SDL_GetClipboardText();  // 失敗時も空文字列を返す(nullptr にはならない)
+    if (!text) return {};
+    std::string out(text);
+    SDL_free(text);
+    out.erase(std::remove(out.begin(), out.end(), '\r'), out.end());  // 改行を LF に統一
+    return out;
 }
 
 std::shared_ptr<DecodedImage> ClipboardSdl::getImage() {

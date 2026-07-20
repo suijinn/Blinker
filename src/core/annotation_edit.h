@@ -26,6 +26,16 @@ struct BoundsF {
 };
 
 /**
+ * @brief 点を中心周りに回転する。
+ * @param[in] p      回転する点。
+ * @param[in] center 回転の中心。
+ * @param[in] deg    回転角(度)。スクリーン座標系 = Y 下向きで時計回り
+ *                   (D2D の Matrix3x2F::Rotation と同じ向き)。
+ * @return 回転後の点。
+ */
+Point rotateAround(Point p, Point center, float deg);
+
+/**
  * @brief 注釈の回転前バウンディングボックスを求める。
  * @param[in] spec 対象の注釈。
  * @return p1/p2 を正規化した矩形(画像座標)。

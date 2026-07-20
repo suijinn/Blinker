@@ -26,6 +26,26 @@ public:
      * @return image が nullptr の AnnotationOverlay。
      */
     AnnotationOverlay rasterize(const AnnotationSpec&) override { return {}; }
+
+    /**
+     * @brief キャレット位置の計測(常に失敗)。
+     * @return height = 0 の TextCaretMetrics。
+     */
+    TextCaretMetrics caretMetrics(const AnnotationSpec&, size_t) override { return {}; }
+
+    /**
+     * @brief 座標からの文字位置の特定(常に先頭)。
+     * @return 常に 0。
+     */
+    size_t hitTestTextOffset(const AnnotationSpec&, float, float) override { return 0; }
+
+    /**
+     * @brief 選択範囲の矩形の計測(常に空)。
+     * @return 常に空の vector。
+     */
+    std::vector<TextRangeRect> selectionRects(const AnnotationSpec&, size_t, size_t) override {
+        return {};
+    }
 };
 
 } // namespace blinker

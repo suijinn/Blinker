@@ -100,11 +100,14 @@ public:
                                           Point screenPos) override;
 
     /**
-     * @brief テキスト入力ダイアログを表示する(SDL バックエンドでは未実装)。
-     * @param[in] initial 初期値として表示する文字列(未使用)。
-     * @return 常に std::nullopt。
+     * @brief テキスト編集の開始・終了を受け取る(SDL バックエンドでは未実装)。
+     * @param[in] active         編集中かどうか(未使用)。
+     * @param[in] caretScreenPos キャレット位置(未使用)。
+     * @param[in] caretHeightPx  キャレットの高さ(未使用)。
+     * @todo SDL バックエンドで注釈編集に対応する際に、SDL_StartTextInput と
+     *       SDL_SetTextInputArea で IME を有効化する。
      */
-    std::optional<std::string> showTextInput(const std::string& initial) override;
+    void setTextEditing(bool active, Point caretScreenPos, float caretHeightPx) override;
 
     /**
      * @brief 色選択ダイアログを表示する(SDL バックエンドでは未実装)。

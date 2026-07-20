@@ -19,6 +19,12 @@ D2D1_COLOR_F colorFromRGB(uint32_t rgb) {
                         (rgb & 0xFF) / 255.0f);
 }
 
+// 上位バイトをアルファとして解釈する版
+D2D1_COLOR_F colorFromARGB(uint32_t argb) {
+    return D2D1::ColorF(((argb >> 16) & 0xFF) / 255.0f, ((argb >> 8) & 0xFF) / 255.0f,
+                        (argb & 0xFF) / 255.0f, ((argb >> 24) & 0xFF) / 255.0f);
+}
+
 } // namespace
 
 RendererD2D::RendererD2D(HWND hwnd) : hwnd_(hwnd) {
@@ -136,8 +142,13 @@ void RendererD2D::drawAnnotations(const AnnotationsView& annotations,
     const auto toD2D = [](const Matrix3x2& m) {
         return D2D1::Matrix3x2F(m.m11, m.m12, m.m21, m.m22, m.dx, m.dy);
     };
+    // インプレース編集中のキャレット・選択範囲は対象の注釈と同じ変換で描く。
+    // 画面上での太さを一定にするため、画像座標での幅はズームの逆数を掛ける
+    const TextEditView& edit = annotations.textEdit;
+    const float invZoom = 1.0f / std::max(std::abs(imageToScreen.m11), 0.001f);
     // 画像座標のまま描き、変換で拡縮する(線幅・文字も拡縮され焼き込み結果と一致する)
-    for (const AnnotationSpec& spec : *annotations.specs) {
+    for (size_t i = 0; i < annotations.specs->size(); ++i) {
+        const AnnotationSpec& spec = (*annotations.specs)[i];
         D2D1::Matrix3x2F transform = toD2D(imageToScreen);
         if (spec.angleDeg != 0) {
             const Point c = annotationCenter(spec);
@@ -145,9 +156,23 @@ void RendererD2D::drawAnnotations(const AnnotationsView& annotations,
                 D2D1::Matrix3x2F::Rotation(spec.angleDeg, D2D1::Point2F(c.x, c.y)) * transform;
         }
         target_->SetTransform(transform);
+        const bool editingThis = edit.active && edit.index == i;
+        if (editingThis && !edit.selectionRects.empty()) {
+            brush_->SetColor(colorFromARGB(edit.selectionARGB));  // 文字の下に敷く
+            for (const TextRangeRect& r : edit.selectionRects) {
+                target_->FillRectangle(D2D1::RectF(r.left, r.top, r.right, r.bottom),
+                                       brush_.Get());
+            }
+        }
         brush_->SetColor(colorFromRGB(spec.colorRGB));
         drawAnnotationShape(target_.Get(), factory_.Get(), dwriteFactory_.Get(), spec,
                             brush_.Get());
+        if (editingThis && edit.caretVisible) {
+            brush_->SetColor(colorFromRGB(edit.caretRGB));
+            target_->DrawLine(D2D1::Point2F(edit.caretTop.x, edit.caretTop.y),
+                              D2D1::Point2F(edit.caretBottom.x, edit.caretBottom.y),
+                              brush_.Get(), 1.5f * invZoom);
+        }
     }
     target_->SetTransform(D2D1::Matrix3x2F::Identity());
 

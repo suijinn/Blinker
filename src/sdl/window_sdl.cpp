@@ -256,8 +256,8 @@ std::optional<size_t> WindowSdl::showContextMenu(const std::vector<MenuItem>&, P
     return std::nullopt;  // 未実装(編集メニュー)。閲覧機能には影響しない
 }
 
-std::optional<std::string> WindowSdl::showTextInput(const std::string&) {
-    return std::nullopt;  // 未実装(テキスト注釈)
+void WindowSdl::setTextEditing(bool, Point, float) {
+    // 未実装(テキスト注釈)。SDL バックエンドは編集メニューに到達しないため呼ばれない
 }
 
 std::optional<uint32_t> WindowSdl::showColorPicker(uint32_t) {

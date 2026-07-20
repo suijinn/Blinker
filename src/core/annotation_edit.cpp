@@ -8,16 +8,6 @@ namespace {
 
 constexpr float kPi = 3.14159265358979323846f;
 
-// center 周りに deg 回転(スクリーン座標系=Y下向きで時計回り。D2D の Rotation と同じ)
-Point rotateAround(Point p, Point center, float deg) {
-    const float rad = deg * kPi / 180.0f;
-    const float c = std::cos(rad);
-    const float s = std::sin(rad);
-    const float dx = p.x - center.x;
-    const float dy = p.y - center.y;
-    return {center.x + dx * c - dy * s, center.y + dx * s + dy * c};
-}
-
 float pointSegmentDistance(Point p, Point a, Point b) {
     const float abx = b.x - a.x;
     const float aby = b.y - a.y;
@@ -30,6 +20,15 @@ float pointSegmentDistance(Point p, Point a, Point b) {
 }
 
 } // namespace
+
+Point rotateAround(Point p, Point center, float deg) {
+    const float rad = deg * kPi / 180.0f;
+    const float c = std::cos(rad);
+    const float s = std::sin(rad);
+    const float dx = p.x - center.x;
+    const float dy = p.y - center.y;
+    return {center.x + dx * c - dy * s, center.y + dx * s + dy * c};
+}
 
 BoundsF annotationBounds(const AnnotationSpec& spec) {
     return {std::min(spec.p1.x, spec.p2.x), std::min(spec.p1.y, spec.p2.y),

@@ -217,6 +217,8 @@ void App::execute(Command command) {
 }
 
 bool App::onKey(const KeyChord& chord) {
+    // 編集中はキー入力を文字編集へ回し、コマンドの暴発を防ぐ
+    if (textEditing_) return handleTextEditKey(chord);
     const Command command = keymap_.find(chord);
     if (command == Command::None) return false;
     execute(command);
@@ -246,6 +248,7 @@ void App::onWheel(float wheelNotches, Point screenPos) {
 bool App::onMouseDown(Point screenPos) {
     if (sidebarVisible() && screenPos.x < sidebarOffset()) {
         // ステータスバー上(サイドバー領域外)はどちらの操作でもないため消費だけする
+        if (textEditing_) commitTextEdit();  // 画像切替の前に編集を確定する
         if (screenPos.y >= 0 && screenPos.y < sidebarViewHeight()) {
             const size_t index =
                 static_cast<size_t>((screenPos.y + sidebarScroll_) / kSidebarItemHeight);
@@ -294,9 +297,20 @@ bool App::onMouseDown(Point screenPos) {
             return true;
         }
     }
-    // 注釈本体 → 選択して移動ドラッグ開始。外れたら選択解除してパンに回す
     const Point imagePos = imageToScreen().inverted().apply(screenPos);
     const float tolerance = kHitTolerancePx / std::max(viewport_.zoom(), 0.001f);
+    // 編集中: 枠内のクリックはキャレット移動と範囲選択の開始。枠外なら確定して通常処理へ
+    if (textEditing_ && textEditIndex_ < annotations_.size()) {
+        if (hitTestAnnotation(annotations_[textEditIndex_], imagePos, tolerance)) {
+            textBuffer_.setCaret(textOffsetAt(imagePos), false);
+            textEditMouseSelect_ = true;
+            notifyCaretMoved();
+            host_.requestRedraw();
+            return true;
+        }
+        commitTextEdit();
+    }
+    // 注釈本体 → 選択して移動ドラッグ開始。外れたら選択解除してパンに回す
     if (const auto hit = hitTestAnnotations(annotations_, imagePos, tolerance)) {
         selected_ = hit;
         objectDrag_ = ObjectDrag::Move;
@@ -313,11 +327,18 @@ bool App::onMouseDown(Point screenPos) {
 }
 
 void App::onMouseUp() {
-    // テキストの高さは内容で決まるため、リサイズ確定時に折り返し後の実寸へ揃える
+    textEditMouseSelect_ = false;
+    // テキストの高さは内容で決まるため、リサイズ確定時に折り返し後の実寸へ揃える。
+    // 編集中は利用者が決めた枠幅を保ちたいので高さだけ合わせる
     if (objectDrag_ == ObjectDrag::Resize && dragUndoPushed_ && selected_ &&
         *selected_ < annotations_.size() &&
         annotations_[*selected_].kind == AnnotationSpec::Kind::Text) {
-        if (measureTextExtent(annotations_[*selected_])) host_.requestRedraw();
+        const bool changed = textEditing_ ? measureTextHeight(annotations_[*selected_])
+                                          : measureTextExtent(annotations_[*selected_]);
+        if (changed) {
+            if (textEditing_) notifyCaretMoved();
+            host_.requestRedraw();
+        }
     }
     objectDrag_ = ObjectDrag::None;
     dragUndoPushed_ = false;
@@ -328,17 +349,30 @@ bool App::onDoubleClick(Point screenPos) {
     if (sidebarVisible() && screenPos.x < sidebarOffset()) return false;
     const Point imagePos = imageToScreen().inverted().apply(screenPos);
     const float tolerance = kHitTolerancePx / std::max(viewport_.zoom(), 0.001f);
+    // 編集中の枠内でのダブルクリックは語の選択
+    if (textEditing_ && textEditIndex_ < annotations_.size() &&
+        hitTestAnnotation(annotations_[textEditIndex_], imagePos, tolerance)) {
+        textBuffer_.selectWordAt(textOffsetAt(imagePos));
+        notifyCaretMoved();
+        host_.requestRedraw();
+        return true;
+    }
     const auto hit = hitTestAnnotations(annotations_, imagePos, tolerance);
     if (!hit || annotations_[*hit].kind != AnnotationSpec::Kind::Text) return false;
+    if (textEditing_) commitTextEdit();
     selected_ = hit;
     objectDrag_ = ObjectDrag::None;
+    beginTextEdit(*hit, {current_, annotations_}, false);
+    // 文字位置はダブルクリックした場所の語を選ぶ(通常のテキスト編集と同じ)
+    textBuffer_.selectWordAt(textOffsetAt(imagePos));
+    notifyCaretMoved();
     host_.requestRedraw();
-    editAnnotationText(*hit);
     return true;
 }
 
 void App::onRightDragStart(Point screenPos) {
     if (!current_) return;
+    if (textEditing_) commitTextEdit();  // 右操作は編集の外側なので先に確定する
     // サイドバー・ステータスバー上からは開始しない
     const float barHeight = statusBarVisible() ? kStatusBarHeight : 0.0f;
     if (screenPos.x < sidebarOffset() || screenPos.y >= clientSize_.h - barHeight) return;
@@ -450,7 +484,7 @@ std::vector<MenuItem> App::buildObjectMenu(const AnnotationSpec& spec,
 
     std::vector<MenuItem> items;
     if (spec.kind == AnnotationSpec::Kind::Text) {
-        items.push_back(leaf("テキストを編集...", {Action::EditText}));
+        items.push_back(leaf("テキストを編集", {Action::EditText}));
     }
     items.push_back(leaf("削除", {Action::Delete}));
     items.push_back(menuSeparator());
@@ -501,7 +535,10 @@ void App::showObjectMenu(Point screenPos) {
     AnnotationSpec& spec = annotations_[*selected_];
     switch (entry.action) {
     case ObjectMenuEntry::Action::EditText:
-        editAnnotationText(*selected_);
+        beginTextEdit(*selected_, {current_, annotations_}, false);
+        textBuffer_.selectAll();  // 入力し直しやすいよう全選択で始める
+        notifyCaretMoved();
+        host_.requestRedraw();
         return;
     case ObjectMenuEntry::Action::Delete:
         deleteSelectedAnnotation();
@@ -595,13 +632,17 @@ void App::applyAnnotation(AnnotationSpec::Kind kind) {
     spec.strokeWidth = std::max(1.0f, editStrokeWidth_ / zoom);
     spec.fontSize = std::max(4.0f, editFontSize_ / zoom);
     if (kind == AnnotationSpec::Kind::Text) {
-        const auto text = host_.showTextInput({});
-        if (!text || text->empty()) return;
-        spec.text = *text;
-        if (!measureTextExtent(spec)) {
-            showMessage("描画に失敗しました");
-            return;
-        }
+        // ドラッグした矩形を空のテキストボックスにして、その場で入力を始める。
+        // 内容が空のまま終われば beginTextEdit の created により削除される
+        const Point origin{std::min(spec.p1.x, spec.p2.x), std::min(spec.p1.y, spec.p2.y)};
+        spec.p2 = {std::max(spec.p1.x, spec.p2.x), std::max(spec.p1.y, spec.p2.y)};
+        spec.p1 = origin;
+        UndoState before{current_, annotations_};  // 追加前の状態を undo 用に控える
+        annotations_.push_back(std::move(spec));
+        selected_ = annotations_.size() - 1;
+        beginTextEdit(annotations_.size() - 1, std::move(before), true);
+        host_.requestRedraw();
+        return;
     }
     pushUndo();
     annotations_.push_back(std::move(spec));
@@ -627,23 +668,219 @@ bool App::measureTextExtent(AnnotationSpec& spec) {
     return true;
 }
 
-void App::editAnnotationText(size_t index) {
+bool App::measureTextHeight(AnnotationSpec& spec) {
+    AnnotationSpec probe = spec;
+    probe.angleDeg = 0;
+    const AnnotationOverlay overlay = rasterizer_.rasterize(probe);
+    if (!overlay.image) return false;
+    constexpr float kTextMargin = 2.0f;  // ラスタライザのテキスト用余白と同じ
+    const float h =
+        std::max(static_cast<float>(overlay.image->height) - kTextMargin * 2, 1.0f);
+    spec.p2.y = std::min(spec.p1.y, spec.p2.y) + h;
+    spec.p1.y = std::min(spec.p1.y, spec.p2.y);
+    return true;
+}
+
+void App::beginTextEdit(size_t index, UndoState before, bool created) {
     if (index >= annotations_.size()) return;
-    const auto text = host_.showTextInput(annotations_[index].text);
-    if (!text || text->empty() || *text == annotations_[index].text) return;
-    AnnotationSpec updated = annotations_[index];
-    updated.text = *text;
-    if (!measureTextExtent(updated)) {
-        showMessage("描画に失敗しました");
+    textEditing_ = true;
+    textEditIndex_ = index;
+    textEditCreated_ = created;
+    textEditMouseSelect_ = false;
+    textEditCaretOn_ = true;
+    textUndoPushed_ = false;
+    textUndoState_ = std::move(before);
+    textBuffer_ = TextEditBuffer(annotations_[index].text);  // キャレットは末尾
+    selected_ = index;
+    objectDrag_ = ObjectDrag::None;
+    notifyCaretMoved();
+}
+
+void App::commitTextEdit() {
+    if (!textEditing_) return;
+    textEditing_ = false;
+    textEditMouseSelect_ = false;
+    host_.setTextEditing(false, {}, 0);
+    if (textEditIndex_ < annotations_.size()) {
+        AnnotationSpec& spec = annotations_[textEditIndex_];
+        if (spec.text.empty()) {
+            // 空のテキストボックスは残さない(新規・既存とも削除する)
+            pushTextEditUndoOnce();
+            annotations_.erase(annotations_.begin() +
+                               static_cast<std::ptrdiff_t>(textEditIndex_));
+            selected_.reset();
+            if (!textEditCreated_) markEdited();
+        } else if (!measureTextExtent(spec)) {
+            showMessage("描画に失敗しました");
+        }
+    }
+    host_.requestRedraw();
+}
+
+void App::cancelTextEdit() {
+    if (!textEditing_) return;
+    textEditing_ = false;
+    textEditMouseSelect_ = false;
+    host_.setTextEditing(false, {}, 0);
+    // 変更を記録済みなら undo と同じ経路で編集前へ戻す。新規作成中なら追加ごと消える
+    if (textUndoPushed_) {
+        executeUndo();
         return;
     }
-    pushUndo();
-    annotations_[index] = std::move(updated);
+    if (textEditCreated_ && textEditIndex_ < annotations_.size()) {
+        annotations_.erase(annotations_.begin() + static_cast<std::ptrdiff_t>(textEditIndex_));
+        selected_.reset();
+    }
+    host_.requestRedraw();
+}
+
+void App::pushTextEditUndoOnce() {
+    if (textUndoPushed_) return;
+    pushUndoState(std::move(textUndoState_));
+    textUndoPushed_ = true;
+}
+
+void App::applyTextEditChange() {
+    if (!textEditing_ || textEditIndex_ >= annotations_.size()) return;
+    pushTextEditUndoOnce();
+    AnnotationSpec& spec = annotations_[textEditIndex_];
+    spec.text = textBuffer_.text();
+    // 空になったら枠は縮めない(利用者が決めた大きさのまま入力を続けられるように)。
+    // 失敗しても枠が古いだけで編集は続けられる
+    if (!spec.text.empty()) measureTextHeight(spec);
     markEdited();
+    notifyCaretMoved();
+    host_.requestRedraw();
+}
+
+void App::notifyCaretMoved() {
+    textEditCaretOn_ = true;  // 移動直後は必ず見えている状態から点滅を始める
+    if (!textEditing_ || textEditIndex_ >= annotations_.size()) return;
+    const AnnotationSpec& spec = annotations_[textEditIndex_];
+    const TextCaretMetrics caret = rasterizer_.caretMetrics(
+        spec, utf8ToUtf16Offset(textBuffer_.text(), textBuffer_.caret()));
+    const BoundsF bounds = annotationBounds(spec);
+    // 回転後の見た目の位置へ合わせる(IME 変換ウィンドウはスクリーン座標で置く)
+    const Point local{bounds.minX + caret.x, bounds.minY + caret.y};
+    const Point center = annotationCenter(spec);
+    const Point rotated = rotateAround(local, center, spec.angleDeg);
+    const Point screen = imageToScreen().apply(rotated);
+    host_.setTextEditing(true, screen, caret.height * std::max(viewport_.zoom(), 0.001f));
+}
+
+size_t App::textOffsetAt(Point imagePos) const {
+    if (textEditIndex_ >= annotations_.size()) return 0;
+    const AnnotationSpec& spec = annotations_[textEditIndex_];
+    const BoundsF bounds = annotationBounds(spec);
+    // 注釈は中心周りに回転して描かれるため、逆回転してから枠内のローカル座標にする
+    const Point unrotated = rotateAround(imagePos, annotationCenter(spec), -spec.angleDeg);
+    const size_t utf16 = rasterizer_.hitTestTextOffset(spec, unrotated.x - bounds.minX,
+                                                       unrotated.y - bounds.minY);
+    return utf16ToUtf8Offset(textBuffer_.text(), utf16);
+}
+
+void App::moveCaretVertical(bool down, bool extendSelection) {
+    if (textEditIndex_ >= annotations_.size()) return;
+    const AnnotationSpec& spec = annotations_[textEditIndex_];
+    const TextCaretMetrics caret = rasterizer_.caretMetrics(
+        spec, utf8ToUtf16Offset(textBuffer_.text(), textBuffer_.caret()));
+    if (caret.height <= 0) return;
+    // 現在のキャレットの 1 行上/下の中心を叩いて、その表示行の文字位置を得る
+    const float y = down ? caret.y + caret.height * 1.5f : caret.y - caret.height * 0.5f;
+    const size_t utf16 = rasterizer_.hitTestTextOffset(spec, caret.x, y);
+    textBuffer_.setCaret(utf16ToUtf8Offset(textBuffer_.text(), utf16), extendSelection);
+}
+
+bool App::handleTextEditKey(const KeyChord& chord) {
+    const bool shift = chord.shift;
+    if (chord.ctrl && !chord.alt) {
+        // 英字キーは KeyCode の列挙子ではない(ASCII をそのまま値に持つ)ため if で比べる
+        const auto letter = [&chord](char c) {
+            return chord.key == static_cast<KeyCode>(c);
+        };
+        if (chord.key == KeyCode::Enter) {
+            commitTextEdit();  // Ctrl+Enter でも確定できる(Enter は改行のため)
+        } else if (letter('A')) {
+            textBuffer_.selectAll();
+            notifyCaretMoved();
+            host_.requestRedraw();
+        } else if (letter('C') || letter('X')) {
+            if (textBuffer_.hasSelection()) {
+                clipboard_.setText(textBuffer_.selectedText());
+                if (letter('X')) {
+                    textBuffer_.deleteSelection();
+                    applyTextEditChange();
+                }
+            }
+        } else if (letter('V')) {
+            const std::string pasted = clipboard_.getText();
+            if (!pasted.empty()) {
+                textBuffer_.insert(pasted);
+                applyTextEditChange();
+            }
+        } else if (letter('Z')) {
+            cancelTextEdit();  // 入力中の取り消しは編集開始前の状態へ戻す
+        }
+        return true;  // 編集中の未対応 Ctrl 系もコマンドへ流さない
+    }
+    switch (chord.key) {
+    case KeyCode::Escape:
+        commitTextEdit();
+        return true;
+    case KeyCode::Enter:
+        textBuffer_.insert("\n");
+        applyTextEditChange();
+        return true;
+    case KeyCode::Backspace:
+        if (textBuffer_.backspace()) applyTextEditChange();
+        return true;
+    case KeyCode::Delete:
+        if (textBuffer_.deleteForward()) applyTextEditChange();
+        return true;
+    case KeyCode::Left:
+        textBuffer_.moveLeft(shift);
+        break;
+    case KeyCode::Right:
+        textBuffer_.moveRight(shift);
+        break;
+    case KeyCode::Up:
+        moveCaretVertical(false, shift);
+        break;
+    case KeyCode::Down:
+        moveCaretVertical(true, shift);
+        break;
+    case KeyCode::Home:
+        textBuffer_.moveLineStart(shift);
+        break;
+    case KeyCode::End:
+        textBuffer_.moveLineEnd(shift);
+        break;
+    case KeyCode::Tab:
+        textBuffer_.insert("\t");
+        applyTextEditChange();
+        return true;
+    default:
+        return true;  // 文字キーは WM_CHAR 相当の insertText で受ける
+    }
+    notifyCaretMoved();
+    host_.requestRedraw();
+    return true;
+}
+
+void App::insertText(const std::string& utf8) {
+    if (!textEditing_ || utf8.empty()) return;
+    textBuffer_.insert(utf8);
+    applyTextEditChange();
+}
+
+void App::onCaretBlink() {
+    if (!textEditing_) return;
+    textEditCaretOn_ = !textEditCaretOn_;
     host_.requestRedraw();
 }
 
 void App::deleteSelectedAnnotation() {
+    if (textEditing_) commitTextEdit();  // 編集を確定してから対象を確定させる
     if (!selected_ || *selected_ >= annotations_.size()) {
         showMessage("削除する注釈がありません");
         return;
@@ -673,7 +910,11 @@ void App::markEdited() {
 }
 
 void App::pushUndo() {
-    undoStack_.push_back({current_, annotations_});
+    pushUndoState({current_, annotations_});
+}
+
+void App::pushUndoState(UndoState state) {
+    undoStack_.push_back(std::move(state));
     if (undoStack_.size() > kUndoLimit) undoStack_.erase(undoStack_.begin());
 }
 
@@ -684,6 +925,7 @@ void App::pushDragUndoOnce() {
 }
 
 void App::executeUndo() {
+    if (textEditing_) commitTextEdit();  // 編集中の内容を確定してから履歴を戻す
     if (undoStack_.empty()) {
         showMessage("取り消す編集はありません");
         return;
@@ -708,6 +950,12 @@ void App::executeUndo() {
 }
 
 void App::discardEdits() {
+    if (textEditing_) {
+        // 画像が変わるため注釈ごと捨てられる。host へ編集終了だけ伝えて状態を落とす
+        textEditing_ = false;
+        textEditMouseSelect_ = false;
+        host_.setTextEditing(false, {}, 0);
+    }
     selecting_ = false;
     selected_.reset();
     objectDrag_ = ObjectDrag::None;
@@ -746,6 +994,33 @@ AnnotationsView App::annotations() const {
     view.handleOffsetPx = kRotationHandleOffsetPx;
     view.handleRadiusPx = kRotationHandleRadiusPx;
     view.resizeHandleSizePx = kResizeHandleSizePx;
+    if (textEditing_ && textEditIndex_ < annotations_.size()) {
+        const AnnotationSpec& spec = annotations_[textEditIndex_];
+        const BoundsF bounds = annotationBounds(spec);
+        TextEditView& edit = view.textEdit;
+        edit.active = true;
+        edit.index = textEditIndex_;
+        edit.caretVisible = textEditCaretOn_ && !textBuffer_.hasSelection();
+        const std::string& text = textBuffer_.text();
+        const TextCaretMetrics caret =
+            rasterizer_.caretMetrics(spec, utf8ToUtf16Offset(text, textBuffer_.caret()));
+        // レンダラは注釈と同じ変換で描くため、枠原点を足した画像座標で渡す
+        edit.caretTop = {bounds.minX + caret.x, bounds.minY + caret.y};
+        edit.caretBottom = {edit.caretTop.x, edit.caretTop.y + caret.height};
+        if (textBuffer_.hasSelection()) {
+            edit.selectionRects = rasterizer_.selectionRects(
+                spec, utf8ToUtf16Offset(text, textBuffer_.selectionBegin()),
+                utf8ToUtf16Offset(text, textBuffer_.selectionEnd()));
+            for (TextRangeRect& r : edit.selectionRects) {
+                r.left += bounds.minX;
+                r.right += bounds.minX;
+                r.top += bounds.minY;
+                r.bottom += bounds.minY;
+            }
+        }
+        edit.caretRGB = 0x3399FF;
+        edit.selectionARGB = 0x603399FF;
+    }
     return view;
 }
 
@@ -755,6 +1030,14 @@ void App::onDragPan(float dx, float dy) {
 }
 
 void App::onMouseMove(Point screenPos, bool shift) {
+    // テキスト編集中の左ドラッグは範囲選択(キャレット側だけを動かす)
+    if (textEditMouseSelect_) {
+        const Point imagePos = imageToScreen().inverted().apply(screenPos);
+        textBuffer_.setCaret(textOffsetAt(imagePos), true);
+        notifyCaretMoved();
+        host_.requestRedraw();
+        return;
+    }
     // 注釈の移動・回転ドラッグ中はホバー表示より優先する
     if (objectDrag_ != ObjectDrag::None && selected_ && *selected_ < annotations_.size()) {
         AnnotationSpec& spec = annotations_[*selected_];

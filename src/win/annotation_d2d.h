@@ -31,7 +31,42 @@ public:
      */
     AnnotationOverlay rasterize(const AnnotationSpec& spec) override;
 
+    /**
+     * @brief Text 注釈内のキャレット位置を DirectWrite の計測から求める。
+     * @param[in] spec        対象の Text 注釈。
+     * @param[in] utf16Offset キャレットのテキスト内位置(UTF-16 コード単位)。
+     * @return キャレットの位置と高さ。レイアウト生成に失敗したら height = 0。
+     */
+    TextCaretMetrics caretMetrics(const AnnotationSpec& spec, size_t utf16Offset) override;
+
+    /**
+     * @brief Text 注釈内の座標に対応するテキスト位置を求める。
+     * @param[in] spec   対象の Text 注釈。
+     * @param[in] localX バウンディングボックス左上を原点とする X(画像座標)。
+     * @param[in] localY 同じく Y。
+     * @return 最も近い文字境界の位置(UTF-16 コード単位)。失敗時は 0。
+     */
+    size_t hitTestTextOffset(const AnnotationSpec& spec, float localX, float localY) override;
+
+    /**
+     * @brief Text 注釈内の範囲を覆う矩形を求める。
+     * @param[in] spec       対象の Text 注釈。
+     * @param[in] utf16Begin 範囲の開始位置(UTF-16 コード単位)。
+     * @param[in] utf16End   範囲の終了位置(UTF-16 コード単位)。
+     * @return 折り返しで分かれた行ごとの矩形。範囲が空・失敗時は空の vector。
+     */
+    std::vector<TextRangeRect> selectionRects(const AnnotationSpec& spec, size_t utf16Begin,
+                                              size_t utf16End) override;
+
 private:
+    /**
+     * @brief 計測用のテキストレイアウトを作る。
+     * @param[in] spec 対象の Text 注釈。
+     * @return 生成されたレイアウト。失敗時は nullptr。
+     * @note 空文字列は行の高さが 0 になるため、空白 1 文字に置き換えて測る。
+     */
+    Microsoft::WRL::ComPtr<IDWriteTextLayout> layoutForMetrics(const AnnotationSpec& spec);
+
     Microsoft::WRL::ComPtr<ID2D1Factory> factory_;
     Microsoft::WRL::ComPtr<IDWriteFactory> dwriteFactory_;
 };
