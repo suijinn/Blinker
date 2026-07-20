@@ -873,6 +873,13 @@ void App::insertText(const std::string& utf8) {
     applyTextEditChange();
 }
 
+bool App::wantsTextCursor(Point screenPos) const {
+    if (!textEditing_ || textEditIndex_ >= annotations_.size()) return false;
+    const Point imagePos = imageToScreen().inverted().apply(screenPos);
+    const float tolerance = kHitTolerancePx / std::max(viewport_.zoom(), 0.001f);
+    return hitTestAnnotation(annotations_[textEditIndex_], imagePos, tolerance);
+}
+
 void App::onCaretBlink() {
     if (!textEditing_) return;
     textEditCaretOn_ = !textEditCaretOn_;
