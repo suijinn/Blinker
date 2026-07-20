@@ -46,6 +46,12 @@ public:
      */
     std::shared_ptr<DecodedImage> getImage() override;
 
+    /**
+     * @brief クリップボードのテキストを取得する(CF_UNICODETEXT)。
+     * @return 取得した文字列(UTF-8。CRLF は LF に正規化)。テキストがなければ空文字列。
+     */
+    std::string getText() override;
+
 private:
     HWND owner_ = nullptr;
 };

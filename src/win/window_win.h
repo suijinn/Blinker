@@ -96,11 +96,16 @@ public:
                                           Point screenPos) override;
 
     /**
-     * @brief テキスト入力ダイアログ(複数行)を表示する。
-     * @param[in] initial 初期値として表示する文字列(UTF-8、改行は LF)。
-     * @return 入力された文字列(UTF-8、改行は LF)。キャンセル時は std::nullopt。
+     * @brief 画像上でのテキスト編集の開始・終了・キャレット移動を受け取る。
+     *
+     * 編集中だけ IME を有効にし(通常時はキー入力がコマンドなので無効にする)、
+     * 変換ウィンドウをキャレット位置へ寄せ、キャレット点滅タイマーを回す。
+     *
+     * @param[in] active         編集中なら true、終了したら false。
+     * @param[in] caretScreenPos キャレット上端の位置(クライアント座標)。
+     * @param[in] caretHeightPx  キャレットの高さ(画面 px)。
      */
-    std::optional<std::string> showTextInput(const std::string& initial) override;
+    void setTextEditing(bool active, Point caretScreenPos, float caretHeightPx) override;
 
     /**
      * @brief 色選択ダイアログ (ChooseColor) を表示する。
@@ -164,6 +169,22 @@ private:
     bool handleKey(WPARAM vk);
 
     /**
+     * @brief 文字入力 (WM_CHAR) を編集中のテキストへ渡す。
+     * @param[in] ch 入力された UTF-16 コード単位。サロゲートペアは 2 回に分けて届く。
+     * @note 制御文字(Enter・Backspace 等)は WM_KEYDOWN 側で処理済みのため捨てる。
+     */
+    void handleChar(wchar_t ch);
+
+    /**
+     * @brief IME の確定文字列を取り出して編集中のテキストへ挿入する。
+     * @param[in] lp WM_IME_COMPOSITION の lParam。
+     */
+    void handleImeResult(LPARAM lp);
+
+    /// @brief IME の変換ウィンドウを現在のキャレット位置へ合わせる。
+    void updateImePosition();
+
+    /**
      * @brief ドラッグ＆ドロップされたファイルを開く。
      * @param[in] wp WM_DROPFILES の wParam (HDROP)。
      */
@@ -186,6 +207,11 @@ private:
     bool rightDragging_ = false;  ///< 編集領域の選択中(右ボタン)
     POINT lastDragPos_{};
     bool trackingMouseLeave_ = false;
+    // テキスト編集(インプレース)の状態
+    bool textEditing_ = false;      ///< App が編集中か。IME・点滅タイマーの制御に使う
+    POINT caretPos_{};              ///< キャレット上端(クライアント座標)
+    int caretHeight_ = 0;           ///< キャレットの高さ(px)
+    wchar_t pendingSurrogate_ = 0;  ///< WM_CHAR で受けた上位サロゲート(次の下位待ち)
 };
 
 } // namespace blinker

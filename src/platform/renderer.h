@@ -60,6 +60,23 @@ struct SidebarView {
 };
 
 /**
+ * @brief Text 注釈をインプレース編集中のキャレット・選択範囲の描画内容。
+ *
+ * 座標は画像座標(注釈本体と同じ)。レンダラは編集対象の注釈と同じ変換
+ * (imageToScreen と angleDeg の回転)を適用して描く。
+ */
+struct TextEditView {
+    bool active = false;   ///< 編集中か。false なら以下は無効
+    size_t index = 0;      ///< 編集中の注釈の index(specs 内)
+    bool caretVisible = false;  ///< キャレットの点滅の表示相。false の間は描かない
+    Point caretTop;        ///< キャレット上端(画像座標)
+    Point caretBottom;     ///< キャレット下端(画像座標)
+    std::vector<TextRangeRect> selectionRects;  ///< 選択範囲のハイライト(画像座標)
+    uint32_t caretRGB = 0;        ///< キャレットの色(0xRRGGBB)
+    uint32_t selectionARGB = 0;   ///< 選択ハイライトの色。上位バイト = アルファ
+};
+
+/**
  * @brief 注釈オブジェクトのライブ描画内容。
  *
  * specs は画像座標のまま渡し、レンダラが imageToScreen を適用して描く
@@ -72,6 +89,7 @@ struct AnnotationsView {
     float handleOffsetPx = 0;        ///< 回転ハンドルの枠上辺からの距離(画面px)
     float handleRadiusPx = 0;        ///< 回転ハンドルの半径(画面px)
     float resizeHandleSizePx = 0;    ///< サイズ変更ハンドル(正方形)の一辺(画面px)
+    TextEditView textEdit;           ///< インプレース編集中のキャレット・選択範囲
 };
 
 /**

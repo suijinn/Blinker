@@ -41,6 +41,13 @@ public:
      * @return 取得した画像(32bpp PBGRA)。画像がなければ nullptr。
      */
     virtual std::shared_ptr<DecodedImage> getImage() = 0;
+
+    /**
+     * @brief クリップボードのテキストを取得する(テキスト注釈への貼り付け用)。
+     * @return 取得した文字列(UTF-8。改行は LF に正規化される)。
+     *         テキストがなければ空文字列。
+     */
+    virtual std::string getText() = 0;
 };
 
 } // namespace blinker

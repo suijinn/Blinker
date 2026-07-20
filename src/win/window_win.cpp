@@ -2,6 +2,7 @@
 
 #include <commdlg.h>
 #include <dwmapi.h>
+#include <imm.h>
 #include <shellapi.h>
 #include <windowsx.h>
 
@@ -17,114 +18,7 @@ namespace {
 constexpr wchar_t kWindowClass[] = L"BlinkerMainWindow";
 constexpr int kIconResourceId = 101;  // blinker.rc の IDI_APPICON
 constexpr UINT_PTR kMessageTimerId = 1;
-constexpr WORD kTextInputEditId = 1000;
-
-// テキスト入力ダイアログの入出力。initial を初期表示し、OK なら result に書く
-struct TextInputParams {
-    const std::wstring* initial;
-    std::wstring* result;
-};
-
-INT_PTR CALLBACK textInputDlgProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
-    switch (msg) {
-    case WM_INITDIALOG: {
-        SetWindowLongPtrW(dlg, DWLP_USER, lp);
-        const auto* params = reinterpret_cast<const TextInputParams*>(lp);
-        if (params->initial && !params->initial->empty()) {
-            // 複数行エディットは CRLF 区切りのため '\n' を戻して設定する
-            std::wstring text = *params->initial;
-            for (size_t pos = 0; (pos = text.find(L'\n', pos)) != std::wstring::npos;
-                 pos += 2) {
-                text.replace(pos, 1, L"\r\n");
-            }
-            SetDlgItemTextW(dlg, kTextInputEditId, text.c_str());
-        }
-        return TRUE;  // 最初の WS_TABSTOP (エディット) にフォーカスさせる
-    }
-    case WM_COMMAND:
-        if (LOWORD(wp) == IDOK) {
-            auto* result =
-                reinterpret_cast<TextInputParams*>(GetWindowLongPtrW(dlg, DWLP_USER))->result;
-            const HWND edit = GetDlgItem(dlg, kTextInputEditId);
-            const int length = GetWindowTextLengthW(edit);
-            result->assign(static_cast<size_t>(std::max(length, 0)), L'\0');
-            if (length > 0) GetWindowTextW(edit, result->data(), length + 1);
-            // 複数行エディットの改行 CRLF を '\n' に正規化する
-            for (size_t pos = 0; (pos = result->find(L"\r\n", pos)) != std::wstring::npos;) {
-                result->replace(pos, 2, L"\n");
-            }
-            EndDialog(dlg, IDOK);
-            return TRUE;
-        }
-        if (LOWORD(wp) == IDCANCEL) {
-            EndDialog(dlg, IDCANCEL);
-            return TRUE;
-        }
-        break;
-    }
-    return FALSE;
-}
-
-// DialogBoxIndirectParam 用のメモリ内テンプレート。WORD 列で組み立てる
-// (DLGTEMPLATE の後にメニュー・クラス・タイトル、各アイテムは DWORD 境界に揃える)
-std::vector<WORD> buildTextInputTemplate() {
-    std::vector<WORD> buf;
-    const auto pushW = [&buf](WORD w) { buf.push_back(w); };
-    const auto pushDW = [&buf](DWORD d) {
-        buf.push_back(LOWORD(d));
-        buf.push_back(HIWORD(d));
-    };
-    const auto pushStr = [&buf](const wchar_t* s) {
-        for (; *s; ++s) buf.push_back(static_cast<WORD>(*s));
-        buf.push_back(0);
-    };
-    const auto alignDword = [&buf] {
-        if (buf.size() % 2) buf.push_back(0);
-    };
-
-    pushDW(DS_MODALFRAME | DS_SETFONT | DS_CENTER | WS_POPUP | WS_CAPTION | WS_SYSMENU);
-    pushDW(0);   // 拡張スタイル
-    pushW(3);    // アイテム数
-    pushW(0);    // x
-    pushW(0);    // y
-    pushW(220);  // cx (ダイアログ単位)
-    pushW(96);   // cy
-    pushW(0);    // メニューなし
-    pushW(0);    // 既定のダイアログクラス
-    pushStr(L"テキスト (Enter で改行)");
-    pushW(9);  // フォントサイズ (pt)
-    pushStr(L"MS Shell Dlg");
-
-    struct Item {
-        DWORD style;
-        WORD x, y, cx, cy, id, classAtom;
-        const wchar_t* text;
-    };
-    const Item items[] = {
-        {WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_BORDER | WS_VSCROLL | ES_MULTILINE |
-             ES_AUTOVSCROLL | ES_WANTRETURN,
-         7, 7, 206, 60, kTextInputEditId, 0x0081, L""},  // EDIT (複数行)
-        {WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON, 105, 74, 50, 14, IDOK, 0x0080,
-         L"OK"},
-        {WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON, 160, 74, 53, 14, IDCANCEL, 0x0080,
-         L"キャンセル"},
-    };
-    for (const Item& item : items) {
-        alignDword();
-        pushDW(item.style);
-        pushDW(0);  // 拡張スタイル
-        pushW(item.x);
-        pushW(item.y);
-        pushW(item.cx);
-        pushW(item.cy);
-        pushW(item.id);
-        pushW(0xFFFF);  // クラスはアトム指定
-        pushW(item.classAtom);
-        pushStr(item.text);
-        pushW(0);  // 追加データなし
-    }
-    return buf;
-}
+constexpr UINT_PTR kCaretTimerId = 2;
 
 } // namespace
 
@@ -148,6 +42,9 @@ bool MainWindow::create(HINSTANCE hinstance, int showCommand, bool darkTitleBar)
         const BOOL dark = TRUE;
         DwmSetWindowAttribute(hwnd_, DWMWA_USE_IMMERSIVE_DARK_MODE, &dark, sizeof(dark));
     }
+
+    // 通常時のキー入力はコマンドなので IME を切っておく(編集開始時に有効化する)
+    ImmAssociateContextEx(hwnd_, nullptr, 0);
 
     renderer_ = std::make_unique<RendererD2D>(hwnd_);
     DragAcceptFiles(hwnd_, TRUE);
@@ -192,6 +89,19 @@ LRESULT MainWindow::handleMessage(UINT msg, WPARAM wp, LPARAM lp) {
     case WM_SYSKEYDOWN:
         if (handleKey(wp)) return 0;
         break;  // 未割り当てキーは既定処理へ(Alt+F4 等を殺さない)
+    case WM_CHAR:
+        handleChar(static_cast<wchar_t>(wp));
+        return 0;
+    case WM_IME_STARTCOMPOSITION:
+        updateImePosition();  // 変換開始のたびに位置を合わせ直す
+        break;
+    case WM_IME_COMPOSITION:
+        handleImeResult(lp);
+        // 確定だけのときは既定処理に渡さない(WM_IME_CHAR による二重入力を防ぐ)
+        if ((lp & GCS_RESULTSTR) && !(lp & GCS_COMPSTR)) return 0;
+        break;  // 変換中の表示は既定の IME ウィンドウに任せる
+    case WM_IME_CHAR:
+        return 0;  // 確定文字列は handleImeResult で挿入済み
     case WM_MOUSEWHEEL: {
         POINT pt{GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
         ScreenToClient(hwnd_, &pt);
@@ -257,6 +167,8 @@ LRESULT MainWindow::handleMessage(UINT msg, WPARAM wp, LPARAM lp) {
         if (wp == kMessageTimerId) {
             KillTimer(hwnd_, kMessageTimerId);  // 単発
             if (app_) app_->onTimer();
+        } else if (wp == kCaretTimerId) {
+            if (app_) app_->onCaretBlink();  // 編集終了で KillTimer される
         }
         return 0;
     case WM_LBUTTONUP:
@@ -527,17 +439,75 @@ std::optional<uint32_t> MainWindow::showColorPicker(uint32_t initialRGB) {
            static_cast<uint32_t>(GetBValue(cc.rgbResult));
 }
 
-std::optional<std::string> MainWindow::showTextInput(const std::string& initial) {
-    const std::vector<WORD> dlgTemplate = buildTextInputTemplate();
-    const std::wstring initialWide = utf8ToWide(initial);
-    std::wstring result;
-    TextInputParams params{&initialWide, &result};
-    const INT_PTR code = DialogBoxIndirectParamW(
-        reinterpret_cast<HINSTANCE>(GetWindowLongPtrW(hwnd_, GWLP_HINSTANCE)),
-        reinterpret_cast<const DLGTEMPLATE*>(dlgTemplate.data()), hwnd_, textInputDlgProc,
-        reinterpret_cast<LPARAM>(&params));
-    if (code != IDOK) return std::nullopt;
-    return wideToUtf8(result);
+void MainWindow::setTextEditing(bool active, Point caretScreenPos, float caretHeightPx) {
+    caretPos_ = {static_cast<LONG>(caretScreenPos.x), static_cast<LONG>(caretScreenPos.y)};
+    caretHeight_ = static_cast<int>(caretHeightPx);
+    if (active == textEditing_) {
+        if (active) updateImePosition();  // キャレット移動だけの通知
+        return;
+    }
+    textEditing_ = active;
+    if (active) {
+        // 通常時は 'n' 等がコマンドのため IME を切っている。編集中だけ有効化する
+        ImmAssociateContextEx(hwnd_, nullptr, IACE_DEFAULT);
+        updateImePosition();
+        SetTimer(hwnd_, kCaretTimerId, GetCaretBlinkTime(), nullptr);
+    } else {
+        KillTimer(hwnd_, kCaretTimerId);
+        pendingSurrogate_ = 0;
+        if (HIMC imc = ImmGetContext(hwnd_)) {
+            ImmNotifyIME(imc, NI_COMPOSITIONSTR, CPS_CANCEL, 0);  // 変換中なら捨てる
+            ImmReleaseContext(hwnd_, imc);
+        }
+        ImmAssociateContextEx(hwnd_, nullptr, 0);
+    }
+}
+
+void MainWindow::updateImePosition() {
+    HIMC imc = ImmGetContext(hwnd_);
+    if (!imc) return;
+    // 変換ウィンドウをキャレットの真下に出す(CFS_POINT はクライアント座標)
+    COMPOSITIONFORM form{};
+    form.dwStyle = CFS_POINT;
+    form.ptCurrentPos = {caretPos_.x, caretPos_.y};
+    ImmSetCompositionWindow(imc, &form);
+    // 変換中の文字を注釈のフォントサイズに合わせる(既定だとウィンドウフォント基準)
+    LOGFONTW font{};
+    font.lfHeight = -std::max(caretHeight_, 8);
+    ImmSetCompositionFontW(imc, &font);
+    ImmReleaseContext(hwnd_, imc);
+}
+
+void MainWindow::handleChar(wchar_t ch) {
+    if (!app_ || !app_->isTextEditing()) return;
+    if (IS_HIGH_SURROGATE(ch)) {
+        pendingSurrogate_ = ch;
+        return;
+    }
+    std::wstring text;
+    if (IS_LOW_SURROGATE(ch) && pendingSurrogate_ != 0) {
+        text = {pendingSurrogate_, ch};
+    } else if (ch >= 0x20) {
+        // 制御文字 (Enter・Tab・Backspace・Esc) は WM_KEYDOWN 側で処理済み。
+        // TranslateMessage は wndProc の戻り値に関係なく WM_CHAR を作るため、
+        // ここで捨てないと二重に入力される
+        text = {ch};
+    }
+    pendingSurrogate_ = 0;
+    if (!text.empty()) app_->insertText(wideToUtf8(text));
+}
+
+void MainWindow::handleImeResult(LPARAM lp) {
+    if (!app_ || !app_->isTextEditing() || !(lp & GCS_RESULTSTR)) return;
+    HIMC imc = ImmGetContext(hwnd_);
+    if (!imc) return;
+    const LONG bytes = ImmGetCompositionStringW(imc, GCS_RESULTSTR, nullptr, 0);
+    if (bytes > 0) {
+        std::wstring text(static_cast<size_t>(bytes) / sizeof(wchar_t), L'\0');
+        ImmGetCompositionStringW(imc, GCS_RESULTSTR, text.data(), static_cast<DWORD>(bytes));
+        app_->insertText(wideToUtf8(text));
+    }
+    ImmReleaseContext(hwnd_, imc);
 }
 
 void MainWindow::startTimer(unsigned milliseconds) {

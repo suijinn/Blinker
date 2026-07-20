@@ -36,6 +36,12 @@ public:
      * @return 取得した画像(32bpp PBGRA)。画像がない・デコード失敗なら nullptr。
      */
     std::shared_ptr<DecodedImage> getImage() override;
+
+    /**
+     * @brief クリップボードのテキストを取得する。
+     * @return 取得した文字列(UTF-8。CRLF は LF に正規化)。テキストがなければ空文字列。
+     */
+    std::string getText() override;
 };
 
 } // namespace blinker

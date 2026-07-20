@@ -14,6 +14,7 @@
 #include "core/image_cache.h"
 #include "core/image_list.h"
 #include "core/keymap.h"
+#include "core/text_edit.h"
 #include "core/viewport.h"
 #include "platform/annotation.h"
 #include "platform/clipboard.h"
@@ -97,11 +98,17 @@ public:
                                                   Point screenPos) = 0;
 
     /**
-     * @brief テキスト入力ダイアログ(複数行)を表示する。
-     * @param[in] initial 初期値として表示する文字列(UTF-8、改行は LF)。再編集用。
-     * @return 入力された文字列(UTF-8、改行は LF)。キャンセル時は std::nullopt。
+     * @brief 画像上でのテキスト編集の開始・終了・キャレット移動を通知する。
+     *
+     * win 層は IME の有効・無効の切り替え、変換ウィンドウの位置合わせ、
+     * キャレット点滅タイマー(満了で App::onCaretBlink を呼ぶ)に使う。
+     *
+     * @param[in] active         編集中なら true、終了したら false。
+     * @param[in] caretScreenPos キャレット上端の位置(スクリーン座標)。false のときは無意味。
+     * @param[in] caretHeightPx  キャレットの高さ(画面 px)。IME 変換ウィンドウの
+     *                           フォントサイズに使う。false のときは無意味。
      */
-    virtual std::optional<std::string> showTextInput(const std::string& initial) = 0;
+    virtual void setTextEditing(bool active, Point caretScreenPos, float caretHeightPx) = 0;
 
     /**
      * @brief 色選択ダイアログを表示する。
@@ -200,9 +207,32 @@ public:
     /**
      * @brief ダブルクリックを処理する。
      * @param[in] screenPos クリック位置(スクリーン座標)。
-     * @return Text 注釈上で再編集を開始したら true。
+     * @return Text 注釈上で編集を開始した、または編集中に語を選択したら true。
      */
     bool onDoubleClick(Point screenPos);
+
+    /**
+     * @brief 画像上でテキストを編集中かを返す。
+     * @return 編集中なら true。
+     * @note win 層はこれを見てキー入力を文字入力として App へ回す。
+     */
+    bool isTextEditing() const { return textEditing_; }
+
+    /**
+     * @brief 編集中のテキストへ文字列を挿入する(文字キー入力・IME 確定・貼り付け)。
+     * @param[in] utf8 挿入する文字列(UTF-8。改行 LF 可)。
+     * @note 編集中でなければ何もしない。選択範囲があれば置き換える。
+     */
+    void insertText(const std::string& utf8);
+
+    /**
+     * @brief キャレット点滅タイマーの満了を通知する。
+     * @note 編集中でなければ何もしない。
+     */
+    void onCaretBlink();
+
+    /// @brief 編集中のテキストを確定して編集を終了する(内容が空なら注釈を削除する)。
+    void commitTextEdit();
 
     /**
      * @brief 右ドラッグによる編集領域の選択を開始する。
@@ -302,6 +332,12 @@ private:
     static constexpr float kPanStepPx = 64.0f;         ///< パンコマンド 1 回の移動量
     static constexpr float kStatusBarHeight = 26.0f;   ///< ステータスバーの高さ
     static constexpr float kSidebarItemHeight = 24.0f; ///< サイドバー 1 項目の高さ
+
+    /// @brief undo 1 段分のスナップショット(画像と注釈一覧)。
+    struct UndoState {
+        std::shared_ptr<DecodedImage> image;      ///< トリミング前の画像
+        std::vector<AnnotationSpec> annotations;  ///< そのときの注釈一覧
+    };
 
     /// @brief 現在位置の画像をキャッシュから取り直し、表示状態を更新する。
     void refreshCurrent();
@@ -434,10 +470,57 @@ private:
     bool measureTextExtent(AnnotationSpec& spec);
 
     /**
-     * @brief テキスト入力ダイアログで Text 注釈を再編集する。
-     * @param[in] index 編集する注釈の index。
+     * @brief Text 注釈の幅を保ったまま高さだけ内容に合わせる(編集中の枠追従用)。
+     * @param[in,out] spec 対象の注釈。成功時に p2.y が更新される。
+     * @return 実測できたら true。ラスタライズに失敗したら false。
+     * @note 編集中に幅まで詰めると入力のたびに折り返しが変わってしまうため、
+     *       幅は編集開始時のまま固定し、確定時に measureTextExtent で詰める。
      */
-    void editAnnotationText(size_t index);
+    bool measureTextHeight(AnnotationSpec& spec);
+
+    /**
+     * @brief Text 注釈のインプレース編集を開始する。
+     * @param[in] index   編集する注釈の index。
+     * @param[in] before  最初の変更時に undo へ積むスナップショット(編集前の状態)。
+     * @param[in] created 新規作成直後なら true。空のまま終了したら注釈ごと削除する。
+     */
+    void beginTextEdit(size_t index, UndoState before, bool created);
+
+    /// @brief 編集を破棄して終了する(新規作成中なら注釈も削除する)。
+    void cancelTextEdit();
+
+    /**
+     * @brief 編集中のキー入力を処理する。
+     * @param[in] chord 入力されたキー。
+     * @return 編集操作として処理したら true。
+     * @note 編集中は未処理のキーも true を返して握りつぶす(移動コマンド等の暴発防止)。
+     */
+    bool handleTextEditKey(const KeyChord& chord);
+
+    /// @brief 編集中の文字列を注釈へ書き戻し、枠の高さと再描画を更新する。
+    void applyTextEditChange();
+
+    /// @brief キャレット位置を host へ通知し(IME の位置合わせ)、点滅を表示相に戻す。
+    void notifyCaretMoved();
+
+    /// @brief 最初の変更時に 1 回だけ編集前のスナップショットを undo へ積む。
+    void pushTextEditUndoOnce();
+
+    /**
+     * @brief 編集中のテキスト内で、画像座標に対応する文字位置を求める。
+     * @param[in] imagePos 対象の位置(画像座標)。回転は内部で打ち消す。
+     * @return テキスト内のバイト位置(UTF-8)。
+     * @pre textEditing_ が true であること。
+     */
+    size_t textOffsetAt(Point imagePos) const;
+
+    /**
+     * @brief キャレットを 1 行上下へ移動する。
+     * @param[in] down            true で下、false で上。
+     * @param[in] extendSelection true なら選択を広げる。
+     * @note 折り返し位置はラスタライザの計測に従う(論理行ではなく表示行で動く)。
+     */
+    void moveCaretVertical(bool down, bool extendSelection);
 
     /// @brief 選択中の注釈オブジェクトを削除する。
     void deleteSelectedAnnotation();
@@ -453,6 +536,12 @@ private:
 
     /// @brief 現在の画像と注釈一覧を undo 履歴へ積む(kUndoLimit を超えた分は捨てる)。
     void pushUndo();
+
+    /**
+     * @brief 与えられたスナップショットを undo 履歴へ積む。
+     * @param[in] state 積むスナップショット。所有権を受け取る。
+     */
+    void pushUndoState(UndoState state);
 
     /// @brief ドラッグ(移動・回転)の最初の変更時に 1 回だけ undo 履歴へ積む。
     void pushDragUndoOnce();
@@ -515,11 +604,16 @@ private:
     float dragStartAngleDeg_ = 0;  ///< Rotate: 開始時のポインタ角度(スクリーン)
     ResizeHandle dragResizeHandle_ = ResizeHandle::BottomRight;  ///< Resize: 掴んだハンドル
 
-    /// @brief undo 1 段分のスナップショット(画像と注釈一覧)。
-    struct UndoState {
-        std::shared_ptr<DecodedImage> image;      ///< トリミング前の画像
-        std::vector<AnnotationSpec> annotations;  ///< そのときの注釈一覧
-    };
+    // Text 注釈のインプレース編集(画像上で直接入力する状態)
+    bool textEditing_ = false;      ///< 編集中か
+    size_t textEditIndex_ = 0;      ///< 編集中の注釈 index(annotations_ 内)
+    TextEditBuffer textBuffer_;     ///< 編集中の文字列・キャレット・選択範囲
+    bool textEditCreated_ = false;  ///< 新規作成中(空のまま終了したら注釈を消す)
+    bool textEditCaretOn_ = true;   ///< キャレット点滅の表示相
+    bool textEditMouseSelect_ = false;  ///< 左ドラッグで選択範囲を広げている最中
+    bool textUndoPushed_ = false;   ///< 編集中の undo 記録は最初の変更時の1回だけ
+    UndoState textUndoState_;       ///< 上記で積む編集前のスナップショット
+
     std::vector<UndoState> undoStack_;
     uint32_t editColorRGB_ = 0xFF3B30;  ///< 新規注釈の色(0xRRGGBB)
     float editStrokeWidth_ = 3.0f;  ///< 線幅。画面px基準(適用時に 1/zoom で画像座標へ換算)

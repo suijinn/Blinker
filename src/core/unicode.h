@@ -60,6 +60,27 @@ std::wstring utf8ToWide(std::string_view s);
 std::string wideToUtf8(std::wstring_view s);
 
 /**
+ * @brief UTF-8 のバイト位置を、同じ文字列を UTF-16 とみなしたときの位置へ変換する。
+ *
+ * DirectWrite など UTF-16 単位で位置を扱う API との境界で使う。
+ *
+ * @param[in] s          対象の UTF-8 文字列。
+ * @param[in] byteOffset 変換するバイト位置。s.size() を超える値は s.size() として扱う。
+ * @return 対応する UTF-16 コード単位の位置。
+ * @note byteOffset がコードポイントの途中を指す場合はその先頭へ切り下げて数える。
+ */
+size_t utf8ToUtf16Offset(std::string_view s, size_t byteOffset);
+
+/**
+ * @brief UTF-16 のコード単位位置を、同じ文字列の UTF-8 バイト位置へ変換する。
+ * @param[in] s           対象の UTF-8 文字列。
+ * @param[in] utf16Offset 変換する UTF-16 位置。長さを超える値は末尾として扱う。
+ * @return 対応する UTF-8 バイト位置。
+ * @note サロゲートペアの途中を指す場合はそのペアの先頭へ切り下げる。
+ */
+size_t utf16ToUtf8Offset(std::string_view s, size_t utf16Offset);
+
+/**
  * @brief パスをネイティブ表現から UTF-8 へ変換する。
  * @param[in] p 変換元のパス。
  * @return UTF-8 表現。区切り文字は OS のネイティブのまま。

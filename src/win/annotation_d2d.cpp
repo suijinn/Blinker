@@ -32,6 +32,69 @@ AnnotationD2D::AnnotationD2D() {
                         reinterpret_cast<IUnknown**>(dwriteFactory_.GetAddressOf()));
 }
 
+ComPtr<IDWriteTextLayout> AnnotationD2D::layoutForMetrics(const AnnotationSpec& spec) {
+    if (!dwriteFactory_) return nullptr;
+    // 空文字列だと行の高さが 0 になるため、空白 1 文字で行の高さを測る
+    if (spec.text.empty()) {
+        AnnotationSpec probe = spec;
+        probe.text = " ";
+        return createAnnotationTextLayout(dwriteFactory_.Get(), probe, kMaxOverlaySize);
+    }
+    return createAnnotationTextLayout(dwriteFactory_.Get(), spec, kMaxOverlaySize);
+}
+
+TextCaretMetrics AnnotationD2D::caretMetrics(const AnnotationSpec& spec, size_t utf16Offset) {
+    const ComPtr<IDWriteTextLayout> layout = layoutForMetrics(spec);
+    if (!layout) return {};
+    float x = 0;
+    float y = 0;
+    DWRITE_HIT_TEST_METRICS metrics{};
+    if (FAILED(layout->HitTestTextPosition(static_cast<UINT32>(utf16Offset), FALSE, &x, &y,
+                                           &metrics))) {
+        return {};
+    }
+    return {x, y, metrics.height};
+}
+
+size_t AnnotationD2D::hitTestTextOffset(const AnnotationSpec& spec, float localX,
+                                        float localY) {
+    if (spec.text.empty()) return 0;
+    const ComPtr<IDWriteTextLayout> layout = layoutForMetrics(spec);
+    if (!layout) return 0;
+    BOOL isTrailing = FALSE;
+    BOOL isInside = FALSE;
+    DWRITE_HIT_TEST_METRICS metrics{};
+    if (FAILED(layout->HitTestPoint(localX, localY, &isTrailing, &isInside, &metrics))) {
+        return 0;
+    }
+    // 文字の後ろ半分を叩いたときは次の文字境界へ寄せる(通常のテキスト編集と同じ)
+    return metrics.textPosition + (isTrailing ? metrics.length : 0);
+}
+
+std::vector<TextRangeRect> AnnotationD2D::selectionRects(const AnnotationSpec& spec,
+                                                         size_t utf16Begin, size_t utf16End) {
+    if (utf16End <= utf16Begin || spec.text.empty()) return {};
+    const ComPtr<IDWriteTextLayout> layout = layoutForMetrics(spec);
+    if (!layout) return {};
+    const UINT32 position = static_cast<UINT32>(utf16Begin);
+    const UINT32 length = static_cast<UINT32>(utf16End - utf16Begin);
+    UINT32 count = 0;
+    // 1 回目は必要な個数を得るための呼び出し(E_NOT_SUFFICIENT_BUFFER が返る)
+    layout->HitTestTextRange(position, length, 0, 0, nullptr, 0, &count);
+    if (count == 0) return {};
+    std::vector<DWRITE_HIT_TEST_METRICS> hits(count);
+    if (FAILED(layout->HitTestTextRange(position, length, 0, 0, hits.data(), count, &count))) {
+        return {};
+    }
+    std::vector<TextRangeRect> rects;
+    rects.reserve(count);
+    for (UINT32 i = 0; i < count; ++i) {
+        const DWRITE_HIT_TEST_METRICS& h = hits[i];
+        rects.push_back({h.left, h.top, h.left + h.width, h.top + h.height});
+    }
+    return rects;
+}
+
 AnnotationOverlay AnnotationD2D::rasterize(const AnnotationSpec& spec) {
     IWICImagingFactory* wic = wicFactoryForThisThread();
     if (!factory_ || !dwriteFactory_ || !wic) return {};

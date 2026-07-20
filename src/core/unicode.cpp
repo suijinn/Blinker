@@ -1,5 +1,7 @@
 #include "core/unicode.h"
 
+#include <algorithm>
+
 namespace blinker {
 
 namespace {
@@ -124,6 +126,30 @@ std::string wideToUtf8(std::wstring_view s) {
         appendUtf8(out, cp);
     }
     return out;
+}
+
+size_t utf8ToUtf16Offset(std::string_view s, size_t byteOffset) {
+    const size_t limit = std::min(byteOffset, s.size());
+    size_t pos = 0;
+    size_t units = 0;
+    while (pos < limit) {
+        const char32_t cp = decodeUtf8(s, pos);  // pos が limit を跨いでも切り上げない
+        units += cp >= 0x10000 ? 2 : 1;
+    }
+    return units;
+}
+
+size_t utf16ToUtf8Offset(std::string_view s, size_t utf16Offset) {
+    size_t pos = 0;
+    size_t units = 0;
+    while (pos < s.size() && units < utf16Offset) {
+        const size_t start = pos;
+        const char32_t cp = decodeUtf8(s, pos);
+        const size_t width = cp >= 0x10000 ? 2 : 1;
+        if (units + width > utf16Offset) return start;  // サロゲートペアの途中 → 先頭へ
+        units += width;
+    }
+    return pos;
 }
 
 std::string pathToUtf8(const std::filesystem::path& p) {

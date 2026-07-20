@@ -170,4 +170,23 @@ bool ClipboardWin::setText(const std::string& textUtf8) {
     return ok;
 }
 
+std::string ClipboardWin::getText() {
+    if (!openClipboard(owner_)) return {};
+    std::wstring wide;
+    if (HANDLE handle = GetClipboardData(CF_UNICODETEXT)) {
+        if (const void* data = GlobalLock(static_cast<HGLOBAL>(handle))) {
+            const auto* chars = static_cast<const wchar_t*>(data);
+            // GlobalSize は要求より大きいことがあるため終端 NUL までを採る
+            const size_t limit = GlobalSize(static_cast<HGLOBAL>(handle)) / sizeof(wchar_t);
+            wide.assign(chars, std::find(chars, chars + limit, L'\0'));
+            GlobalUnlock(static_cast<HGLOBAL>(handle));
+        }
+    }
+    CloseClipboard();
+    std::string text = wideToUtf8(wide);
+    // 改行は注釈テキストの表現に合わせて LF に正規化する
+    text.erase(std::remove(text.begin(), text.end(), '\r'), text.end());
+    return text;
+}
+
 } // namespace blinker
