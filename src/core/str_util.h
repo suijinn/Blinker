@@ -5,8 +5,18 @@
 #include <string>
 #include <string_view>
 
+/**
+ * @file str_util.h
+ * @brief 文字列ユーティリティ(小文字化・トリム・自然順比較)。
+ */
+
 namespace blinker {
 
+/**
+ * @brief ASCII 範囲を小文字化したコピーを返す。
+ * @param[in] s 変換元の文字列。
+ * @return 小文字化された文字列。UTF-8 のマルチバイト部はそのまま。
+ */
 inline std::string toLower(std::string_view s) {
     std::string out(s);
     std::transform(out.begin(), out.end(), out.begin(),
@@ -14,17 +24,28 @@ inline std::string toLower(std::string_view s) {
     return out;
 }
 
+/**
+ * @brief 前後の空白を取り除いたビューを返す。
+ * @param[in] s 対象の文字列。
+ * @return 前後の空白を除いた部分文字列(s の記憶域を参照する)。
+ */
 inline std::string_view trim(std::string_view s) {
     while (!s.empty() && std::isspace(static_cast<unsigned char>(s.front()))) s.remove_prefix(1);
     while (!s.empty() && std::isspace(static_cast<unsigned char>(s.back()))) s.remove_suffix(1);
     return s;
 }
 
-// エクスプローラ風の自然順比較(StrCmpLogicalW 相当のポータブル実装)。
-// 数字の連続は数値として比較し(数値が同じなら先頭ゼロが少ない方を先に)、
-// それ以外は ASCII の大文字小文字を無視してバイト値で比較する
-// (UTF-8 のマルチバイト部は 0x80 以上のためコードポイント順になる)。
-// 戻り値: a < b なら負、a > b なら正、等しければ 0
+/**
+ * @brief エクスプローラ風の自然順比較(StrCmpLogicalW 相当のポータブル実装)。
+ *
+ * 数字の連続は数値として比較し(数値が同じなら先頭ゼロが少ない方を先に)、
+ * それ以外は ASCII の大文字小文字を無視してバイト値で比較する
+ * (UTF-8 のマルチバイト部は 0x80 以上のためコードポイント順になる)。
+ *
+ * @param[in] a 比較する左辺。
+ * @param[in] b 比較する右辺。
+ * @return a < b なら負、a > b なら正、等しければ 0。
+ */
 inline int naturalCompare(std::string_view a, std::string_view b) {
     const auto isDigit = [](char c) { return c >= '0' && c <= '9'; };
     size_t i = 0, j = 0;

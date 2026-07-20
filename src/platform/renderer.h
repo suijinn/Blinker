@@ -10,70 +10,111 @@
 #include "platform/annotation.h"
 #include "platform/decoder.h"
 
+/**
+ * @file renderer.h
+ * @brief 描画のプラットフォーム抽象と、App が組み立てる描画用スナップショット。
+ */
+
 namespace blinker {
 
-// ステータスバーの描画内容。App が文字列まで組み立て、レンダラは描くだけ。
+/**
+ * @brief ステータスバーの描画内容。
+ *
+ * App が文字列まで組み立て、レンダラは描くだけ。
+ */
 struct StatusBarView {
-    bool visible = false;
-    float height = 0;
-    uint32_t backgroundRGB = 0;
-    uint32_t textRGB = 0;
-    std::string leftText;   // 通知メッセージ or 画像情報(UTF-8)
-    std::string rightText;  // カーソル位置の座標と色(UTF-8)
+    bool visible = false;        ///< 表示するか
+    float height = 0;            ///< 高さ(px)
+    uint32_t backgroundRGB = 0;  ///< 背景色(0xRRGGBB)
+    uint32_t textRGB = 0;        ///< 文字色(0xRRGGBB)
+    std::string leftText;        ///< 通知メッセージ or 画像情報(UTF-8)
+    std::string rightText;       ///< カーソル位置の座標と色(UTF-8)
 };
 
-// サイドバー(ファイル名一覧)の描画内容。App が可視範囲の項目だけを組み立てる。
-// 領域はウィンドウ左端 (0, 0)-(width, height)。ステータスバーの高さは含まない。
+/// @brief サイドバー(ファイル名一覧)の 1 項目。
 struct SidebarItem {
-    std::string text;  // UTF-8
-    bool current = false;  // 表示中(一覧の現在位置)ならハイライト
+    std::string text;      ///< 表示するファイル名(UTF-8)
+    bool current = false;  ///< 表示中(一覧の現在位置)ならハイライトする
 };
 
+/**
+ * @brief サイドバー(ファイル名一覧)の描画内容。
+ *
+ * App が可視範囲の項目だけを組み立てる。領域はウィンドウ左端 (0, 0)-(width, height) で、
+ * ステータスバーの高さは含まない。
+ */
 struct SidebarView {
-    bool visible = false;
-    float width = 0;
-    float height = 0;
-    float itemHeight = 0;
-    float firstItemY = 0;  // items[0] の上端 Y(スクロールの端数を含むため負になりうる)
-    uint32_t backgroundRGB = 0;
-    uint32_t textRGB = 0;
-    uint32_t currentBackgroundRGB = 0;
-    uint32_t currentTextRGB = 0;
-    uint32_t scrollbarRGB = 0;
-    float scrollOffset = 0;   // スクロールバー描画用
-    float contentHeight = 0;  // 全項目の合計高さ。height 以下ならスクロールバー不要
-    std::vector<SidebarItem> items;  // 可視範囲のみ
+    bool visible = false;               ///< 表示するか
+    float width = 0;                    ///< 幅(px)
+    float height = 0;                   ///< 高さ(px)。ステータスバーを含まない
+    float itemHeight = 0;               ///< 1 項目の高さ(px)
+    float firstItemY = 0;               ///< items[0] の上端 Y。スクロールの端数を含むため負になりうる
+    uint32_t backgroundRGB = 0;         ///< 背景色(0xRRGGBB)
+    uint32_t textRGB = 0;               ///< 文字色(0xRRGGBB)
+    uint32_t currentBackgroundRGB = 0;  ///< 現在項目の背景色(0xRRGGBB)
+    uint32_t currentTextRGB = 0;        ///< 現在項目の文字色(0xRRGGBB)
+    uint32_t scrollbarRGB = 0;          ///< スクロールバーの色(0xRRGGBB)
+    float scrollOffset = 0;             ///< スクロールバー描画用のスクロール量(px)
+    float contentHeight = 0;            ///< 全項目の合計高さ。height 以下ならスクロールバー不要
+    std::vector<SidebarItem> items;     ///< 可視範囲の項目のみ
 };
 
-// 注釈オブジェクトのライブ描画内容。specs は画像座標のまま渡し、レンダラが
-// imageToScreen を適用して描く(保存/コピー時の焼き込みと同じ見た目になる)。
+/**
+ * @brief 注釈オブジェクトのライブ描画内容。
+ *
+ * specs は画像座標のまま渡し、レンダラが imageToScreen を適用して描く
+ * (保存/コピー時の焼き込みと同じ見た目になる)。
+ */
 struct AnnotationsView {
-    const std::vector<AnnotationSpec>* specs = nullptr;  // nullptr = 注釈なし
-    std::optional<size_t> selected;  // 選択中の index(選択枠とハンドルを描く)
-    uint32_t selectionRGB = 0;       // 選択枠・回転ハンドルの色
-    float handleOffsetPx = 0;        // 回転ハンドルの枠上辺からの距離(画面px)
-    float handleRadiusPx = 0;        // 回転ハンドルの半径(画面px)
-    float resizeHandleSizePx = 0;    // サイズ変更ハンドル(正方形)の一辺(画面px)
+    const std::vector<AnnotationSpec>* specs = nullptr;  ///< 注釈一覧。nullptr なら注釈なし
+    std::optional<size_t> selected;  ///< 選択中の index(選択枠とハンドルを描く)
+    uint32_t selectionRGB = 0;       ///< 選択枠・回転ハンドルの色(0xRRGGBB)
+    float handleOffsetPx = 0;        ///< 回転ハンドルの枠上辺からの距離(画面px)
+    float handleRadiusPx = 0;        ///< 回転ハンドルの半径(画面px)
+    float resizeHandleSizePx = 0;    ///< サイズ変更ハンドル(正方形)の一辺(画面px)
 };
 
-// 編集用の選択領域(ラバーバンド)の描画内容。App が画像座標→スクリーン座標へ変換済み。
+/**
+ * @brief 編集用の選択領域(ラバーバンド)の描画内容。
+ *
+ * App が画像座標 → スクリーン座標へ変換済み。
+ */
 struct SelectionView {
-    bool visible = false;
-    Point p1;               // 矩形の対角(順不同)
-    Point p2;
-    uint32_t borderRGB = 0;
-    uint32_t fillARGB = 0;  // 上位バイト = アルファ
+    bool visible = false;   ///< 表示するか
+    Point p1;               ///< 矩形の対角の一方(順不同)
+    Point p2;               ///< 矩形の対角の他方(順不同)
+    uint32_t borderRGB = 0; ///< 枠線の色(0xRRGGBB)
+    uint32_t fillARGB = 0;  ///< 塗りの色。上位バイト = アルファ
 };
 
-// 描画のプラットフォーム抽象。Windows 実装は Direct2D (renderer_d2d)。
-// UI スレッドからのみ呼ばれる。
+/**
+ * @brief 描画のプラットフォーム抽象。
+ *
+ * Windows 実装は Direct2D (renderer_d2d)、SDL バックエンドは SDL_Renderer (renderer_sdl)。
+ * UI スレッドからのみ呼ばれる。
+ */
 class IRenderer {
 public:
     virtual ~IRenderer() = default;
 
+    /**
+     * @brief 描画先のサイズ変更を通知する。
+     * @param[in] width  新しい幅(物理ピクセル)。
+     * @param[in] height 新しい高さ(物理ピクセル)。
+     */
     virtual void resize(uint32_t width, uint32_t height) = 0;
 
-    // image は nullptr 可(背景のみ描画)。zoom は補間モード選択のヒント。
+    /**
+     * @brief 1 フレームを描画する。
+     * @param[in] image           表示する画像。nullptr 可(背景のみ描画)。
+     * @param[in] imageToScreen   画像座標 → スクリーン座標の変換行列。
+     * @param[in] zoom            ズーム倍率。補間モード選択のヒントに使う。
+     * @param[in] backgroundRGB   背景色(0xRRGGBB)。
+     * @param[in] annotations     注釈オブジェクトの描画内容。
+     * @param[in] selection       選択領域(ラバーバンド)の描画内容。
+     * @param[in] sidebar         サイドバーの描画内容。
+     * @param[in] statusBar       ステータスバーの描画内容。
+     */
     virtual void render(const std::shared_ptr<const DecodedImage>& image,
                         const Matrix3x2& imageToScreen, float zoom, uint32_t backgroundRGB,
                         const AnnotationsView& annotations, const SelectionView& selection,

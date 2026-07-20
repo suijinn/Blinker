@@ -1,0 +1,91 @@
+# Blinker の Doxygen 設定。
+#
+# 実行はリポジトリのルートから:
+#   doxygen docs/Doxyfile
+# 出力は build/doxygen/html/index.html(build/ は .gitignore 済み)。
+#
+# 既定値のままでよい項目は書かない(Doxygen のバージョン差で壊れにくくするため)。
+# 完全な設定一覧が要るときは `doxygen -g` で雛形を出して比較すること。
+
+#---------------------------------------------------------------------------
+# プロジェクト
+#---------------------------------------------------------------------------
+
+PROJECT_NAME           = Blinker
+PROJECT_BRIEF          = "軽量・高速起動の画像ビューア"
+
+# PROJECT_NUMBER はあえて設定しない。バージョンの正は CMakeLists.txt の
+# project(Blinker VERSION x.y.z) の1行だけであり(CLAUDE.md「リリース手順」)、
+# ここに書くと正が二か所に増えて drift する。
+
+OUTPUT_DIRECTORY       = build/doxygen
+OUTPUT_LANGUAGE        = Japanese
+CREATE_SUBDIRS         = NO
+
+#---------------------------------------------------------------------------
+# 入力
+#---------------------------------------------------------------------------
+
+INPUT                  = src
+INPUT_ENCODING         = UTF-8
+RECURSIVE              = YES
+
+# ヘッダのみを対象にする。実装(.cpp)の内部関数は Doxygen の対象外という方針
+# (CLAUDE.md「Doxygen コメント」)。
+FILE_PATTERNS          = *.h
+
+# ベンダリングした第三者コード(stb 等)は対象外。
+EXCLUDE                = third_party
+
+#---------------------------------------------------------------------------
+# 抽出範囲
+#---------------------------------------------------------------------------
+
+# EXTRACT_ALL = NO のままにして、コメントの無い要素はドキュメントに出さない。
+# 併せて下の WARN_IF_UNDOCUMENTED で書き漏れを警告として検出する
+# (「brief と in/out は必須」を機械的に担保するため)。
+EXTRACT_ALL            = NO
+
+# 生成する HTML は公開APIのドキュメントと位置づけ、private は出さない。
+# private メンバまで対象にすると、mutex_ や host_ のような自明なデータメンバの
+# 未文書化警告が 76 件出て、警告ゼロをゲートとして使えなくなるため。
+# private のコメント自体はソース上に残してあり、コードを読む側には見える。
+EXTRACT_PRIVATE        = NO
+EXTRACT_STATIC         = YES
+
+# 宣言順のまま出す。ヘッダを上から読む順序と一致させたいため。
+SORT_MEMBER_DOCS       = NO
+SORT_BRIEF_DOCS        = NO
+
+BUILTIN_STL_SUPPORT    = YES
+
+#---------------------------------------------------------------------------
+# 警告(コメント規約のチェックに使う)
+#---------------------------------------------------------------------------
+
+WARNINGS               = YES
+WARN_IF_UNDOCUMENTED   = YES
+WARN_IF_DOC_ERROR      = YES
+
+# @param の書き漏れ・引数名の食い違いを警告する。in/out の記述漏れを見つける主役。
+WARN_NO_PARAMDOC       = YES
+
+# CI で規約を強制したくなったら YES にする(現状は警告のみ)。
+WARN_AS_ERROR          = NO
+
+#---------------------------------------------------------------------------
+# 出力形式
+#---------------------------------------------------------------------------
+
+GENERATE_HTML          = YES
+GENERATE_LATEX         = NO
+GENERATE_TREEVIEW      = YES
+
+# graphviz (dot) を使って継承図・協調図を出す。dot は PATH から探させる
+# (DOT_PATH を書くとマシン依存になるため書かない)。
+# graphviz の無い環境では警告が出るので、その場合は NO にすること。
+#   winget install Graphviz.Graphviz
+HAVE_DOT               = YES
+
+# @todo を集めた一覧ページを出す(既定で YES。残作業の棚卸しに使う)。
+GENERATE_TODOLIST      = YES

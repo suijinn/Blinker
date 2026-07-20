@@ -10,59 +10,171 @@
 #include "sdl/font_stb.h"
 #include "sdl/renderer_sdl.h"
 
+/**
+ * @file window_sdl.h
+ * @brief メインウィンドウ(SDL バックエンド)。
+ */
+
 namespace blinker {
 
-// メインウィンドウ(SDL バックエンド)。SDL イベントを App のコマンド/イベントに
-// 変換し、IAppHost を実装する。
-// 未対応の IAppHost API(コンテキストメニュー・テキスト入力・色選択)は nullopt を
-// 返し、編集機能は無効のまま閲覧機能をフルに提供する。
+/**
+ * @brief メインウィンドウ(SDL バックエンド)。
+ *
+ * SDL イベントを App のコマンド/イベントに変換し、IAppHost を実装する。
+ * 未対応の IAppHost API(コンテキストメニュー・テキスト入力・色選択)は nullopt を
+ * 返し、編集機能は無効のまま閲覧機能をフルに提供する。
+ *
+ * @todo コンテキストメニュー・テキスト入力・色選択を実装し、編集機能を
+ *       Windows 版と同等にする。SDL3 にはこれらの標準ダイアログがないため、
+ *       自前描画のオーバーレイ UI が必要。
+ */
 class WindowSdl final : public IAppHost {
 public:
+    /**
+     * @brief ウィンドウとレンダラを作成する。
+     * @param[in] font UI テキスト描画に使うフォント。本オブジェクトより長生きすること。
+     * @return 作成できたら true。SDL の初期化・ウィンドウ作成に失敗したら false。
+     */
     bool create(FontStb& font);
-    void attachApp(App* app);
-    void run();  // イベントループ(quit まで戻らない)
 
-    // ImageCache のワーカースレッドから呼べる(SDL_PushEvent はスレッド安全)
+    /**
+     * @brief イベントの転送先となる App を結び付ける。
+     * @param[in] app 転送先の App。本オブジェクトより長生きすること。
+     */
+    void attachApp(App* app);
+
+    /// @brief イベントループを回す(quit されるまで戻らない)。
+    void run();
+
+    /**
+     * @brief デコード完了をイベントとして投函する。
+     * @note ImageCache のワーカースレッドから呼べる(SDL_PushEvent はスレッド安全)。
+     */
     void postDecodedEvent();
 
-    // IAppHost
+    /// @name IAppHost の実装
+    /// @{
+
+    /// @brief 次のループ回で再描画するようフラグを立てる。
     void requestRedraw() override { needsRedraw_ = true; }
+
+    /**
+     * @brief ウィンドウタイトルを設定する。
+     * @param[in] title 設定するタイトル(UTF-8)。
+     */
     void setTitle(const std::string& title) override;
+
+    /**
+     * @brief フルスクリーン表示を切り替える。
+     * @param[in] enabled true でフルスクリーン、false で通常ウィンドウへ復帰。
+     */
     void setFullscreen(bool enabled) override;
+
+    /**
+     * @brief 現在フルスクリーンかを返す。
+     * @return フルスクリーンなら true。
+     */
     bool isFullscreen() const override { return fullscreen_; }
+
+    /**
+     * @brief ファイルを開くダイアログ (SDL_ShowOpenFileDialog) を表示する。
+     * @return 選択されたパス。キャンセル時は std::nullopt。
+     */
     std::optional<std::filesystem::path> showOpenDialog() override;
+
+    /**
+     * @brief 名前を付けて保存ダイアログ (SDL_ShowSaveFileDialog) を表示する。
+     * @param[in] defaultFileName 初期表示するファイル名(UTF-8)。
+     * @return 選択されたパス。キャンセル時は std::nullopt。
+     */
     std::optional<std::filesystem::path> showSaveDialog(
         const std::string& defaultFileName) override;
+
+    /**
+     * @brief ポップアップメニューを表示する(SDL バックエンドでは未実装)。
+     * @param[in] items     メニュー構造(未使用)。
+     * @param[in] screenPos 表示位置(未使用)。
+     * @return 常に std::nullopt。閲覧機能には影響しない。
+     */
     std::optional<size_t> showContextMenu(const std::vector<MenuItem>& items,
                                           Point screenPos) override;
+
+    /**
+     * @brief テキスト入力ダイアログを表示する(SDL バックエンドでは未実装)。
+     * @param[in] initial 初期値として表示する文字列(未使用)。
+     * @return 常に std::nullopt。
+     */
     std::optional<std::string> showTextInput(const std::string& initial) override;
+
+    /**
+     * @brief 色選択ダイアログを表示する(SDL バックエンドでは未実装)。
+     * @param[in] initialRGB 初期選択する色(未使用)。
+     * @return 常に std::nullopt。
+     */
     std::optional<uint32_t> showColorPicker(uint32_t initialRGB) override;
+
+    /**
+     * @brief 単発タイマーを開始する。
+     * @param[in] milliseconds 満了までの時間(ミリ秒)。満了で App::onTimer が呼ばれる。
+     * @note タイマーコールバックは別スレッドで走るため、イベント経由で UI スレッドへ渡す。
+     */
     void startTimer(unsigned milliseconds) override;
+
+    /// @brief イベントループの終了を要求する。
     void quit() override;
 
+    /// @}
+
 private:
-    // ファイルダイアログ(非同期コールバック)の完了待ちに使う
+    /// @brief ファイルダイアログ(非同期コールバック)の完了待ちに使う状態。
     struct DialogState;
 
+    /**
+     * @brief SDL イベント 1 件を処理する。
+     * @param[in] event 処理するイベント。
+     */
     void handleEvent(const SDL_Event& event);
+
+    /// @brief 再描画フラグが立っていれば 1 フレーム描画する。
     void renderIfNeeded();
-    Point toPixels(float x, float y) const;  // ウィンドウ座標 → 物理ピクセル
+
+    /**
+     * @brief ウィンドウ座標を物理ピクセルへ変換する。
+     * @param[in] x ウィンドウ座標の X。
+     * @param[in] y ウィンドウ座標の Y。
+     * @return 物理ピクセルでの位置(HiDPI のスケールを反映)。
+     */
+    Point toPixels(float x, float y) const;
+
+    /**
+     * @brief SDL のキーコードを KeyCode へ変換する。
+     * @param[in] key SDL のキーコード。
+     * @param[in] mod 修飾キーの状態。テンキーの +/- の正規化に使う。
+     * @return 対応する KeyCode。未対応のキーなら KeyCode::None。
+     */
     static KeyCode keyCodeFromSdl(SDL_Keycode key, SDL_Keymod mod);
+
+    /**
+     * @brief 非同期ファイルダイアログの完了を待つ。
+     * @param[in,out] state 待ち合わせる対象。コールバックが結果を書き込む。
+     * @return 選択されたパス。キャンセル時は std::nullopt。
+     */
     std::optional<std::filesystem::path> waitForDialog(DialogState& state);
 
     SDL_Window* window_ = nullptr;
     SDL_Renderer* sdlRenderer_ = nullptr;
     std::unique_ptr<RendererSdl> renderer_;
     App* app_ = nullptr;
-    Uint32 eventDecoded_ = 0;  // SDL_RegisterEvents で確保したユーザーイベント
-    Uint32 eventTimer_ = 0;
+    Uint32 eventDecoded_ = 0;  ///< SDL_RegisterEvents で確保したデコード完了イベント
+    Uint32 eventTimer_ = 0;    ///< 同・タイマー満了イベント
     SDL_TimerID timerId_ = 0;
     bool running_ = false;
     bool needsRedraw_ = false;
     bool fullscreen_ = false;
-    bool dragging_ = false;        // 左ドラッグ(パン)
-    bool rightDragging_ = false;   // 右ドラッグ(領域選択)
-    float lastDragX_ = 0, lastDragY_ = 0;  // 物理ピクセル
+    bool dragging_ = false;       ///< 左ドラッグ(パン)中か
+    bool rightDragging_ = false;  ///< 右ドラッグ(領域選択)中か
+    float lastDragX_ = 0;  ///< 直前のドラッグ位置の X(物理ピクセル)
+    float lastDragY_ = 0;  ///< 直前のドラッグ位置の Y(物理ピクセル)
 };
 
 } // namespace blinker
