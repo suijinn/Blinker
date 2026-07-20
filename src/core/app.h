@@ -235,6 +235,15 @@ public:
     void commitTextEdit();
 
     /**
+     * @brief 指定位置でテキスト編集用のカーソル(I ビーム)を出すべきかを返す。
+     * @param[in] screenPos ポインタ位置(スクリーン座標)。
+     * @return 編集中で、かつ編集中のテキストボックスの内側なら true。
+     * @note win 層が WM_SETCURSOR で参照する。「クリックすれば文字を入力できる」
+     *       ことを示すためのもので、編集していないテキスト注釈の上では false。
+     */
+    bool wantsTextCursor(Point screenPos) const;
+
+    /**
      * @brief 右ドラッグによる編集領域の選択を開始する。
      * @param[in] screenPos 開始位置(スクリーン座標)。画像外・サイドバー上は無視する。
      */

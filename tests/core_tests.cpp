@@ -1746,6 +1746,10 @@ void testAppTextEditing() {
     app.onKey({KeyChord{static_cast<KeyCode>('C'), true, false, false}});
     CHECK(clipboard.lastText == "345");  // [3,6) の 3 文字
 
+    // 編集中の枠内では I ビームカーソルを出す(枠外・画像の別の場所では出さない)
+    CHECK(app.wantsTextCursor(screenOf(30, 20)));   // 枠 (10,10)-(50,30) の内側
+    CHECK(!app.wantsTextCursor(screenOf(90, 90)));  // 枠の外
+
     // 編集中はコマンドが暴発しない(次の画像へ移動しない・タイトルが変わらない)
     const std::string titleWhileEditing = host.lastTitle;
     app.onKey({KeyCode::Space});
@@ -1764,6 +1768,8 @@ void testAppTextEditing() {
     CHECK(!host.textEditing);
     CHECK(app.annotations().specs->back().text == "0123456789");
     CHECK(!app.annotations().textEdit.active);
+    // 確定後は枠の内側でも I ビームにしない(編集していないテキストは通常のカーソル)
+    CHECK(!app.wantsTextCursor(screenOf(30, 20)));
 
     // 編集中の Ctrl+Z は編集開始前へ戻す(新規作成なら注釈ごと消える)
     const size_t countBeforeUndo = app.annotations().specs->size();

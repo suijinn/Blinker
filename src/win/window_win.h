@@ -185,6 +185,13 @@ private:
     void updateImePosition();
 
     /**
+     * @brief WM_SETCURSOR を送り直してマウスカーソルの形を更新する。
+     * @note 編集の開始・終了ではマウスが動かず WM_SETCURSOR が届かないため、
+     *       I ビームと矢印の切り替えを反映させるのに使う。
+     */
+    void refreshCursor();
+
+    /**
      * @brief ドラッグ＆ドロップされたファイルを開く。
      * @param[in] wp WM_DROPFILES の wParam (HDROP)。
      */

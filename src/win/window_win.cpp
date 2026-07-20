@@ -159,6 +159,19 @@ LRESULT MainWindow::handleMessage(UINT msg, WPARAM wp, LPARAM lp) {
         if (app_) app_->onRightDragEnd({static_cast<float>(pt.x), static_cast<float>(pt.y)});
         return 0;
     }
+    case WM_SETCURSOR:
+        // 編集中のテキストボックスの内側だけ I ビームにする。
+        // クライアント領域以外(枠・タイトルバー)は既定の処理に任せる
+        if (LOWORD(lp) == HTCLIENT && app_) {
+            POINT pt{};
+            if (GetCursorPos(&pt) && ScreenToClient(hwnd_, &pt) &&
+                app_->wantsTextCursor(
+                    {static_cast<float>(pt.x), static_cast<float>(pt.y)})) {
+                SetCursor(LoadCursorW(nullptr, IDC_IBEAM));
+                return TRUE;
+            }
+        }
+        break;
     case WM_MOUSELEAVE:
         trackingMouseLeave_ = false;
         if (app_) app_->onMouseLeave();
@@ -461,6 +474,15 @@ void MainWindow::setTextEditing(bool active, Point caretScreenPos, float caretHe
         }
         ImmAssociateContextEx(hwnd_, nullptr, 0);
     }
+    refreshCursor();
+}
+
+void MainWindow::refreshCursor() {
+    // 編集の開始・終了ではマウスが動かず WM_SETCURSOR が来ないため自分で送る
+    // (I ビームのまま残る/矢印のままになるのを防ぐ)。編集外なら DefWindowProc が
+    // クラスの矢印カーソルへ戻す
+    SendMessageW(hwnd_, WM_SETCURSOR, reinterpret_cast<WPARAM>(hwnd_),
+                 MAKELPARAM(HTCLIENT, WM_MOUSEMOVE));
 }
 
 void MainWindow::updateImePosition() {
