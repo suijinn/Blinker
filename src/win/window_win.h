@@ -181,6 +181,14 @@ private:
      */
     void handleImeResult(LPARAM lp);
 
+    /**
+     * @brief IME の変換中文字列を取り出して App へインライン表示させる。
+     * @param[in] lp WM_IME_COMPOSITION の lParam。
+     * @note 変換中文字列が無くなっていたら App::clearComposition を呼ぶ。
+     *       位置指定は UTF-16 コード単位で返るため UTF-8 のバイト位置へ直して渡す。
+     */
+    void handleImeComposition(LPARAM lp);
+
     /// @brief IME の変換ウィンドウを現在のキャレット位置へ合わせる。
     void updateImePosition();
 

@@ -1750,6 +1750,56 @@ void testAppTextEditing() {
     CHECK(app.wantsTextCursor(screenOf(30, 20)));   // 枠 (10,10)-(50,30) の内側
     CHECK(!app.wantsTextCursor(screenOf(90, 90)));  // 枠の外
 
+    // IME の変換中文字列はキャレット位置にインライン表示され、確定するまで
+    // 編集内容には入らない
+    app.onKey({KeyCode::Home});  // 選択を解除してキャレットを先頭へ
+    app.beginComposition();
+    app.setComposition("にほんご", 12, 0, 6);  // キャレットは末尾、前半2文字が変換対象
+    CHECK(app.isComposing());
+    {
+        const AnnotationsView view = app.annotations();
+        // 表示は「変換中文字列 + 確定済みテキスト」。注釈の text も表示用になる
+        CHECK(app.annotations().specs->back().text == "にほんご0123456789");
+        CHECK(view.textEdit.compositionRects.size() == 1);
+        CHECK(nearly(view.textEdit.compositionRects[0].left, 10 + 0));
+        CHECK(nearly(view.textEdit.compositionRects[0].right, 10 + 40));  // 4 文字 x 10px
+        // 変換対象の節(前半 2 文字)だけ太い下線になる
+        CHECK(view.textEdit.compositionTargetRects.size() == 1);
+        CHECK(nearly(view.textEdit.compositionTargetRects[0].right, 10 + 20));
+        // キャレットは変換中文字列の末尾(4 文字目の後ろ)
+        CHECK(nearly(view.textEdit.caretTop.x, 10 + 40));
+    }
+
+    // 変換を取り消すと表示も元に戻る(編集内容は変わっていない)
+    app.clearComposition();
+    CHECK(!app.isComposing());
+    CHECK(app.annotations().specs->back().text == "0123456789");
+    CHECK(app.annotations().textEdit.compositionRects.empty());
+
+    // 確定すると変換中文字列が編集内容へ入る
+    app.beginComposition();
+    app.setComposition("にほん", 9, 0, 9);
+    app.insertText("日本");  // IME の確定文字列
+    CHECK(!app.isComposing());
+    CHECK(app.annotations().specs->back().text == "日本0123456789");
+
+    // 変換中のキー入力は IME が扱うので App は編集しない
+    app.setComposition("あ", 3, 0, 0);  // キャレットは "日本" の直後
+    app.onKey({KeyCode::Backspace});
+    app.onKey({KeyCode::Delete});
+    CHECK(app.annotations().specs->back().text == "日本あ0123456789");
+    app.clearComposition();
+    CHECK(app.annotations().specs->back().text == "日本0123456789");
+
+    // 選択範囲があるときに変換を始めると選択は置き換えられる
+    app.onKey({KeyChord{static_cast<KeyCode>('A'), true, false, false}});
+    app.beginComposition();
+    CHECK(app.annotations().specs->back().text.empty());
+    app.insertText("再入力");
+    CHECK(app.annotations().specs->back().text == "再入力");
+    app.onKey({KeyChord{static_cast<KeyCode>('A'), true, false, false}});
+    app.insertText("0123456789");  // 後続のテストのため元の内容へ戻す
+
     // 編集中はコマンドが暴発しない(次の画像へ移動しない・タイトルが変わらない)
     const std::string titleWhileEditing = host.lastTitle;
     app.onKey({KeyCode::Space});

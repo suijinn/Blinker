@@ -302,6 +302,7 @@ bool App::onMouseDown(Point screenPos) {
     // 編集中: 枠内のクリックはキャレット移動と範囲選択の開始。枠外なら確定して通常処理へ
     if (textEditing_ && textEditIndex_ < annotations_.size()) {
         if (hitTestAnnotation(annotations_[textEditIndex_], imagePos, tolerance)) {
+            if (isComposing()) return true;  // 変換中は位置が動かないようにする
             textBuffer_.setCaret(textOffsetAt(imagePos), false);
             textEditMouseSelect_ = true;
             notifyCaretMoved();
@@ -352,6 +353,7 @@ bool App::onDoubleClick(Point screenPos) {
     // 編集中の枠内でのダブルクリックは語の選択
     if (textEditing_ && textEditIndex_ < annotations_.size() &&
         hitTestAnnotation(annotations_[textEditIndex_], imagePos, tolerance)) {
+        if (isComposing()) return true;  // 変換中は選択を変えない
         textBuffer_.selectWordAt(textOffsetAt(imagePos));
         notifyCaretMoved();
         host_.requestRedraw();
@@ -690,6 +692,7 @@ void App::beginTextEdit(size_t index, UndoState before, bool created) {
     textEditCaretOn_ = true;
     textUndoPushed_ = false;
     textUndoState_ = std::move(before);
+    resetComposition();
     textBuffer_ = TextEditBuffer(annotations_[index].text);  // キャレットは末尾
     selected_ = index;
     objectDrag_ = ObjectDrag::None;
@@ -700,9 +703,11 @@ void App::commitTextEdit() {
     if (!textEditing_) return;
     textEditing_ = false;
     textEditMouseSelect_ = false;
+    resetComposition();  // 変換中なら捨てる(host 側も IME へキャンセルを通知する)
     host_.setTextEditing(false, {}, 0);
     if (textEditIndex_ < annotations_.size()) {
         AnnotationSpec& spec = annotations_[textEditIndex_];
+        spec.text = textBuffer_.text();  // 変換中文字列を落とした確定内容にする
         if (spec.text.empty()) {
             // 空のテキストボックスは残さない(新規・既存とも削除する)
             pushTextEditUndoOnce();
@@ -721,6 +726,7 @@ void App::cancelTextEdit() {
     if (!textEditing_) return;
     textEditing_ = false;
     textEditMouseSelect_ = false;
+    resetComposition();
     host_.setTextEditing(false, {}, 0);
     // 変更を記録済みなら undo と同じ経路で編集前へ戻す。新規作成中なら追加ごと消える
     if (textUndoPushed_) {
@@ -743,14 +749,59 @@ void App::pushTextEditUndoOnce() {
 void App::applyTextEditChange() {
     if (!textEditing_ || textEditIndex_ >= annotations_.size()) return;
     pushTextEditUndoOnce();
+    markEdited();
+    refreshTextEditSpec();
+}
+
+void App::refreshTextEditSpec() {
+    if (!textEditing_ || textEditIndex_ >= annotations_.size()) return;
     AnnotationSpec& spec = annotations_[textEditIndex_];
-    spec.text = textBuffer_.text();
+    spec.text = textEditDisplayText();
     // 空になったら枠は縮めない(利用者が決めた大きさのまま入力を続けられるように)。
     // 失敗しても枠が古いだけで編集は続けられる
     if (!spec.text.empty()) measureTextHeight(spec);
-    markEdited();
     notifyCaretMoved();
     host_.requestRedraw();
+}
+
+std::string App::textEditDisplayText() const {
+    if (composition_.empty()) return textBuffer_.text();
+    std::string out = textBuffer_.text();
+    out.insert(textBuffer_.caret(), composition_);
+    return out;
+}
+
+size_t App::textEditCaretOffset() const {
+    return textBuffer_.caret() + (composition_.empty() ? 0 : compositionCaret_);
+}
+
+void App::resetComposition() {
+    composition_.clear();
+    compositionCaret_ = 0;
+    compositionTargetBegin_ = 0;
+    compositionTargetEnd_ = 0;
+}
+
+void App::beginComposition() {
+    if (!textEditing_) return;
+    // 変換は選択範囲を置き換える。先に消してキャレットを 1 点にしておく
+    if (textBuffer_.deleteSelection()) applyTextEditChange();
+}
+
+void App::setComposition(const std::string& utf8, size_t caretBytes, size_t targetBegin,
+                         size_t targetEnd) {
+    if (!textEditing_) return;
+    composition_ = utf8;
+    compositionCaret_ = std::min(caretBytes, composition_.size());
+    compositionTargetBegin_ = std::min(targetBegin, composition_.size());
+    compositionTargetEnd_ = std::clamp(targetEnd, compositionTargetBegin_, composition_.size());
+    refreshTextEditSpec();
+}
+
+void App::clearComposition() {
+    if (composition_.empty()) return;
+    resetComposition();
+    refreshTextEditSpec();
 }
 
 void App::notifyCaretMoved() {
@@ -758,7 +809,7 @@ void App::notifyCaretMoved() {
     if (!textEditing_ || textEditIndex_ >= annotations_.size()) return;
     const AnnotationSpec& spec = annotations_[textEditIndex_];
     const TextCaretMetrics caret = rasterizer_.caretMetrics(
-        spec, utf8ToUtf16Offset(textBuffer_.text(), textBuffer_.caret()));
+        spec, utf8ToUtf16Offset(spec.text, textEditCaretOffset()));
     const BoundsF bounds = annotationBounds(spec);
     // 回転後の見た目の位置へ合わせる(IME 変換ウィンドウはスクリーン座標で置く)
     const Point local{bounds.minX + caret.x, bounds.minY + caret.y};
@@ -792,6 +843,8 @@ void App::moveCaretVertical(bool down, bool extendSelection) {
 }
 
 bool App::handleTextEditKey(const KeyChord& chord) {
+    // 変換中のキーは IME が処理する(変換候補の選択・確定・取消)。App は触らない
+    if (isComposing()) return true;
     const bool shift = chord.shift;
     if (chord.ctrl && !chord.alt) {
         // 英字キーは KeyCode の列挙子ではない(ASCII をそのまま値に持つ)ため if で比べる
@@ -869,6 +922,7 @@ bool App::handleTextEditKey(const KeyChord& chord) {
 
 void App::insertText(const std::string& utf8) {
     if (!textEditing_ || utf8.empty()) return;
+    resetComposition();  // 確定文字列が変換中文字列を置き換える
     textBuffer_.insert(utf8);
     applyTextEditChange();
 }
@@ -1008,21 +1062,38 @@ AnnotationsView App::annotations() const {
         edit.active = true;
         edit.index = textEditIndex_;
         edit.caretVisible = textEditCaretOn_ && !textBuffer_.hasSelection();
-        const std::string& text = textBuffer_.text();
+        // spec.text は変換中文字列を混ぜた表示用テキスト。位置指定はこれを基準にする
+        const std::string& text = spec.text;
         const TextCaretMetrics caret =
-            rasterizer_.caretMetrics(spec, utf8ToUtf16Offset(text, textBuffer_.caret()));
+            rasterizer_.caretMetrics(spec, utf8ToUtf16Offset(text, textEditCaretOffset()));
         // レンダラは注釈と同じ変換で描くため、枠原点を足した画像座標で渡す
         edit.caretTop = {bounds.minX + caret.x, bounds.minY + caret.y};
         edit.caretBottom = {edit.caretTop.x, edit.caretTop.y + caret.height};
-        if (textBuffer_.hasSelection()) {
-            edit.selectionRects = rasterizer_.selectionRects(
-                spec, utf8ToUtf16Offset(text, textBuffer_.selectionBegin()),
-                utf8ToUtf16Offset(text, textBuffer_.selectionEnd()));
-            for (TextRangeRect& r : edit.selectionRects) {
+        // 枠原点ぶんずらして画像座標へ直す
+        const auto toImageRects = [&bounds](std::vector<TextRangeRect> rects) {
+            for (TextRangeRect& r : rects) {
                 r.left += bounds.minX;
                 r.right += bounds.minX;
                 r.top += bounds.minY;
                 r.bottom += bounds.minY;
+            }
+            return rects;
+        };
+        const auto rectsFor = [&](size_t beginBytes, size_t endBytes) {
+            return toImageRects(rasterizer_.selectionRects(spec,
+                                                           utf8ToUtf16Offset(text, beginBytes),
+                                                           utf8ToUtf16Offset(text, endBytes)));
+        };
+        if (textBuffer_.hasSelection()) {
+            edit.selectionRects =
+                rectsFor(textBuffer_.selectionBegin(), textBuffer_.selectionEnd());
+        }
+        if (!composition_.empty()) {
+            const size_t base = textBuffer_.caret();  // 変換中文字列はここに挿入されている
+            edit.compositionRects = rectsFor(base, base + composition_.size());
+            if (compositionTargetEnd_ > compositionTargetBegin_) {
+                edit.compositionTargetRects = rectsFor(base + compositionTargetBegin_,
+                                                       base + compositionTargetEnd_);
             }
         }
         edit.caretRGB = 0x3399FF;

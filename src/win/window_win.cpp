@@ -94,12 +94,17 @@ LRESULT MainWindow::handleMessage(UINT msg, WPARAM wp, LPARAM lp) {
         return 0;
     case WM_IME_STARTCOMPOSITION:
         updateImePosition();  // 変換開始のたびに位置を合わせ直す
-        break;
+        if (app_) app_->beginComposition();
+        return 0;  // 既定の変換ウィンドウを出させない(変換中文字列は自前で描く)
     case WM_IME_COMPOSITION:
+        // 確定文字列を先に取り込み、残った変換中文字列をインライン表示へ反映する
         handleImeResult(lp);
-        // 確定だけのときは既定処理に渡さない(WM_IME_CHAR による二重入力を防ぐ)
-        if ((lp & GCS_RESULTSTR) && !(lp & GCS_COMPSTR)) return 0;
-        break;  // 変換中の表示は既定の IME ウィンドウに任せる
+        handleImeComposition(lp);
+        updateImePosition();  // キャレットが動くので候補ウィンドウを追従させる
+        return 0;             // 既定の変換ウィンドウと WM_IME_CHAR を抑止する
+    case WM_IME_ENDCOMPOSITION:
+        if (app_) app_->clearComposition();
+        return 0;
     case WM_IME_CHAR:
         return 0;  // 確定文字列は handleImeResult で挿入済み
     case WM_MOUSEWHEEL: {
@@ -488,16 +493,65 @@ void MainWindow::refreshCursor() {
 void MainWindow::updateImePosition() {
     HIMC imc = ImmGetContext(hwnd_);
     if (!imc) return;
-    // 変換ウィンドウをキャレットの真下に出す(CFS_POINT はクライアント座標)
+    // 変換中文字列は自前でテキストボックス内に描くため、変換ウィンドウは使わない。
+    // 候補ウィンドウをキャレットの真下に出すために位置だけ知らせる(クライアント座標)
     COMPOSITIONFORM form{};
     form.dwStyle = CFS_POINT;
     form.ptCurrentPos = {caretPos_.x, caretPos_.y};
     ImmSetCompositionWindow(imc, &form);
-    // 変換中の文字を注釈のフォントサイズに合わせる(既定だとウィンドウフォント基準)
-    LOGFONTW font{};
-    font.lfHeight = -std::max(caretHeight_, 8);
-    ImmSetCompositionFontW(imc, &font);
+    CANDIDATEFORM candidate{};
+    candidate.dwStyle = CFS_EXCLUDE;  // キャレットの行に重ならない位置へ出させる
+    candidate.ptCurrentPos = {caretPos_.x, caretPos_.y};
+    candidate.rcArea = {caretPos_.x, caretPos_.y, caretPos_.x + 1,
+                        caretPos_.y + std::max(caretHeight_, 1)};
+    ImmSetCandidateWindow(imc, &candidate);
     ImmReleaseContext(hwnd_, imc);
+}
+
+// 変換中文字列(GCS_COMPSTR)を読み、App へインライン表示させる
+void MainWindow::handleImeComposition(LPARAM lp) {
+    if (!app_ || !app_->isTextEditing()) return;
+    HIMC imc = ImmGetContext(hwnd_);
+    if (!imc) return;
+    const LONG bytes = ImmGetCompositionStringW(imc, GCS_COMPSTR, nullptr, 0);
+    if (bytes <= 0) {
+        app_->clearComposition();
+        ImmReleaseContext(hwnd_, imc);
+        return;
+    }
+    const size_t units = static_cast<size_t>(bytes) / sizeof(wchar_t);
+    std::wstring wide(units, L'\0');
+    ImmGetCompositionStringW(imc, GCS_COMPSTR, wide.data(), static_cast<DWORD>(bytes));
+
+    // 属性は UTF-16 コード単位ごとに 1 バイト。変換対象の節は連続した範囲になる
+    size_t targetBeginUnits = 0;
+    size_t targetEndUnits = 0;
+    if (lp & GCS_COMPATTR) {
+        const LONG attrBytes = ImmGetCompositionStringW(imc, GCS_COMPATTR, nullptr, 0);
+        if (attrBytes > 0) {
+            std::vector<BYTE> attrs(static_cast<size_t>(attrBytes));
+            ImmGetCompositionStringW(imc, GCS_COMPATTR, attrs.data(),
+                                     static_cast<DWORD>(attrBytes));
+            const auto isTarget = [](BYTE a) {
+                return a == ATTR_TARGET_CONVERTED || a == ATTR_TARGET_NOTCONVERTED;
+            };
+            const auto begin = std::find_if(attrs.begin(), attrs.end(), isTarget);
+            if (begin != attrs.end()) {
+                const auto end = std::find_if_not(begin, attrs.end(), isTarget);
+                targetBeginUnits = static_cast<size_t>(begin - attrs.begin());
+                targetEndUnits = static_cast<size_t>(end - attrs.begin());
+            }
+        }
+    }
+    // キャレット位置は UTF-16 コード単位で返る
+    const LONG caretUnits = ImmGetCompositionStringW(imc, GCS_CURSORPOS, nullptr, 0);
+    ImmReleaseContext(hwnd_, imc);
+
+    // core 側はすべて UTF-8 のバイト位置で扱うため、ここで変換して渡す
+    const std::string utf8 = wideToUtf8(wide);
+    app_->setComposition(
+        utf8, utf16ToUtf8Offset(utf8, caretUnits > 0 ? static_cast<size_t>(caretUnits) : 0),
+        utf16ToUtf8Offset(utf8, targetBeginUnits), utf16ToUtf8Offset(utf8, targetEndUnits));
 }
 
 void MainWindow::handleChar(wchar_t ch) {

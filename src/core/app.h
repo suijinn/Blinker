@@ -231,6 +231,37 @@ public:
      */
     void onCaretBlink();
 
+    /**
+     * @brief IME の変換を開始する。
+     * @note 選択範囲があれば削除してキャレットを 1 点にする(変換は選択を置き換える)。
+     *       編集中でなければ何もしない。
+     */
+    void beginComposition();
+
+    /**
+     * @brief IME の変換中文字列を設定する(テキストボックス内へインライン表示する)。
+     *
+     * 変換中文字列はキャレット位置に挿入した形で描画され、確定するまで
+     * 編集内容(TextEditBuffer)には入らない。
+     *
+     * @param[in] utf8        変換中文字列(UTF-8)。空なら変換なしとして扱う。
+     * @param[in] caretBytes  変換中文字列内のキャレット位置(先頭からのバイト数)。
+     * @param[in] targetBegin 変換対象の節の開始位置(同上)。無ければ 0。
+     * @param[in] targetEnd   変換対象の節の終了位置(同上)。無ければ 0。
+     * @note targetBegin/End の範囲は太い下線、それ以外の変換中文字列は細い下線で描く。
+     */
+    void setComposition(const std::string& utf8, size_t caretBytes, size_t targetBegin,
+                        size_t targetEnd);
+
+    /// @brief 変換中文字列を破棄する(変換のキャンセル・確定時)。
+    void clearComposition();
+
+    /**
+     * @brief IME で変換中かを返す。
+     * @return 変換中文字列があれば true。
+     */
+    bool isComposing() const { return !composition_.empty(); }
+
     /// @brief 編集中のテキストを確定して編集を終了する(内容が空なら注釈を削除する)。
     void commitTextEdit();
 
@@ -506,8 +537,30 @@ private:
      */
     bool handleTextEditKey(const KeyChord& chord);
 
-    /// @brief 編集中の文字列を注釈へ書き戻し、枠の高さと再描画を更新する。
+    /// @brief 編集を記録(undo・編集済みマーク)したうえで注釈へ書き戻す。
     void applyTextEditChange();
+
+    /**
+     * @brief 表示用テキストを注釈へ書き戻し、枠の高さと再描画を更新する。
+     * @note undo 記録も編集済みマークも行わない。変換中文字列の更新のように
+     *       確定していない表示の変化に使う。
+     */
+    void refreshTextEditSpec();
+
+    /**
+     * @brief 描画に使うテキストを組み立てる。
+     * @return 編集中の文字列に、変換中文字列をキャレット位置へ挿入したもの(UTF-8)。
+     */
+    std::string textEditDisplayText() const;
+
+    /**
+     * @brief 表示用テキスト内でのキャレット位置を返す。
+     * @return バイト位置。変換中は変換中文字列内のキャレットを加えた位置。
+     */
+    size_t textEditCaretOffset() const;
+
+    /// @brief 変換中文字列の状態を消す。
+    void resetComposition();
 
     /// @brief キャレット位置を host へ通知し(IME の位置合わせ)、点滅を表示相に戻す。
     void notifyCaretMoved();
@@ -622,6 +675,11 @@ private:
     bool textEditMouseSelect_ = false;  ///< 左ドラッグで選択範囲を広げている最中
     bool textUndoPushed_ = false;   ///< 編集中の undo 記録は最初の変更時の1回だけ
     UndoState textUndoState_;       ///< 上記で積む編集前のスナップショット
+    /// IME の変換中文字列(UTF-8)。確定するまで textBuffer_ には入れず、表示にだけ混ぜる
+    std::string composition_;
+    size_t compositionCaret_ = 0;        ///< 変換中文字列内のキャレット(バイト位置)
+    size_t compositionTargetBegin_ = 0;  ///< 変換対象の節の開始(同上)
+    size_t compositionTargetEnd_ = 0;    ///< 変換対象の節の終了(同上)
 
     std::vector<UndoState> undoStack_;
     uint32_t editColorRGB_ = 0xFF3B30;  ///< 新規注釈の色(0xRRGGBB)

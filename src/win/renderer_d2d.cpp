@@ -167,6 +167,19 @@ void RendererD2D::drawAnnotations(const AnnotationsView& annotations,
         brush_->SetColor(colorFromRGB(spec.colorRGB));
         drawAnnotationShape(target_.Get(), factory_.Get(), dwriteFactory_.Get(), spec,
                             brush_.Get());
+        if (editingThis && !edit.compositionRects.empty()) {
+            // IME 変換中の下線。変換対象の節だけ太くして区別する(IME の慣習)
+            brush_->SetColor(colorFromRGB(spec.colorRGB));
+            const auto underline = [&](const std::vector<TextRangeRect>& rects, float widthPx) {
+                for (const TextRangeRect& r : rects) {
+                    const float y = r.bottom - widthPx * 0.5f * invZoom;
+                    target_->DrawLine(D2D1::Point2F(r.left, y), D2D1::Point2F(r.right, y),
+                                      brush_.Get(), widthPx * invZoom);
+                }
+            };
+            underline(edit.compositionRects, 1.0f);
+            underline(edit.compositionTargetRects, 3.0f);
+        }
         if (editingThis && edit.caretVisible) {
             brush_->SetColor(colorFromRGB(edit.caretRGB));
             target_->DrawLine(D2D1::Point2F(edit.caretTop.x, edit.caretTop.y),
