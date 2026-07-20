@@ -27,14 +27,32 @@ float arrowHeadLength(float strokeWidth);
  * @brief Text 注釈のレイアウトを作る。
  *
  * p1/p2 の幅で折り返す。幅が小さすぎるときは 1 文字分を確保する。
+ * spec.styles の太字・斜体・下線も適用する(いずれも文字送り・行高に影響するため、
+ * キャレット位置やヒットテストの計測もこのレイアウトで行えば表示と一致する)。
  *
  * @param[in] dwrite    DirectWrite ファクトリ。
  * @param[in] spec      レイアウトする Text 注釈。
  * @param[in] maxHeight レイアウトの最大高さ(画像座標)。
  * @return 生成されたレイアウト。失敗時は nullptr。
+ * @note 部分書式の色は含まれない(描画時に applyTextColorEffects で与える)。
  */
 Microsoft::WRL::ComPtr<IDWriteTextLayout> createAnnotationTextLayout(
     IDWriteFactory* dwrite, const AnnotationSpec& spec, float maxHeight);
+
+/**
+ * @brief 部分書式の文字色を、レイアウトの drawing effect として設定する。
+ *
+ * D2D の既定テキストレンダラは drawing effect に設定された ID2D1Brush を
+ * その範囲の描画に使う。色を指定していない範囲は DrawTextLayout に渡した
+ * ブラシ(注釈全体の色)のまま描かれる。
+ *
+ * @param[in]     target ブラシの生成元となるレンダーターゲット。
+ * @param[in,out] layout 効果を設定するレイアウト。破壊的に更新される。
+ * @param[in]     spec   描画する Text 注釈。styles の色だけを見る。
+ * @note ブラシはデバイス依存のため、描画に使う target と同じもので作ること。
+ */
+void applyTextColorEffects(ID2D1RenderTarget* target, IDWriteTextLayout* layout,
+                           const AnnotationSpec& spec);
 
 /**
  * @brief 注釈を画像座標のまま描画先へ描く。

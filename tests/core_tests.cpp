@@ -21,6 +21,7 @@
 #include "core/pixel_convert.h"
 #include "core/str_util.h"
 #include "core/text_edit.h"
+#include "core/text_style.h"
 #include "core/unicode.h"
 #include "core/version.h"
 #include "core/viewport.h"
@@ -1667,6 +1668,155 @@ void testTextEditBuffer() {
     CHECK(clamp.caret() == 3);
 }
 
+void testTextStyleRuns() {
+    // 隣り合う同じ書式はまとめ、既定のままの範囲と空の範囲は捨てる
+    std::vector<TextStyleRun> runs{{0, 3, true, false, false, false, 0},
+                                   {3, 6, true, false, false, false, 0},
+                                   {6, 6, true, false, false, false, 0},
+                                   {7, 9, false, false, false, false, 0}};
+    normalizeTextStyles(runs);
+    CHECK(runs.size() == 1);
+    CHECK((runs[0] == TextStyleRun{0, 6, true, false, false, false, 0}));
+
+    // 範囲の一部にかける → 前後が切り出され、重ならない 3 範囲になる
+    std::vector<TextStyleRun> split{{0, 10, true, false, false, false, 0}};
+    setTextStyleColor(split, 3, 6, 0x00FF00);
+    CHECK(split.size() == 3);
+    CHECK((split[0] == TextStyleRun{0, 3, true, false, false, false, 0}));
+    CHECK((split[1] == TextStyleRun{3, 6, true, false, false, true, 0x00FF00}));
+    CHECK((split[2] == TextStyleRun{6, 10, true, false, false, false, 0}));
+
+    // 色と太字は独立。書式の無い隙間にも新しい範囲ができる
+    std::vector<TextStyleRun> gap{{0, 2, false, false, false, true, 0xFF0000}};
+    setTextStyleFlag(gap, 0, 5, TextStyleFlag::Bold, true);
+    CHECK(gap.size() == 2);
+    CHECK((gap[0] == TextStyleRun{0, 2, true, false, false, true, 0xFF0000}));
+    CHECK((gap[1] == TextStyleRun{2, 5, true, false, false, false, 0}));
+
+    // 範囲全体に効いているかの判定(隙間があれば false)
+    std::vector<TextStyleRun> partial{{0, 3, true, false, false, false, 0}};
+    CHECK(isTextStyleFlagSet(partial, 0, 3, TextStyleFlag::Bold));
+    CHECK(!isTextStyleFlagSet(partial, 0, 4, TextStyleFlag::Bold));
+    CHECK(!isTextStyleFlagSet(partial, 0, 3, TextStyleFlag::Underline));
+    CHECK(!isTextStyleFlagSet(partial, 2, 2, TextStyleFlag::Bold));  // 空範囲は false
+
+    // 解除して既定に戻った範囲は消える(他の属性が残っていれば消えない)
+    std::vector<TextStyleRun> off{{0, 3, true, true, false, false, 0}};
+    setTextStyleFlag(off, 0, 3, TextStyleFlag::Bold, false);
+    CHECK(off.size() == 1);
+    CHECK((off[0] == TextStyleRun{0, 3, false, true, false, false, 0}));
+    setTextStyleFlag(off, 0, 3, TextStyleFlag::Italic, false);
+    CHECK(off.empty());
+
+    // 指定位置の書式(どの範囲にも無ければ既定)
+    const std::vector<TextStyleRun> at{{2, 5, false, false, true, false, 0}};
+    CHECK(textStyleAt(at, 3).underline);
+    CHECK(!textStyleAt(at, 5).underline);
+
+    // 挿入への追従: 手前は不動、後ろはずれる、挿入位置で終わる範囲は取り込む
+    std::vector<TextStyleRun> ins{{0, 3, true, false, false, false, 0},
+                                  {5, 8, false, false, true, false, 0}};
+    adjustTextStyles(ins, 3, 0, 2);
+    CHECK((ins[0] == TextStyleRun{0, 5, true, false, false, false, 0}));
+    CHECK((ins[1] == TextStyleRun{7, 10, false, false, true, false, 0}));
+
+    // 挿入位置から始まる範囲は取り込まず、まるごと後ろへずれる
+    std::vector<TextStyleRun> after{{3, 6, true, false, false, false, 0}};
+    adjustTextStyles(after, 3, 0, 2);
+    CHECK((after[0] == TextStyleRun{5, 8, true, false, false, false, 0}));
+
+    // 削除への追従: またがる範囲は縮み、丸ごと消えた範囲は落ちる
+    std::vector<TextStyleRun> del{{0, 4, true, false, false, false, 0},
+                                  {6, 8, false, false, true, false, 0},
+                                  {10, 12, false, false, false, true, 0x0000FF}};
+    adjustTextStyles(del, 2, 6, 0);  // [2, 8) を削除
+    CHECK(del.size() == 2);
+    CHECK((del[0] == TextStyleRun{0, 2, true, false, false, false, 0}));
+    CHECK((del[1] == TextStyleRun{4, 6, false, false, false, true, 0x0000FF}));
+}
+
+void testTextEditBufferStyles() {
+    // 選択範囲のトグル。全体が太字なら解除、一部だけなら全体へ適用する
+    TextEditBuffer buf("abcdef");
+    buf.setCaret(1, false);
+    buf.setCaret(3, true);
+    CHECK(buf.toggleSelectionFlag(TextStyleFlag::Bold));
+    CHECK(buf.styles().size() == 1);
+    CHECK((buf.styles()[0] == TextStyleRun{1, 3, true, false, false, false, 0}));
+    CHECK(buf.selectionHasFlag(TextStyleFlag::Bold));
+    buf.setCaret(0, false);
+    buf.setCaret(4, true);
+    CHECK(!buf.selectionHasFlag(TextStyleFlag::Bold));  // 一部だけ太字
+    CHECK(buf.toggleSelectionFlag(TextStyleFlag::Bold));
+    CHECK((buf.styles()[0] == TextStyleRun{0, 4, true, false, false, false, 0}));
+    CHECK(buf.toggleSelectionFlag(TextStyleFlag::Bold));  // もう一度で解除
+    CHECK(buf.styles().empty());
+
+    // 選択が無ければ何もしない
+    TextEditBuffer none("abc");
+    CHECK(!none.toggleSelectionFlag(TextStyleFlag::Bold));
+    CHECK(!none.setSelectionColor(0x123456));
+    CHECK(none.styles().empty());
+
+    // 色・太字・斜体・下線は同じ範囲に共存でき、独立にトグルできる
+    TextEditBuffer both("abcdef");
+    both.setCaret(2, false);
+    both.setCaret(5, true);
+    CHECK(both.setSelectionColor(0xFF8800));
+    CHECK(both.toggleSelectionFlag(TextStyleFlag::Underline));
+    CHECK(both.toggleSelectionFlag(TextStyleFlag::Italic));
+    CHECK(both.toggleSelectionFlag(TextStyleFlag::Bold));
+    CHECK(both.styles().size() == 1);
+    CHECK((both.styles()[0] == TextStyleRun{2, 5, true, true, true, true, 0xFF8800}));
+    CHECK(both.selectionStyle().colorRGB == 0xFF8800);
+    // 斜体だけ外しても他は残る
+    CHECK(both.toggleSelectionFlag(TextStyleFlag::Italic));
+    CHECK((both.styles()[0] == TextStyleRun{2, 5, true, false, true, true, 0xFF8800}));
+    CHECK(!both.selectionHasFlag(TextStyleFlag::Italic));
+    CHECK(both.selectionHasFlag(TextStyleFlag::Bold));
+
+    // 文字列を編集しても書式は同じ文字に付いたまま追従する
+    TextEditBuffer edit("abcdef");
+    edit.setCaret(3, false);
+    edit.setCaret(6, true);
+    edit.toggleSelectionFlag(TextStyleFlag::Bold);
+    edit.setCaret(0, false);
+    edit.insert("XY");  // 先頭に 2 バイト挿入 → 太字は [5, 8) へ
+    CHECK(edit.text() == "XYabcdef");
+    CHECK((edit.styles()[0] == TextStyleRun{5, 8, true, false, false, false, 0}));
+    edit.setCaret(0, false);
+    edit.deleteForward();  // 先頭 1 バイト削除 → [4, 7) へ
+    CHECK((edit.styles()[0] == TextStyleRun{4, 7, true, false, false, false, 0}));
+
+    // 太字部分の直後で入力した文字は太字を継ぐ(直前の書式を引き継ぐ)
+    TextEditBuffer inherit("abc");
+    inherit.selectAll();
+    inherit.toggleSelectionFlag(TextStyleFlag::Bold);
+    inherit.setCaret(3, false);
+    inherit.insert("d");
+    CHECK((inherit.styles()[0] == TextStyleRun{0, 4, true, false, false, false, 0}));
+    // 太字部分の直前で入力した文字は継がない
+    inherit.setCaret(0, false);
+    inherit.insert("Z");
+    CHECK((inherit.styles()[0] == TextStyleRun{1, 5, true, false, false, false, 0}));
+
+    // 選択範囲を置き換えると、その範囲に付いていた書式は消える
+    TextEditBuffer replace("abcdef");
+    replace.setCaret(2, false);
+    replace.setCaret(4, true);
+    replace.toggleSelectionFlag(TextStyleFlag::Underline);
+    replace.setCaret(2, false);
+    replace.setCaret(4, true);
+    replace.insert("ZZ");
+    CHECK(replace.text() == "abZZef");
+    CHECK(replace.styles().empty());
+
+    // 構築時に書式を受け取る(注釈からの再編集)
+    TextEditBuffer restored("abcdef", {{0, 3, true, false, false, false, 0}});
+    CHECK(restored.styles().size() == 1);
+    CHECK(restored.selectionStyle().begin == 6);  // キャレットは末尾で選択なし
+}
+
 void testAppTextEditing() {
     FakeDecoder decoder;
     ImageCache cache(decoder);
@@ -1845,6 +1995,108 @@ void testAppTextEditing() {
     CHECK(app.annotations().specs->empty());
 }
 
+void testAppTextStyles() {
+    FakeDecoder decoder;
+    ImageCache cache(decoder);
+    FakeHost host;
+    FakeFileSystem fs;
+    FakeClipboard clipboard;
+    FakeEncoder encoder;
+    FakeAnnotationRasterizer rasterizer;
+    App app(host, fs, cache, clipboard, encoder, rasterizer);
+
+    app.onResize(800, 600);
+    auto source = std::make_shared<DecodedImage>();
+    source->width = 100;
+    source->height = 100;
+    source->pixels.resize(100 * 100 * 4);
+    clipboard.pasteImage = source;
+    app.execute(Command::PasteImage);
+    app.execute(Command::ZoomActual);
+    const Matrix3x2 toScreen = app.imageToScreen();
+    rasterizer.overlayWidth = 44;
+    rasterizer.overlayHeight = 24;
+    const auto screenOf = [&toScreen](float x, float y) { return toScreen.apply({x, y}); };
+    const auto ctrl = [](char c) {
+        return KeyChord{static_cast<KeyCode>(c), true, false, false};
+    };
+
+    host.menuChoice = 5;  // テキスト
+    app.onRightDragStart(screenOf(10, 10));
+    app.onRightDragEnd(screenOf(50, 30));
+    app.insertText("abcdef");
+
+    // Ctrl+B は選択部分だけを太字にする(選択が無ければ何も起きない)
+    app.onKey(ctrl('B'));
+    CHECK(app.annotations().specs->back().styles.empty());
+    app.onKey(ctrl('A'));
+    app.onKey(ctrl('B'));
+    CHECK(app.annotations().specs->back().styles.size() == 1);
+    CHECK((app.annotations().specs->back().styles[0] ==
+          TextStyleRun{0, 6, true, false, false, false, 0}));
+    app.onKey(ctrl('B'));  // もう一度で解除
+    CHECK(app.annotations().specs->back().styles.empty());
+
+    // Ctrl+I / Ctrl+U は斜体・下線。前半 3 文字だけを選び直してかける
+    app.onKey({KeyCode::Home});
+    for (int i = 0; i < 3; ++i) app.onKey({KeyChord{KeyCode::Right, false, true, false}});
+    app.onKey(ctrl('I'));
+    CHECK((app.annotations().specs->back().styles[0] ==
+          TextStyleRun{0, 3, false, true, false, false, 0}));
+    app.onKey(ctrl('I'));  // もう一度で解除
+    CHECK(app.annotations().specs->back().styles.empty());
+    app.onKey(ctrl('U'));
+    CHECK(app.annotations().specs->back().styles.size() == 1);
+    CHECK((app.annotations().specs->back().styles[0] ==
+          TextStyleRun{0, 3, false, false, true, false, 0}));
+
+    // 選択範囲の上での右クリックは編集を確定せず、書式メニューを出す
+    const int menusBefore = host.menuCount;
+    host.menuChoice = std::nullopt;  // キャンセル
+    app.onRightDragStart(screenOf(20, 15));
+    app.onRightDragEnd(screenOf(20, 15));
+    CHECK(app.isTextEditing());  // 右クリックで編集が終わらない
+    CHECK(host.menuCount == menusBefore + 1);
+    CHECK(countMenuLeaves(host.lastMenuItems) == 4);  // 太字・斜体・下線・文字色
+    CHECK(!host.lastMenuItems[0].checked);            // 太字は付いていない
+    CHECK(!host.lastMenuItems[1].checked);            // 斜体も付いていない
+    CHECK(host.lastMenuItems[2].checked);             // 下線は付いている
+
+    // メニューから斜体を選ぶと、選択部分だけ斜体になる(下線はそのまま)
+    host.menuChoice = 1;  // 斜体
+    app.onRightDragStart(screenOf(20, 15));
+    app.onRightDragEnd(screenOf(20, 15));
+    CHECK((app.annotations().specs->back().styles[0] ==
+          TextStyleRun{0, 3, false, true, true, false, 0}));
+    app.onKey(ctrl('I'));  // 斜体を戻して以降のテストを素直にする
+
+    // メニューから文字色を選ぶと、選択部分だけ色が付く(下線はそのまま)
+    host.menuChoice = 3;  // 文字色...
+    host.colorChoice = 0x00FF00;
+    app.onRightDragStart(screenOf(20, 15));
+    app.onRightDragEnd(screenOf(20, 15));
+    CHECK(app.annotations().specs->back().styles.size() == 1);
+    CHECK((app.annotations().specs->back().styles[0] ==
+          TextStyleRun{0, 3, false, false, true, true, 0x00FF00}));
+    // 色を指定していないので、ピッカーの初期値は注釈全体の色
+    CHECK(host.lastColorPickerInitial == app.annotations().specs->back().colorRGB);
+
+    // 確定しても書式は残り、再編集でも引き継がれる
+    app.onKey({KeyCode::Escape});
+    CHECK(!app.isTextEditing());
+    CHECK(app.annotations().specs->back().styles.size() == 1);
+    app.onDoubleClick(screenOf(20, 15));
+    CHECK(app.isTextEditing());
+    app.onKey(ctrl('A'));
+    CHECK(app.annotations().specs->back().styles[0].underline);
+
+    // 枠の外での右クリックは従来どおり編集を確定する
+    host.menuChoice = std::nullopt;
+    app.onRightDragStart(screenOf(90, 90));
+    app.onRightDragEnd(screenOf(90, 90));
+    CHECK(!app.isTextEditing());
+}
+
 void testNaturalCompare() {
     // 数字の連続は数値として比較(エクスプローラ相当)
     CHECK(naturalCompare("1.png", "2.png") < 0);
@@ -1871,6 +2123,8 @@ int main() {
     testUtf16Offsets();
     testNaturalCompare();
     testTextEditBuffer();
+    testTextStyleRuns();
+    testTextEditBufferStyles();
     testMatrix();
     testViewportFit();
     testViewportZoomAt();
@@ -1889,6 +2143,7 @@ int main() {
     testAppAnnotationObjects();
     testAppEdit();
     testAppTextEditing();
+    testAppTextStyles();
 
     if (g_failures == 0) {
         std::cout << "all tests passed\n";

@@ -374,6 +374,16 @@ bool App::onDoubleClick(Point screenPos) {
 
 void App::onRightDragStart(Point screenPos) {
     if (!current_) return;
+    // 編集中の選択範囲の上での右クリックは、確定せずに書式メニューを出す
+    if (textEditing_ && textEditIndex_ < annotations_.size() && !isComposing() &&
+        textBuffer_.hasSelection()) {
+        const Point imagePos = imageToScreen().inverted().apply(screenPos);
+        const float tolerance = kHitTolerancePx / std::max(viewport_.zoom(), 0.001f);
+        if (hitTestAnnotation(annotations_[textEditIndex_], imagePos, tolerance)) {
+            textStyleMenuPending_ = true;  // メニューはボタンを離した位置で出す
+            return;
+        }
+    }
     if (textEditing_) commitTextEdit();  // 右操作は編集の外側なので先に確定する
     // サイドバー・ステータスバー上からは開始しない
     const float barHeight = statusBarVisible() ? kStatusBarHeight : 0.0f;
@@ -392,6 +402,11 @@ void App::onRightDragMove(Point screenPos) {
 }
 
 void App::onRightDragEnd(Point screenPos) {
+    if (textStyleMenuPending_) {
+        textStyleMenuPending_ = false;
+        showTextStyleMenu(screenPos);
+        return;
+    }
     if (!selecting_) return;
     selEndImage_ = clampToImage(imageToScreen().inverted().apply(screenPos));
     const float dx = screenPos.x - selStartScreen_.x;
@@ -580,6 +595,47 @@ void App::showObjectMenu(Point screenPos) {
     host_.requestRedraw();
 }
 
+void App::showTextStyleMenu(Point screenPos) {
+    if (!textEditing_ || !textBuffer_.hasSelection()) return;
+    if (textEditIndex_ >= annotations_.size()) return;
+    // トグルできる属性を並べ、最後に文字色。末端項目の index はこの順に対応する
+    static constexpr std::array<std::pair<const char*, TextStyleFlag>, 3> kFlags{{
+        {"太字", TextStyleFlag::Bold},
+        {"斜体", TextStyleFlag::Italic},
+        {"下線", TextStyleFlag::Underline},
+    }};
+    std::vector<MenuItem> items;
+    for (const auto& [text, flag] : kFlags) {
+        MenuItem item;
+        item.text = text;
+        item.checked = textBuffer_.selectionHasFlag(flag);
+        items.push_back(std::move(item));
+    }
+    items.push_back(menuSeparator());
+    // 色を指定していない範囲は注釈全体の色で描かれるので、そちらを見出しと初期値に使う
+    const TextStyleRun style = textBuffer_.selectionStyle();
+    const uint32_t initialColor =
+        style.hasColor ? style.colorRGB : annotations_[textEditIndex_].colorRGB;
+    MenuItem color;
+    color.text = std::format("文字色... (#{:06X})", initialColor);
+    items.push_back(std::move(color));
+
+    const auto choice = host_.showContextMenu(items, screenPos);
+    bool changed = false;
+    if (choice && *choice < kFlags.size()) {
+        changed = textBuffer_.toggleSelectionFlag(kFlags[*choice].second);
+    } else if (choice && *choice == kFlags.size()) {
+        if (const auto rgb = host_.showColorPicker(initialColor)) {
+            changed = textBuffer_.setSelectionColor(*rgb);
+        }
+    }
+    if (changed) {
+        applyTextEditChange();
+    } else {
+        host_.requestRedraw();
+    }
+}
+
 bool App::applyEditChoice(const EditMenuEntry& entry) {
     switch (entry.action) {
     case EditMenuEntry::Action::Crop:
@@ -693,7 +749,9 @@ void App::beginTextEdit(size_t index, UndoState before, bool created) {
     textUndoPushed_ = false;
     textUndoState_ = std::move(before);
     resetComposition();
-    textBuffer_ = TextEditBuffer(annotations_[index].text);  // キャレットは末尾
+    textStyleMenuPending_ = false;
+    // キャレットは末尾。部分書式も引き継いで、続きの入力が直前の書式を継ぐようにする
+    textBuffer_ = TextEditBuffer(annotations_[index].text, annotations_[index].styles);
     selected_ = index;
     objectDrag_ = ObjectDrag::None;
     notifyCaretMoved();
@@ -708,6 +766,7 @@ void App::commitTextEdit() {
     if (textEditIndex_ < annotations_.size()) {
         AnnotationSpec& spec = annotations_[textEditIndex_];
         spec.text = textBuffer_.text();  // 変換中文字列を落とした確定内容にする
+        spec.styles = textBuffer_.styles();
         if (spec.text.empty()) {
             // 空のテキストボックスは残さない(新規・既存とも削除する)
             pushTextEditUndoOnce();
@@ -757,6 +816,7 @@ void App::refreshTextEditSpec() {
     if (!textEditing_ || textEditIndex_ >= annotations_.size()) return;
     AnnotationSpec& spec = annotations_[textEditIndex_];
     spec.text = textEditDisplayText();
+    spec.styles = textEditDisplayStyles();
     // 空になったら枠は縮めない(利用者が決めた大きさのまま入力を続けられるように)。
     // 失敗しても枠が古いだけで編集は続けられる
     if (!spec.text.empty()) measureTextHeight(spec);
@@ -769,6 +829,15 @@ std::string App::textEditDisplayText() const {
     std::string out = textBuffer_.text();
     out.insert(textBuffer_.caret(), composition_);
     return out;
+}
+
+std::vector<TextStyleRun> App::textEditDisplayStyles() const {
+    std::vector<TextStyleRun> styles = textBuffer_.styles();
+    // 変換中文字列を挿入した分だけ後ろの書式をずらす(挿入と同じ扱い)
+    if (!composition_.empty()) {
+        adjustTextStyles(styles, textBuffer_.caret(), 0, composition_.size());
+    }
+    return styles;
 }
 
 size_t App::textEditCaretOffset() const {
@@ -869,6 +938,15 @@ bool App::handleTextEditKey(const KeyChord& chord) {
             const std::string pasted = clipboard_.getText();
             if (!pasted.empty()) {
                 textBuffer_.insert(pasted);
+                applyTextEditChange();
+            }
+        } else if (letter('B')) {
+            // 選択部分の太字トグル(全体が太字なら解除。一般的なエディタと同じ)
+            if (textBuffer_.toggleSelectionFlag(TextStyleFlag::Bold)) applyTextEditChange();
+        } else if (letter('I')) {
+            if (textBuffer_.toggleSelectionFlag(TextStyleFlag::Italic)) applyTextEditChange();
+        } else if (letter('U')) {
+            if (textBuffer_.toggleSelectionFlag(TextStyleFlag::Underline)) {
                 applyTextEditChange();
             }
         } else if (letter('Z')) {

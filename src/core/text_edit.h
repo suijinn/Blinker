@@ -1,12 +1,16 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <string>
 #include <string_view>
+#include <vector>
+
+#include "core/text_style.h"
 
 /**
  * @file text_edit.h
- * @brief 画像上で直接テキストを編集するための編集バッファ(キャレット・選択範囲)。
+ * @brief 画像上で直接テキストを編集するための編集バッファ(キャレット・選択範囲・部分書式)。
  *
  * OS ヘッダに依存しない(単体テスト対象)。文字列は UTF-8、位置はすべて
  * UTF-8 のバイト位置で表す。行の折り返しやフォント計測には関与しないため、
@@ -21,6 +25,7 @@ namespace blinker {
  *
  * キャレット位置 caret() と選択の始点 anchor() を持ち、両者が等しいときは
  * 選択なし。位置は常にコードポイント境界に丸められる。
+ * 部分書式(色・太字・斜体・下線)も保持し、文字列を変更するたびに位置を追従させる。
  */
 class TextEditBuffer {
 public:
@@ -28,16 +33,23 @@ public:
     TextEditBuffer() = default;
 
     /**
-     * @brief 文字列を受け取り、キャレットを末尾に置いて構築する。
-     * @param[in] text 初期文字列(UTF-8。改行 LF)。
+     * @brief 文字列と部分書式を受け取り、キャレットを末尾に置いて構築する。
+     * @param[in] text   初期文字列(UTF-8。改行 LF)。
+     * @param[in] styles 初期の部分書式。位置は text 内の UTF-8 バイト位置。
      */
-    explicit TextEditBuffer(std::string text);
+    explicit TextEditBuffer(std::string text, std::vector<TextStyleRun> styles = {});
 
     /**
      * @brief 編集中の文字列を返す。
      * @return 現在の文字列(UTF-8)。
      */
     const std::string& text() const { return text_; }
+
+    /**
+     * @brief 部分書式(色・太字・斜体・下線)の範囲リストを返す。
+     * @return 範囲リスト。位置は text() 内の UTF-8 バイト位置。
+     */
+    const std::vector<TextStyleRun>& styles() const { return styles_; }
 
     /**
      * @brief キャレット位置を返す。
@@ -138,6 +150,36 @@ public:
     void selectAll();
 
     /**
+     * @brief 選択範囲全体に属性が適用されているかを返す。
+     * @param[in] flag 調べる属性。
+     * @return 選択範囲の全体に適用されていれば true。選択がなければ false。
+     */
+    bool selectionHasFlag(TextStyleFlag flag) const;
+
+    /**
+     * @brief 選択範囲の属性を反転する(太字・斜体・下線のトグル)。
+     * @param[in] flag 反転する属性。
+     * @return 書式が変化したら true。選択がなければ false(何もしない)。
+     * @note 選択範囲の全体に適用済みなら解除、そうでなければ全体へ適用する
+     *       (一部だけ太字の範囲は、まず全体が太字になる)。
+     */
+    bool toggleSelectionFlag(TextStyleFlag flag);
+
+    /**
+     * @brief 選択範囲に文字色を設定する。
+     * @param[in] colorRGB 設定する色(0xRRGGBB)。
+     * @return 書式が変化したら true。選択がなければ false(何もしない)。
+     */
+    bool setSelectionColor(uint32_t colorRGB);
+
+    /**
+     * @brief 選択範囲の先頭に適用されている書式を返す。
+     * @return 選択の開始位置を含む範囲。書式が無ければ既定の書式。
+     * @note メニューに現在の文字色を表示するために使う。
+     */
+    TextStyleRun selectionStyle() const;
+
+    /**
      * @brief 指定位置にある「語」を選択する(ダブルクリック用)。
      * @param[in] offset 語を探す基準のバイト位置。
      * @note 空白の連なり・ASCII の英数字とアンダースコアの連なり・それ以外(記号や
@@ -153,9 +195,10 @@ private:
      */
     size_t clampToBoundary(size_t offset) const;
 
-    std::string text_;   ///< 編集中の文字列(UTF-8)
-    size_t caret_ = 0;   ///< キャレットのバイト位置
-    size_t anchor_ = 0;  ///< 選択の始点のバイト位置
+    std::string text_;                  ///< 編集中の文字列(UTF-8)
+    std::vector<TextStyleRun> styles_;  ///< 部分書式。文字列の変更に追従させる
+    size_t caret_ = 0;                  ///< キャレットのバイト位置
+    size_t anchor_ = 0;                 ///< 選択の始点のバイト位置
 };
 
 } // namespace blinker
