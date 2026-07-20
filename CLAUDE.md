@@ -66,6 +66,44 @@ cmake --preset linux-release && cmake --build --preset linux-release
 - ソースはUTF-8(日本語コメント可)。`/utf-8` フラグ必須
 - 設定は `blinker.exe` と同階層の `blinker.ini`(書式: docs/blinker.ini.example)
 
+## Doxygenコメント(必須)
+
+**`src/**/*.h` に宣言を追加・変更したら、必ずDoxygenコメントを書くこと。** 記述は日本語。
+対象はヘッダのみで、`.cpp` 内部の関数は対象外(`third_party/` も対象外)。
+
+関数・メソッドには最低限これを書く:
+
+- `@brief` … 何をするか1行。**必須**
+- `@param[in]` / `@param[out]` / `@param[in,out]` … **全引数に必須**。方向指定を省略しない
+- `@return` … 戻り値がある場合は必須。「失敗時 nullptr」のような異常系まで書く
+
+型・構造体には `@brief` を、**public** メンバには `///<` を付ける
+(private メンバは `EXTRACT_PRIVATE = NO` のため任意。自明でないものだけでよい)。
+加えて必要に応じて:
+
+- `@pre` … 事前条件(`ImageList::current()` の `!empty()` など)
+- `@note` … スレッド制約や呼び出し順の注意
+- `@todo` … 既知の未対応・制限。**憶測で書かず、実際に未実装な箇所だけに書く**
+  (現状: `DecoderStb` のEXIF回転、SDL版の注釈編集まわり)
+
+書式の見本は `src/core/viewport.h` と `src/platform/renderer.h`。
+
+**落とし穴**: `///<` は複数宣言子の行では**最後の1つにしか付かない**。
+`int width = 0, height = 0;  ///< 大きさ` と書くと `width` が未文書化になる。
+1行1宣言に分けること。
+
+チェックは `doxygen docs/Doxyfile`(要 doxygen。`winget install DimitriVanHeesch.Doxygen`)。
+リポジトリのルートから実行すること(Doxyfile内のパスは実行時のCWD基準)。
+出力は `build/doxygen/html/index.html`、`@todo` の一覧は同 `todo.html`。
+
+`WARN_IF_UNDOCUMENTED` と `WARN_NO_PARAMDOC` を有効にしてあるので、briefや`@param`の
+書き漏れは警告として出る。**警告ゼロを維持すること**。ただし
+`The selected output language "japanese" has not been updated` の1件だけは
+Doxygen側の翻訳が1.8.15以降未更新なことによる無害な通知で、消せない(無視してよい)。
+
+クラス図はGraphvizに依存する(`HAVE_DOT = YES`)。未インストール環境では
+`winget install Graphviz.Graphviz` を入れるか、`HAVE_DOT = NO` にする。
+
 ## 動作確認の方法
 
 GUIアプリのためスクリーンショットは取れないが、タイトルバーに状態が出るので
