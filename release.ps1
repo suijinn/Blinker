@@ -1,6 +1,6 @@
 # Blinker のリリース。
 #
-#   .\release.ps1 0.1.2      (または release.bat 0.1.2)
+#   .\release.ps1 x.y.z      (または release.bat x.y.z)
 #
 # やることは CMakeLists.txt の project(Blinker VERSION x.y.z) を書き換えて
 # commit・push するだけ。バージョンの正はその 1 行だけで、タグ (vx.y.z) も
