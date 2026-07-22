@@ -43,6 +43,22 @@ struct MenuItem {
 };
 
 /**
+ * @brief 右ドラッグで実行する編集ツール。
+ *
+ * 事前に選んだツールが右ドラッグで即座に適用される(ドラッグ中はプレビューが出る)。
+ * 切り替えは注釈のない場所での右クリック(ドラッグなし)で開くメニュー、または
+ * Command::SelectToolCrop 以降のコマンドで行う。
+ */
+enum class EditTool {
+    Crop,     ///< 選択領域で画像を切り出す(実行すると直前の図形ツールへ戻る)
+    Rect,     ///< 矩形を描く
+    Ellipse,  ///< 楕円を描く
+    Arrow,    ///< 矢印を描く
+    Line,     ///< 直線を描く
+    Text,     ///< テキストボックスを作り、その場で入力を始める
+};
+
+/**
  * @brief App がウィンドウ層に要求するサービス。
  *
  * win 層 (MainWindow) と sdl 層 (WindowSdl) が実装する。
@@ -149,7 +165,8 @@ public:
 
     /**
      * @brief blinker.ini の設定を適用する。
-     * @param[in] config 適用する設定。キーバインド・背景色・先読み数などを反映する。
+     * @param[in] config 適用する設定。キーバインド・背景色・先読み数・
+     *                   編集の初期値(色・太さ・起動時のツール)などを反映する。
      */
     void applyConfig(const Config& config);
 
@@ -281,16 +298,24 @@ public:
     void onRightDragStart(Point screenPos);
 
     /**
-     * @brief 右ドラッグ中の選択領域を更新する。
+     * @brief 右ドラッグ中の選択領域(とプレビュー)を更新する。
      * @param[in] screenPos 現在位置(スクリーン座標)。
      */
     void onRightDragMove(Point screenPos);
 
     /**
-     * @brief 右ドラッグを終了し、編集メニューを表示して選ばれた編集を適用する。
+     * @brief 右ドラッグを終了し、現在のツールを選択領域へ適用する。
      * @param[in] screenPos 終了位置(スクリーン座標)。メニューの表示位置にもなる。
+     * @note 移動量が閾値未満(= 単なる右クリック)なら適用せず、注釈の上なら
+     *       オブジェクトメニュー、そうでなければツール切り替えメニューを表示する。
      */
     void onRightDragEnd(Point screenPos);
+
+    /**
+     * @brief 右ドラッグで実行される現在のツールを返す。
+     * @return 現在のツール。
+     */
+    EditTool currentTool() const { return tool_; }
 
     /**
      * @brief 左ドラッグによるパンを処理する。
@@ -445,18 +470,18 @@ private:
     Point clampToImage(Point imagePos) const;
 
     /**
-     * @brief 編集メニューの末端項目が表す操作。
-     * @note 設定系(Crop/Annotate 以外)はメニューを再表示して続けて選択できる。
+     * @brief ツール切り替えメニューの末端項目が表す操作。
+     * @note 設定系(SelectTool 以外)はメニューを再表示して続けて選択できる。
      */
     struct EditMenuEntry {
         /// @brief 末端項目が表す操作の種類。
         enum class Action {
-            Crop, Annotate, StrokeWidth, FontSize, PickColor,
+            SelectTool, StrokeWidth, FontSize, PickColor,
             FillAlpha, PickFillColor, BorderWidth, PickBorderColor
         };
-        Action action;                                           ///< 操作の種類
-        AnnotationSpec::Kind kind = AnnotationSpec::Kind::Rect;  ///< Annotate 用の図形種別
-        float value = 0;                                         ///< 設定系の値
+        Action action;                    ///< 操作の種類
+        EditTool tool = EditTool::Rect;   ///< SelectTool で選ばれたツール
+        float value = 0;                  ///< 設定系の値
     };
 
     /// @brief 注釈オブジェクトを右クリックしたときのメニューの末端項目。
@@ -471,18 +496,53 @@ private:
     };
 
     /**
-     * @brief 編集メニューの構造を組み立てる。
+     * @brief ツール切り替えメニューの構造を組み立てる。
      * @param[out] entries 末端項目の一覧。entries[i] が showContextMenu の返す index i に対応する。
-     * @return メニュー構造。
+     * @return メニュー構造。現在のツールと現在の設定値にチェックが付く。
      */
     std::vector<MenuItem> buildEditMenu(std::vector<EditMenuEntry>& entries) const;
 
     /**
-     * @brief 編集メニューで選ばれた項目を適用する。
+     * @brief ツール切り替えメニューを表示し、選ばれた項目を適用する。
+     * @param[in] screenPos メニューの表示位置(スクリーン座標)。
+     * @note 設定系(太さ・色など)を選んだ場合はメニューを再表示し、続けて選べるようにする。
+     */
+    void showToolMenu(Point screenPos);
+
+    /**
+     * @brief ツール切り替えメニューで選ばれた項目を適用する。
      * @param[in] entry 選択された末端項目。
      * @return メニューを閉じるなら true。設定系で再表示するなら false。
      */
     bool applyEditChoice(const EditMenuEntry& entry);
+
+    /**
+     * @brief 現在のツールを切り替える。
+     * @param[in] tool 切り替え先のツール。
+     * @note Crop 以外を選ぶと、トリミング実行後に戻る図形ツールも更新される。
+     */
+    void setTool(EditTool tool);
+
+    /// @brief 現在のツールを選択領域へ適用する(右ドラッグの確定時)。
+    void applyCurrentTool();
+
+    /**
+     * @brief 選択領域と現在の設定から新しい注釈を組み立てる。
+     * @param[in] kind 組み立てる注釈の種別。
+     * @return 画像座標の注釈。線幅・文字サイズはズームで画像座標へ換算済み。
+     * @note 追加前のプレビュー描画にも同じものを使う(見た目が結果と一致する)。
+     */
+    AnnotationSpec makeAnnotationSpec(AnnotationSpec::Kind kind) const;
+
+    /// @brief 右ドラッグ中のプレビュー注釈を選択領域から作り直す。
+    void updatePreview();
+
+    /**
+     * @brief 右ドラッグ中に実物の図形をプレビューとして描くかを返す。
+     * @return 描くなら true。トリミングとテキストは形が定まらないため false
+     *         (代わりにラバーバンドを出す)。
+     */
+    bool previewVisible() const;
 
     /**
      * @brief 注釈オブジェクトのメニュー構造を組み立てる。
@@ -506,8 +566,11 @@ private:
      */
     void showTextStyleMenu(Point screenPos);
 
-    /// @brief 選択領域で現在の画像をトリミングする。
-    void applyCrop();
+    /**
+     * @brief 選択領域で現在の画像をトリミングする。
+     * @return 切り出せたら true。有効領域が残らなければ false(画像は変わらない)。
+     */
+    bool applyCrop();
 
     /**
      * @brief 選択領域に注釈オブジェクトを追加する。
@@ -674,6 +737,11 @@ private:
     Point selEndImage_{};     ///< 選択の現在点(画像座標。ズーム中も不変)
     Point selStartScreen_{};  ///< ドラッグ量の閾値判定用
     bool edited_ = false;     ///< current_ に未保存の編集(トリミング・注釈)がある
+    EditTool tool_ = EditTool::Rect;  ///< 右ドラッグで実行するツール
+    /// トリミングは一度きりの操作なので、実行したらこのツールへ戻す(直前の図形ツール)
+    EditTool toolAfterCrop_ = EditTool::Rect;
+    /// 右ドラッグ中のプレビュー。図形ツールのときだけ有効(Crop/Text はラバーバンドを出す)
+    AnnotationSpec previewSpec_;
 
     /// 注釈オブジェクト。current_ には焼き込まず、描画時に重ね、保存/コピー時に合成する
     std::vector<AnnotationSpec> annotations_;

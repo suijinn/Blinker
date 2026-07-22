@@ -21,10 +21,14 @@ prefetch_radius = 2
 # font_path = /usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc
 
 [edit]
-# 右ドラッグで領域を選択→メニューでトリミング・図形・テキストを追加できる。
-# 以下は新規作成時の初期値で、編集メニュー(線の太さ・文字サイズ・色の変更)から
+# 右ドラッグは「現在のツール」(トリミング / 矩形 / 楕円 / 矢印 / 直線 / テキスト)を
+# その場で実行する。ツールの切り替えは何もない場所での右クリック(ドラッグなし)で
+# 開くメニュー、または [keys] の tool_* コマンド。現在のツールはステータスバーに出る。
+# 以下は新規作成時の初期値で、同じメニュー(線の太さ・文字サイズ・色の変更)から
 # その場で変更できる。追加済みオブジェクトは左クリックで選択して移動・回転・
 # 右クリックメニューで個別に変更できる
+# 起動時のツール: crop / rect / ellipse / arrow / line / text
+tool = rect
 # 図形・テキストの色 (RRGGBB)
 color = FF3B30
 # 線の太さ (画面px基準, 1-100。表示ズームに合わせて画像へ換算される)
@@ -51,7 +55,15 @@ border_width = 0
 #   pan_left pan_right pan_up pan_down rotate_cw rotate_ccw
 #   fullscreen open copy_image copy_path paste save_as undo delete_annotation
 #   sidebar statusbar escape quit
+#   tool_crop tool_rect tool_ellipse tool_arrow tool_line tool_text
+#     (右ドラッグで実行するツールの切り替え。既定のキーは割り当てていない)
 #
 # 例: Vim風の移動にする場合
 #next = L, Right, Space
 #prev = H, Left, Backspace
+#
+# 例: 注釈ツールをキーで切り替える場合(既定で使っていないキーを選ぶこと。
+# 他コマンドが使っているキーを書くと、そちらのバインドが奪われる)
+#tool_rect = X
+#tool_arrow = A
+#tool_text = T

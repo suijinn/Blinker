@@ -174,8 +174,7 @@ private:
     bool running_ = false;
     bool needsRedraw_ = false;
     bool fullscreen_ = false;
-    bool dragging_ = false;       ///< 左ドラッグ(パン)中か
-    bool rightDragging_ = false;  ///< 右ドラッグ(領域選択)中か
+    bool dragging_ = false;  ///< 左ドラッグ(パン)中か
     float lastDragX_ = 0;  ///< 直前のドラッグ位置の X(物理ピクセル)
     float lastDragY_ = 0;  ///< 直前のドラッグ位置の Y(物理ピクセル)
 };
