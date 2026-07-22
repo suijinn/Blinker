@@ -1042,6 +1042,12 @@ void testAnnotationGeometry() {
     CHECK(!hitTestAnnotation(rect, {5, 10}, 1));     // 中心は外れ
     CHECK(!hitTestAnnotation(rect, {-3, 10}, 1));    // 届かない距離
 
+    // 塗りつぶしてあれば内部もヒットする(塗った領域は見た目どおりに掴める)
+    rect.fillAlpha = 128;
+    CHECK(hitTestAnnotation(rect, {5, 10}, 1));
+    CHECK(!hitTestAnnotation(rect, {-3, 10}, 1));  // 外側は変わらず届かない
+    rect.fillAlpha = 0;
+
     // 90° 回転: 幅10x高20 が中心 (5,10) 周りで横長になる
     rect.angleDeg = 90;
     CHECK(hitTestAnnotation(rect, {c.x + 10, c.y}, 1));   // 回転後の右辺(元の下辺)
@@ -1061,6 +1067,10 @@ void testAnnotationGeometry() {
     CHECK(hitTestAnnotation(ellipse, {20, 5}, 1));   // 右端の輪郭
     CHECK(hitTestAnnotation(ellipse, {10, 0}, 1));   // 上端の輪郭
     CHECK(!hitTestAnnotation(ellipse, {10, 5}, 1));  // 中心は外れ
+    ellipse.fillAlpha = 255;
+    CHECK(hitTestAnnotation(ellipse, {10, 5}, 1));    // 塗ってあれば内部もヒット
+    CHECK(!hitTestAnnotation(ellipse, {0, 0}, 1));    // 楕円の外(bbox の角)は外れたまま
+    ellipse.fillAlpha = 0;
 
     // 直線・矢印: 線分への距離で判定
     AnnotationSpec line;
@@ -1232,11 +1242,12 @@ void testAppAnnotationObjects() {
     CHECK(nearly(app.annotations().specs->front().angleDeg, 0));
 
     // 右クリック(ドラッグ閾値未満)でオブジェクトメニュー。末端 index (図形):
-    // 0 削除, 1-8 回転 {0,15,30,45,90,135,180,270}, 9-15 太さ {1,2,3,5,8,12,20}, 16 色
+    // 0 削除, 1-8 回転 {0,15,30,45,90,135,180,270}, 9-15 太さ {1,2,3,5,8,12,20}, 16 色,
+    // 17-21 塗りつぶし {0,64,128,191,255}, 22 塗りつぶしの色
     host.menuChoice = 5;  // 90°
     app.onRightDragStart({396, 283});
     app.onRightDragEnd({397, 283});
-    CHECK(countMenuLeaves(host.lastMenuItems) == 17);
+    CHECK(countMenuLeaves(host.lastMenuItems) == 23);
     CHECK(nearly(app.annotations().specs->front().angleDeg, 90));
 
     host.menuChoice = 13;  // 太さ 8px
@@ -1370,8 +1381,9 @@ void testAppEdit() {
     app.onRightDragStart({396, 283});
     app.onRightDragEnd({400, 287});
     CHECK(host.menuCount == 1);
-    // 末端項目: 編集6種 + 太さ7 + 文字サイズ7 + 色1 = 21(回転角度はオブジェクト側へ移動)
-    CHECK(countMenuLeaves(host.lastMenuItems) == 21);
+    // 末端項目: 編集6種 + 太さ7 + 文字サイズ7 + 色1 + 塗りつぶし(5+色1) + 枠線(6+色1)
+    // = 34(回転角度はオブジェクト側へ移動)
+    CHECK(countMenuLeaves(host.lastMenuItems) == 34);
     CHECK(app.currentImage()->width == 8);
     CHECK(rasterizer.rasterizeCount == 0);
 
@@ -1498,6 +1510,54 @@ void testAppEdit() {
     app.onRightDragStart({396, 283});
     app.onRightDragEnd({400, 287});
     CHECK(nearly(app.annotations().specs->back().strokeWidth, 3));  // 3px に戻っている
+
+    // 塗りつぶし: 末端 index 21-25 が不透明度 {0,64,128,191,255}、26 が塗りつぶしの色。
+    // 色を選ぶと塗りなしのままにならないよう不透明で塗り始める
+    host.menuQueue = {23 /*不透明度 128*/, 1 /*矩形*/};
+    app.onRightDragStart({396, 283});
+    app.onRightDragEnd({400, 287});
+    CHECK(app.annotations().specs->back().fillAlpha == 128);
+    CHECK(app.annotations().specs->back().fillRGB == 0xFFFFFF);  // 既定は白
+    host.colorChoice = 0x3366FF;
+    host.menuQueue = {21 /*塗りなしへ戻す*/, 26 /*塗りつぶしの色*/, 2 /*楕円*/};
+    app.onRightDragStart({396, 283});
+    app.onRightDragEnd({400, 287});
+    {
+        const AnnotationSpec& spec = app.annotations().specs->back();
+        CHECK(spec.kind == AnnotationSpec::Kind::Ellipse);
+        CHECK(spec.fillRGB == 0x3366FF);
+        CHECK(spec.fillAlpha == 255);  // 塗りなしから色を選んだので不透明になる
+    }
+
+    // オブジェクトメニューからも塗りつぶしを変えられる (17-21 不透明度, 22 色)
+    CHECK(app.onMouseDown({398, 285}));  // 塗ってあるので内部クリックで選択できる
+    app.onMouseUp();
+    CHECK(app.annotations().selected.has_value());
+    host.menuChoice = 19;  // 不透明度 128
+    app.onRightDragStart({398, 285});
+    app.onRightDragEnd({398, 285});
+    CHECK(app.annotations().specs->back().fillAlpha == 128);
+    app.execute(Command::Undo);
+    CHECK(app.annotations().specs->back().fillAlpha == 255);
+    host.menuChoice = std::nullopt;  // 以降は menuQueue を使う(設定系は再表示されるため)
+
+    // テキストの枠線: 末端 index 27-32 が太さ {0,1,2,3,5,8}、33 が枠線の色。
+    // 枠線ぶん余白が広がるので実測境界も縮む (24x12 の overlay - 余白 (2+太さ/2)*2)
+    host.menuQueue = {29 /*枠線 2px*/, 5 /*テキスト*/};
+    rasterizer.overlayWidth = 24;
+    rasterizer.overlayHeight = 12;
+    app.onRightDragStart({396, 283});
+    app.onRightDragEnd({400, 287});
+    app.insertText("枠");
+    app.onKey({KeyCode::Escape});
+    {
+        const AnnotationSpec& spec = app.annotations().specs->back();
+        CHECK(nearly(spec.borderWidth, 2));
+        CHECK(nearly(spec.p2.x - spec.p1.x, 18) && nearly(spec.p2.y - spec.p1.y, 6));
+    }
+    host.menuQueue = {27 /*枠線なしへ戻す*/};
+    app.onRightDragStart({396, 283});
+    app.onRightDragEnd({400, 287});
 
     // 確定時の実測(ラスタライズ)失敗はメッセージを出す。入力済みの内容は残す
     rasterizer.ok = false;

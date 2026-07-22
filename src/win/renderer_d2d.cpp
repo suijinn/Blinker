@@ -157,8 +157,13 @@ void RendererD2D::drawAnnotations(const AnnotationsView& annotations,
         }
         target_->SetTransform(transform);
         const bool editingThis = edit.active && edit.index == i;
-        if (editingThis && !edit.selectionRects.empty()) {
-            brush_->SetColor(colorFromARGB(edit.selectionARGB));  // 文字の下に敷く
+        // 選択範囲のハイライトは塗りつぶしの上・文字の下。塗りつぶしに隠されないよう、
+        // ハイライトがあるときだけ背景と前景を分けて描く
+        const bool splitDraw = editingThis && !edit.selectionRects.empty();
+        if (splitDraw) {
+            drawAnnotationShape(target_.Get(), factory_.Get(), dwriteFactory_.Get(), spec,
+                                brush_.Get(), AnnotationDrawParts::Background);
+            brush_->SetColor(colorFromARGB(edit.selectionARGB));
             for (const TextRangeRect& r : edit.selectionRects) {
                 target_->FillRectangle(D2D1::RectF(r.left, r.top, r.right, r.bottom),
                                        brush_.Get());
@@ -166,7 +171,9 @@ void RendererD2D::drawAnnotations(const AnnotationsView& annotations,
         }
         brush_->SetColor(colorFromRGB(spec.colorRGB));
         drawAnnotationShape(target_.Get(), factory_.Get(), dwriteFactory_.Get(), spec,
-                            brush_.Get());
+                            brush_.Get(),
+                            splitDraw ? AnnotationDrawParts::Foreground
+                                      : AnnotationDrawParts::All);
         if (editingThis && !edit.compositionRects.empty()) {
             // IME 変換中の下線。変換対象の節だけ太くして区別する(IME の慣習)
             brush_->SetColor(colorFromRGB(spec.colorRGB));

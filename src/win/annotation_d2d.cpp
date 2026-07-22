@@ -106,13 +106,12 @@ AnnotationOverlay AnnotationD2D::rasterize(const AnnotationSpec& spec) {
         const ComPtr<IDWriteTextLayout> layout =
             createAnnotationTextLayout(dwriteFactory_.Get(), spec, kMaxOverlaySize);
         if (!layout) return {};
-        DWRITE_TEXT_METRICS metrics{};
-        layout->GetMetrics(&metrics);
-        bounds.maxX = bounds.minX + std::max(metrics.widthIncludingTrailingWhitespace, 1.0f);
-        bounds.maxY = bounds.minY + std::max(metrics.height, 1.0f);
+        const D2D1_RECT_F box = textBoxRect(spec, layout.Get());
+        bounds.maxX = box.right;
+        bounds.maxY = box.bottom;
     }
     const float margin = spec.kind == AnnotationSpec::Kind::Text
-                             ? 2.0f
+                             ? textOverlayMargin(spec)
                              : spec.strokeWidth + arrowHeadLength(spec.strokeWidth);
     // 回転はバウンディングボックス中心周り。マージン込みの矩形の四隅を回して
     // 回転後の AABB をオーバーレイの領域にする(回転は等長変換なのでマージンは保たれる)

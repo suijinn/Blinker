@@ -28,15 +28,35 @@ struct AnnotationSpec {
     Kind kind = Kind::Rect;  ///< 注釈の種別
     Point p1;                ///< Rect/Ellipse/Text は対角の一方、Arrow/Line は始点
     Point p2;                ///< Rect/Ellipse/Text は対角の他方、Arrow/Line は終点
-    uint32_t colorRGB = 0;   ///< 描画色(0xRRGGBB)
-    float strokeWidth = 1;   ///< 線幅(画像座標)
+    uint32_t colorRGB = 0;   ///< 描画色(0xRRGGBB)。Text では文字色
+    float strokeWidth = 1;   ///< 線幅(画像座標)。Text では使わない(borderWidth を見る)
     float angleDeg = 0;      ///< バウンディングボックス中心周りの回転(時計回り、度)
     float fontSize = 16;     ///< Text 用のフォントサイズ(画像座標)
+    /// 塗りつぶし色(0xRRGGBB)。Rect/Ellipse/Text で使う
+    uint32_t fillRGB = 0xFFFFFF;
+    /// 塗りつぶしの不透明度(0-255)。0 は塗らない(完全な透過)、255 で不透明
+    int fillAlpha = 0;
+    uint32_t borderRGB = 0;  ///< Text 用の枠線色(0xRRGGBB)
+    float borderWidth = 0;   ///< Text 用の枠線幅(画像座標)。0 は枠線なし
     std::string text;        ///< Text 用の文字列(UTF-8。改行 LF 可)
     /// Text 用の部分書式(色・太字・斜体・下線)。位置は text 内の UTF-8 バイト位置。
     /// 覆われていない部分は colorRGB と標準の字形(太字・斜体・下線なし)で描かれる
     std::vector<TextStyleRun> styles;
 };
+
+/**
+ * @brief Text 注釈のラスタライズでバウンディングボックスの外側へ確保する余白。
+ *
+ * アンチエイリアスの染み出しと、バウンディングボックスの縁に中心を置いて描かれる
+ * 枠線の外側半分を収めるための余白。ラスタライザと、その結果から実測サイズを
+ * 逆算する側(App::measureTextExtent)で同じ値を使う必要があるためここに置く。
+ *
+ * @param[in] spec 対象の Text 注釈。borderWidth だけを見る。
+ * @return 上下左右それぞれに確保する余白(画像座標)。
+ */
+inline float textOverlayMargin(const AnnotationSpec& spec) {
+    return 2.0f + spec.borderWidth * 0.5f;
+}
 
 /**
  * @brief 注釈のラスタライズ結果。

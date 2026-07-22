@@ -61,6 +61,8 @@ std::array<Point, 4> rotatedCorners(const AnnotationSpec& spec);
  *
  * Rect/Ellipse は輪郭線の近傍のみ(内部は空けてパン操作を妨げない)、
  * Line/Arrow は線分への距離、Text はバウンディングボックス内部で判定する。
+ * ただし塗りつぶしてある(fillAlpha > 0)Rect/Ellipse は内部も当たりとする
+ * (塗った領域は見た目どおりに掴めるほうが自然なため)。
  *
  * @param[in] spec      対象の注釈。
  * @param[in] imagePos  判定する点(画像座標)。

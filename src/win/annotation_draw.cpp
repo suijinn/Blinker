@@ -22,6 +22,23 @@ DWRITE_TEXT_RANGE toTextRange(const std::string& text, const TextStyleRun& run) 
     return {begin, end > begin ? end - begin : 0};
 }
 
+D2D1_COLOR_F colorFrom(uint32_t rgb, float alpha) {
+    return D2D1::ColorF(((rgb >> 16) & 0xFF) / 255.0f, ((rgb >> 8) & 0xFF) / 255.0f,
+                        (rgb & 0xFF) / 255.0f, alpha);
+}
+
+/// 塗りつぶし用のブラシを作る。塗らない指定(fillAlpha = 0)なら nullptr
+ComPtr<ID2D1SolidColorBrush> createFillBrush(ID2D1RenderTarget* target,
+                                             const AnnotationSpec& spec) {
+    if (spec.fillAlpha <= 0) return nullptr;
+    ComPtr<ID2D1SolidColorBrush> brush;
+    const float alpha = std::clamp(spec.fillAlpha, 0, 255) / 255.0f;
+    if (FAILED(target->CreateSolidColorBrush(colorFrom(spec.fillRGB, alpha), &brush))) {
+        return nullptr;
+    }
+    return brush;
+}
+
 } // namespace
 
 ComPtr<IDWriteTextLayout> createAnnotationTextLayout(IDWriteFactory* dwrite,
@@ -53,6 +70,19 @@ ComPtr<IDWriteTextLayout> createAnnotationTextLayout(IDWriteFactory* dwrite,
     return layout;
 }
 
+D2D1_RECT_F textBoxRect(const AnnotationSpec& spec, IDWriteTextLayout* layout) {
+    const float left = std::min(spec.p1.x, spec.p2.x);
+    const float top = std::min(spec.p1.y, spec.p2.y);
+    DWRITE_TEXT_METRICS metrics{};
+    if (!layout || FAILED(layout->GetMetrics(&metrics))) {
+        return D2D1::RectF(left, top, std::max(spec.p1.x, spec.p2.x),
+                           std::max(spec.p1.y, spec.p2.y));
+    }
+    return D2D1::RectF(left, top,
+                       left + std::max(metrics.widthIncludingTrailingWhitespace, 1.0f),
+                       top + std::max(metrics.height, 1.0f));
+}
+
 void applyTextColorEffects(ID2D1RenderTarget* target, IDWriteTextLayout* layout,
                            const AnnotationSpec& spec) {
     for (const TextStyleRun& run : spec.styles) {
@@ -71,27 +101,42 @@ void applyTextColorEffects(ID2D1RenderTarget* target, IDWriteTextLayout* layout,
 
 void drawAnnotationShape(ID2D1RenderTarget* target, ID2D1Factory* factory,
                          IDWriteFactory* dwrite, const AnnotationSpec& spec,
-                         ID2D1SolidColorBrush* brush) {
+                         ID2D1SolidColorBrush* brush, AnnotationDrawParts parts) {
     const D2D1_POINT_2F p1{spec.p1.x, spec.p1.y};
     const D2D1_POINT_2F p2{spec.p2.x, spec.p2.y};
     const float left = std::min(p1.x, p2.x);
     const float top = std::min(p1.y, p2.y);
     const float right = std::max(p1.x, p2.x);
     const float bottom = std::max(p1.y, p2.y);
+    const bool background = parts != AnnotationDrawParts::Foreground;
+    const bool foreground = parts != AnnotationDrawParts::Background;
+
+    // 塗りつぶしは輪郭線の下に敷く(線の内側半分が塗りの縁を隠す)
+    const ComPtr<ID2D1SolidColorBrush> fill =
+        background ? createFillBrush(target, spec) : nullptr;
 
     switch (spec.kind) {
     case AnnotationSpec::Kind::Rect:
-        target->DrawRectangle(D2D1::RectF(left, top, right, bottom), brush, spec.strokeWidth);
+        if (fill) target->FillRectangle(D2D1::RectF(left, top, right, bottom), fill.Get());
+        if (foreground) {
+            target->DrawRectangle(D2D1::RectF(left, top, right, bottom), brush,
+                                  spec.strokeWidth);
+        }
         break;
-    case AnnotationSpec::Kind::Ellipse:
-        target->DrawEllipse(D2D1::Ellipse(D2D1::Point2F((left + right) / 2, (top + bottom) / 2),
-                                          (right - left) / 2, (bottom - top) / 2),
-                            brush, spec.strokeWidth);
+    case AnnotationSpec::Kind::Ellipse: {
+        const D2D1_ELLIPSE ellipse =
+            D2D1::Ellipse(D2D1::Point2F((left + right) / 2, (top + bottom) / 2),
+                          (right - left) / 2, (bottom - top) / 2);
+        if (fill) target->FillEllipse(ellipse, fill.Get());
+        if (foreground) target->DrawEllipse(ellipse, brush, spec.strokeWidth);
         break;
+    }
     case AnnotationSpec::Kind::Line:
-        target->DrawLine(p1, p2, brush, spec.strokeWidth);
+        // 直線・矢印は面を持たないため背景は無い
+        if (foreground) target->DrawLine(p1, p2, brush, spec.strokeWidth);
         break;
     case AnnotationSpec::Kind::Arrow: {
+        if (!foreground) break;
         const float dx = p2.x - p1.x;
         const float dy = p2.y - p1.y;
         const float length = std::sqrt(dx * dx + dy * dy);
@@ -124,9 +169,23 @@ void drawAnnotationShape(ID2D1RenderTarget* target, ID2D1Factory* factory,
         const ComPtr<IDWriteTextLayout> layout =
             createAnnotationTextLayout(dwrite, spec, 16384.0f);
         if (!layout) break;
-        // 部分書式の色。指定の無い範囲は brush(注釈全体の色)のまま描かれる
-        applyTextColorEffects(target, layout.Get(), spec);
-        target->DrawTextLayout(D2D1::Point2F(left, top), layout.Get(), brush);
+        if (background) {
+            // 塗りつぶし・枠線は実測の箱(ラスタライザが確保する領域と同じ)へ描く
+            const D2D1_RECT_F box = textBoxRect(spec, layout.Get());
+            if (fill) target->FillRectangle(box, fill.Get());
+            if (spec.borderWidth > 0) {
+                ComPtr<ID2D1SolidColorBrush> border;
+                if (SUCCEEDED(target->CreateSolidColorBrush(colorFrom(spec.borderRGB, 1.0f),
+                                                            &border))) {
+                    target->DrawRectangle(box, border.Get(), spec.borderWidth);
+                }
+            }
+        }
+        if (foreground) {
+            // 部分書式の色。指定の無い範囲は brush(注釈全体の色)のまま描かれる
+            applyTextColorEffects(target, layout.Get(), spec);
+            target->DrawTextLayout(D2D1::Point2F(left, top), layout.Get(), brush);
+        }
         break;
     }
     }

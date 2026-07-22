@@ -1,9 +1,11 @@
 #include "core/app.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <format>
+#include <string>
 
 #include "core/annotation_edit.h"
 #include "core/edit.h"
@@ -25,6 +27,20 @@ MenuItem menuSeparator() {
     MenuItem item;
     item.separator = true;
     return item;
+}
+
+// 塗りつぶしの不透明度の選択肢(0-255)。0 は塗らない = 完全な透過
+constexpr std::array<int, 5> kFillAlphaChoices{0, 64, 128, 191, 255};
+// テキストの枠線幅の選択肢(画面px基準)。0 は枠線なし
+constexpr std::array<int, 6> kBorderWidthChoices{0, 1, 2, 3, 5, 8};
+
+std::string fillAlphaLabel(int alpha) {
+    if (alpha <= 0) return "なし (透明)";
+    return std::format("{}%", std::lround(alpha * 100.0 / 255.0));
+}
+
+std::string borderWidthLabel(int width) {
+    return width <= 0 ? std::string("なし") : std::format("{}px", width);
 }
 
 } // namespace
@@ -53,6 +69,11 @@ void App::applyConfig(const Config& config) {
         config.getInt("edit", "stroke_width", static_cast<int>(editStrokeWidth_)), 1, 100));
     editFontSize_ = static_cast<float>(
         std::clamp(config.getInt("edit", "font_size", static_cast<int>(editFontSize_)), 6, 200));
+    editFillRGB_ = config.getColorRGB("edit", "fill_color", editFillRGB_);
+    editFillAlpha_ = std::clamp(config.getInt("edit", "fill_alpha", editFillAlpha_), 0, 255);
+    editBorderRGB_ = config.getColorRGB("edit", "border_color", editBorderRGB_);
+    editBorderWidth_ = static_cast<float>(std::clamp(
+        config.getInt("edit", "border_width", static_cast<int>(editBorderWidth_)), 0, 100));
     applyLayout();
 }
 
@@ -484,6 +505,35 @@ std::vector<MenuItem> App::buildEditMenu(std::vector<EditMenuEntry>& entries) co
 
     items.push_back(
         leaf(std::format("色の変更... (#{:06X})", editColorRGB_), {Action::PickColor}));
+
+    // 塗りつぶし(矩形・楕円・テキスト)。不透明度 0 で塗らない = 背景が透ける
+    MenuItem fill;
+    fill.text = std::format("塗りつぶし ({})", fillAlphaLabel(editFillAlpha_));
+    for (const int a : kFillAlphaChoices) {
+        fill.children.push_back(
+            leaf(fillAlphaLabel(a),
+                 {Action::FillAlpha, AnnotationSpec::Kind::Rect, static_cast<float>(a)},
+                 a == editFillAlpha_));
+    }
+    fill.children.push_back(menuSeparator());
+    fill.children.push_back(leaf(std::format("色の変更... (#{:06X})", editFillRGB_),
+                                 {Action::PickFillColor}));
+    items.push_back(std::move(fill));
+
+    // 枠線はテキストボックス用(矩形・楕円の輪郭は「線の太さ」「色の変更」で指定する)
+    MenuItem border;
+    border.text = std::format("テキストの枠線 ({})",
+                              borderWidthLabel(static_cast<int>(editBorderWidth_)));
+    for (const int w : kBorderWidthChoices) {
+        border.children.push_back(
+            leaf(borderWidthLabel(w),
+                 {Action::BorderWidth, AnnotationSpec::Kind::Rect, static_cast<float>(w)},
+                 static_cast<float>(w) == editBorderWidth_));
+    }
+    border.children.push_back(menuSeparator());
+    border.children.push_back(leaf(std::format("色の変更... (#{:06X})", editBorderRGB_),
+                                   {Action::PickBorderColor}));
+    items.push_back(std::move(border));
     return items;
 }
 
@@ -539,6 +589,35 @@ std::vector<MenuItem> App::buildObjectMenu(const AnnotationSpec& spec,
     }
     items.push_back(
         leaf(std::format("色の変更... (#{:06X})", spec.colorRGB), {Action::PickColor}));
+
+    // 塗りつぶしは面を持つ種別だけ(直線・矢印には出さない)
+    if (spec.kind != AnnotationSpec::Kind::Line && spec.kind != AnnotationSpec::Kind::Arrow) {
+        MenuItem fill;
+        fill.text = std::format("塗りつぶし ({})", fillAlphaLabel(spec.fillAlpha));
+        for (const int a : kFillAlphaChoices) {
+            fill.children.push_back(leaf(fillAlphaLabel(a),
+                                         {Action::FillAlpha, static_cast<float>(a)},
+                                         a == spec.fillAlpha));
+        }
+        fill.children.push_back(menuSeparator());
+        fill.children.push_back(leaf(std::format("色の変更... (#{:06X})", spec.fillRGB),
+                                     {Action::PickFillColor}));
+        items.push_back(std::move(fill));
+    }
+    if (spec.kind == AnnotationSpec::Kind::Text) {
+        MenuItem border;
+        border.text = std::format("枠線 ({})",
+                                  borderWidthLabel(static_cast<int>(std::lround(spec.borderWidth))));
+        for (const int w : kBorderWidthChoices) {
+            border.children.push_back(leaf(borderWidthLabel(w),
+                                           {Action::BorderWidth, static_cast<float>(w)},
+                                           static_cast<float>(w) == spec.borderWidth));
+        }
+        border.children.push_back(menuSeparator());
+        border.children.push_back(leaf(std::format("色の変更... (#{:06X})", spec.borderRGB),
+                                       {Action::PickBorderColor}));
+        items.push_back(std::move(border));
+    }
     return items;
 }
 
@@ -588,6 +667,52 @@ void App::showObjectMenu(Point screenPos) {
         if (!rgb || *rgb == spec.colorRGB) return;
         pushUndo();
         spec.colorRGB = *rgb;
+        break;
+    }
+    case ObjectMenuEntry::Action::FillAlpha:
+        if (spec.fillAlpha == static_cast<int>(entry.value)) return;
+        pushUndo();
+        spec.fillAlpha = static_cast<int>(entry.value);
+        break;
+    case ObjectMenuEntry::Action::PickFillColor: {
+        const auto rgb = host_.showColorPicker(spec.fillRGB);
+        if (!rgb || *rgb == spec.fillRGB) return;
+        pushUndo();
+        spec.fillRGB = *rgb;
+        // 色だけ選んで塗られないままだと操作が空振りに見えるため、不透明で塗り始める
+        if (spec.fillAlpha == 0) spec.fillAlpha = 255;
+        break;
+    }
+    case ObjectMenuEntry::Action::BorderWidth: {
+        if (spec.borderWidth == entry.value) return;
+        // 枠線の太さで実測境界(余白)が変わるため測り直す
+        AnnotationSpec updated = spec;
+        updated.borderWidth = entry.value;
+        if (!measureTextExtent(updated)) {
+            showMessage("描画に失敗しました");
+            return;
+        }
+        pushUndo();
+        spec = std::move(updated);
+        break;
+    }
+    case ObjectMenuEntry::Action::PickBorderColor: {
+        const auto rgb = host_.showColorPicker(spec.borderRGB);
+        if (!rgb) return;
+        AnnotationSpec updated = spec;
+        updated.borderRGB = *rgb;
+        // 枠線なしのまま色だけ変えても見た目が変わらないため、既定の太さで引き始める
+        if (updated.borderWidth <= 0) {
+            updated.borderWidth = 1.0f;
+            if (!measureTextExtent(updated)) {
+                showMessage("描画に失敗しました");
+                return;
+            }
+        } else if (*rgb == spec.borderRGB) {
+            return;
+        }
+        pushUndo();
+        spec = std::move(updated);
         break;
     }
     }
@@ -653,6 +778,25 @@ bool App::applyEditChoice(const EditMenuEntry& entry) {
     case EditMenuEntry::Action::PickColor:
         if (const auto rgb = host_.showColorPicker(editColorRGB_)) editColorRGB_ = *rgb;
         return false;
+    case EditMenuEntry::Action::FillAlpha:
+        editFillAlpha_ = static_cast<int>(entry.value);
+        return false;
+    case EditMenuEntry::Action::PickFillColor:
+        if (const auto rgb = host_.showColorPicker(editFillRGB_)) {
+            editFillRGB_ = *rgb;
+            // 色を選んだのに塗られないままにならないよう、塗りなしなら不透明で始める
+            if (editFillAlpha_ == 0) editFillAlpha_ = 255;
+        }
+        return false;
+    case EditMenuEntry::Action::BorderWidth:
+        editBorderWidth_ = entry.value;
+        return false;
+    case EditMenuEntry::Action::PickBorderColor:
+        if (const auto rgb = host_.showColorPicker(editBorderRGB_)) {
+            editBorderRGB_ = *rgb;
+            if (editBorderWidth_ <= 0) editBorderWidth_ = 1.0f;
+        }
+        return false;
     }
     return true;
 }
@@ -685,10 +829,14 @@ void App::applyAnnotation(AnnotationSpec::Kind kind) {
     spec.p1 = selStartImage_;
     spec.p2 = selEndImage_;
     spec.colorRGB = editColorRGB_;
-    // 線幅・文字サイズは「画面上での見た目」基準で画像座標へ換算する
+    spec.fillRGB = editFillRGB_;
+    spec.fillAlpha = editFillAlpha_;
+    spec.borderRGB = editBorderRGB_;
+    // 線幅・文字サイズ・枠線幅は「画面上での見た目」基準で画像座標へ換算する
     const float zoom = std::max(viewport_.zoom(), 0.001f);
     spec.strokeWidth = std::max(1.0f, editStrokeWidth_ / zoom);
     spec.fontSize = std::max(4.0f, editFontSize_ / zoom);
+    spec.borderWidth = editBorderWidth_ > 0 ? std::max(1.0f, editBorderWidth_ / zoom) : 0.0f;
     if (kind == AnnotationSpec::Kind::Text) {
         // ドラッグした矩形を空のテキストボックスにして、その場で入力を始める。
         // 内容が空のまま終われば beginTextEdit の created により削除される
@@ -715,11 +863,9 @@ bool App::measureTextExtent(AnnotationSpec& spec) {
     probe.angleDeg = 0;
     const AnnotationOverlay overlay = rasterizer_.rasterize(probe);
     if (!overlay.image) return false;
-    constexpr float kTextMargin = 2.0f;  // ラスタライザのテキスト用余白と同じ
-    const float w =
-        std::max(static_cast<float>(overlay.image->width) - kTextMargin * 2, 1.0f);
-    const float h =
-        std::max(static_cast<float>(overlay.image->height) - kTextMargin * 2, 1.0f);
+    const float margin = textOverlayMargin(spec);  // ラスタライザのテキスト用余白と同じ
+    const float w = std::max(static_cast<float>(overlay.image->width) - margin * 2, 1.0f);
+    const float h = std::max(static_cast<float>(overlay.image->height) - margin * 2, 1.0f);
     const Point origin{std::min(spec.p1.x, spec.p2.x), std::min(spec.p1.y, spec.p2.y)};
     spec.p1 = origin;
     spec.p2 = {origin.x + w, origin.y + h};
@@ -731,9 +877,8 @@ bool App::measureTextHeight(AnnotationSpec& spec) {
     probe.angleDeg = 0;
     const AnnotationOverlay overlay = rasterizer_.rasterize(probe);
     if (!overlay.image) return false;
-    constexpr float kTextMargin = 2.0f;  // ラスタライザのテキスト用余白と同じ
-    const float h =
-        std::max(static_cast<float>(overlay.image->height) - kTextMargin * 2, 1.0f);
+    const float margin = textOverlayMargin(spec);  // ラスタライザのテキスト用余白と同じ
+    const float h = std::max(static_cast<float>(overlay.image->height) - margin * 2, 1.0f);
     spec.p2.y = std::min(spec.p1.y, spec.p2.y) + h;
     spec.p1.y = std::min(spec.p1.y, spec.p2.y);
     return true;
