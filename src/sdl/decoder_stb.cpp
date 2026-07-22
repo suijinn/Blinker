@@ -1,6 +1,7 @@
 #include "sdl/decoder_stb.h"
 
 #include <cstdio>
+#include <format>
 
 #include "core/unicode.h"
 #include "stb/stb_image.h"
@@ -30,13 +31,21 @@ std::shared_ptr<DecodedImage> imageFromRgba(const stbi_uc* data, int w, int h) {
 
 } // namespace
 
-std::shared_ptr<DecodedImage> DecoderStb::decode(const std::filesystem::path& path) {
+std::shared_ptr<DecodedImage> DecoderStb::decode(const std::filesystem::path& path,
+                                                 std::string* error) {
     // POSIX のパスはネイティブが UTF-8 のためそのまま fopen できる
     int w = 0, h = 0, comp = 0;
     stbi_uc* data = stbi_load(pathToUtf8(path).c_str(), &w, &h, &comp, 4);
-    if (!data) return nullptr;
+    if (!data) {
+        if (error) {
+            const char* reason = stbi_failure_reason();
+            *error = std::format("デコード失敗 ({})", reason ? reason : "原因不明");
+        }
+        return nullptr;
+    }
     auto image = imageFromRgba(data, w, h);
     stbi_image_free(data);
+    if (!image && error) *error = std::format("PBGRA変換 ({} x {})", w, h);
     return image;
 }
 

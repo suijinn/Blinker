@@ -17,16 +17,18 @@ namespace blinker {
  *
  * @todo EXIF 回転に未対応(stb_image が EXIF を読まないため)。スマートフォンで
  *       撮影した JPEG が横倒しで表示される。EXIF Orientation を自前で読んで
- *       デコード後に回転させる必要がある。
+ *       core/exif の `applyExifOrientation` に渡す必要がある。
  */
 class DecoderStb final : public IImageDecoder {
 public:
     /**
      * @brief 画像ファイルを stb_image でデコードする。
-     * @param[in] path デコードする画像のパス。
+     * @param[in]  path  デコードする画像のパス。
+     * @param[out] error 非 nullptr のとき、失敗時に stb_image の失敗理由が入る。
      * @return デコード結果(32bpp PBGRA)。非対応形式・不正データなら nullptr。
      */
-    std::shared_ptr<DecodedImage> decode(const std::filesystem::path& path) override;
+    std::shared_ptr<DecodedImage> decode(const std::filesystem::path& path,
+                                         std::string* error = nullptr) override;
 };
 
 /**

@@ -30,6 +30,7 @@ add_library(blinker_core STATIC
     src/core/config.cpp
     src/core/dib.cpp
     src/core/edit.cpp
+    src/core/exif.cpp
     src/core/image_cache.cpp
     src/core/image_list.cpp
     src/core/keymap.cpp

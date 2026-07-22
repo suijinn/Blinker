@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <memory>
+#include <string>
 #include <vector>
 
 /**
@@ -41,10 +42,15 @@ public:
 
     /**
      * @brief 画像ファイルをデコードする。
-     * @param[in] path デコードする画像のパス。
+     * @param[in]  path  デコードする画像のパス。
+     * @param[out] error 非 nullptr のとき、失敗した場合に限り原因を表す短い UTF-8 文字列
+     *                   (失敗した段階とプラットフォーム固有のエラーコード。例:
+     *                   `"PBGRA変換 (0x88982F50)"`)が入る。成功時は変更しない。
+     *                   ステータスバーへそのまま表示される想定。
      * @return デコード結果(32bpp PBGRA)。失敗時は nullptr。
      */
-    virtual std::shared_ptr<DecodedImage> decode(const std::filesystem::path& path) = 0;
+    virtual std::shared_ptr<DecodedImage> decode(const std::filesystem::path& path,
+                                                 std::string* error = nullptr) = 0;
 };
 
 } // namespace blinker

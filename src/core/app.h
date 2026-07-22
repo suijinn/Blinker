@@ -647,6 +647,7 @@ private:
     std::filesystem::path displayedPath_;  ///< current_ がどのパスの画像か
     bool clipboardImage_ = false;  ///< current_ が貼り付け画像(フォルダ一覧とは独立)
     bool loadFailed_ = false;
+    std::string loadError_;  ///< デコード失敗の理由(段階と HRESULT)。ステータスバーに出す
     uint32_t backgroundRGB_ = 0x202020;
     int prefetchRadius_ = 2;
     SizeF clientSize_{};  ///< クライアント領域全体(サイドバー + ビューポート + ステータスバー)

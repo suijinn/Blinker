@@ -20,13 +20,16 @@ ImageCache::~ImageCache() {
     worker_.join();
 }
 
-std::shared_ptr<DecodedImage> ImageCache::tryGet(const fs::path& path, bool* failed) {
+std::shared_ptr<DecodedImage> ImageCache::tryGet(const fs::path& path, bool* failed,
+                                                 std::string* error) {
     if (failed) *failed = false;
+    if (error) error->clear();
     std::lock_guard lock(mutex_);
     const auto it = entries_.find(path);
     if (it == entries_.end()) return nullptr;
     lru_.splice(lru_.begin(), lru_, it->second.lruIt);  // 最近使用に更新
     if (failed) *failed = it->second.failed;
+    if (error) *error = it->second.error;
     return it->second.image;
 }
 
@@ -69,12 +72,13 @@ void ImageCache::workerLoop() {
             std::erase(urgent_, task);
         }
 
-        std::shared_ptr<DecodedImage> image = decoder_.decode(task);
+        std::string error;
+        std::shared_ptr<DecodedImage> image = decoder_.decode(task, &error);
 
         std::function<void(const fs::path&)> callback;
         {
             std::lock_guard lock(mutex_);
-            storeLocked(task, std::move(image));
+            storeLocked(task, std::move(image), std::move(error));
             callback = onDecoded_;
         }
         if (callback) callback(task);
@@ -91,11 +95,13 @@ std::filesystem::path ImageCache::nextTaskLocked() const {
     return {};
 }
 
-void ImageCache::storeLocked(const fs::path& path, std::shared_ptr<DecodedImage> image) {
+void ImageCache::storeLocked(const fs::path& path, std::shared_ptr<DecodedImage> image,
+                             std::string error) {
     if (entries_.contains(path)) return;
     lru_.push_front(path);
     Entry entry;
     entry.failed = (image == nullptr);
+    if (entry.failed) entry.error = std::move(error);
     entry.image = std::move(image);
     entry.lruIt = lru_.begin();
     if (entry.image) totalBytes_ += entry.image->byteSize();

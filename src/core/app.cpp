@@ -87,6 +87,7 @@ void App::openPath(const fs::path& path) {
     current_.reset();
     displayedPath_.clear();
     loadFailed_ = false;
+    loadError_.clear();
     refreshCurrent();
 }
 
@@ -173,6 +174,7 @@ void App::execute(Command command) {
             clipboardImage_ = true;
             displayedPath_.clear();  // 一覧に戻ったとき必ず再取得させる
             loadFailed_ = false;
+            loadError_.clear();
             viewport_.setImage(
                 {static_cast<float>(current_->width), static_cast<float>(current_->height)});
             updateTitle();
@@ -1402,26 +1404,31 @@ void App::refreshCurrent() {
         current_.reset();
         displayedPath_.clear();
         loadFailed_ = false;
+        loadError_.clear();
         updateTitle();
         host_.requestRedraw();
         return;
     }
     const fs::path& path = list_.current();
     bool failed = false;
-    if (auto image = cache_.tryGet(path, &failed)) {
+    std::string error;
+    if (auto image = cache_.tryGet(path, &failed, &error)) {
         current_ = std::move(image);
         displayedPath_ = path;
         loadFailed_ = false;
+        loadError_.clear();
         viewport_.setImage(
             {static_cast<float>(current_->width), static_cast<float>(current_->height)});
     } else if (failed) {
         current_.reset();
         displayedPath_ = path;
         loadFailed_ = true;
+        loadError_ = std::move(error);
     } else {
         // デコード待ち。前の画像を表示したまま onDecodeCompleted を待つ
         cache_.requestNow(path);
         loadFailed_ = false;
+        loadError_.clear();
     }
     scrollSidebarToCurrent();
     updatePrefetch();
@@ -1529,7 +1536,9 @@ StatusBarView App::statusBar() const {
     } else if (current_) {
         bar.leftText = std::format("{} x {} px", current_->width, current_->height);
     } else if (loadFailed_) {
-        bar.leftText = "読み込み失敗";
+        // 失敗した段階とコードまで出す(現物が手元にない不具合を切り分けられるように)
+        bar.leftText = loadError_.empty() ? "読み込み失敗"
+                                          : std::format("読み込み失敗: {}", loadError_);
     }
     bar.rightText = hoverText_;
     return bar;
