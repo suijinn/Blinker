@@ -57,6 +57,9 @@ if(WIN32)
     set(BLINKER_ICON_PATH "${CMAKE_SOURCE_DIR}/assets/blinker.ico")
     configure_file(src/win/blinker.rc.in
         ${CMAKE_BINARY_DIR}/generated/win/blinker.rc @ONLY)
+    # .rc は .ico を参照するだけなので、明示しないと差し替えても再ビルドされない
+    set_source_files_properties(${CMAKE_BINARY_DIR}/generated/win/blinker.rc
+        PROPERTIES OBJECT_DEPENDS "${BLINKER_ICON_PATH}")
 
     add_executable(blinker WIN32
         src/win/main_win.cpp
