@@ -6,8 +6,11 @@
 #include <wrl/client.h>
 
 #include <algorithm>
+#include <format>
 #include <new>
+#include <string_view>
 
+#include "core/exif.h"
 #include "win/wic_factory.h"
 
 namespace blinker {
@@ -17,24 +20,6 @@ using Microsoft::WRL::ComPtr;
 
 // D2D の ID2D1Bitmap が確実に扱える上限に収める
 constexpr UINT kMaxDimension = 16384;
-
-// EXIF Orientation (1-8) → WIC の変換オプション
-WICBitmapTransformOptions transformFromOrientation(UINT16 orientation) {
-    switch (orientation) {
-    case 2: return WICBitmapTransformFlipHorizontal;
-    case 3: return WICBitmapTransformRotate180;
-    case 4: return WICBitmapTransformFlipVertical;
-    case 5:
-        return static_cast<WICBitmapTransformOptions>(WICBitmapTransformRotate90 |
-                                                      WICBitmapTransformFlipHorizontal);
-    case 6: return WICBitmapTransformRotate90;
-    case 7:
-        return static_cast<WICBitmapTransformOptions>(WICBitmapTransformRotate270 |
-                                                      WICBitmapTransformFlipHorizontal);
-    case 8: return WICBitmapTransformRotate270;
-    default: return WICBitmapTransformRotate0;
-    }
-}
 
 UINT16 readOrientation(IWICBitmapFrameDecode* frame) {
     ComPtr<IWICMetadataQueryReader> reader;
@@ -57,36 +42,63 @@ UINT16 readOrientation(IWICBitmapFrameDecode* frame) {
     return orientation;
 }
 
+// 失敗した段階とコードを「段階 (0x........)」の形で記録する。
+// 現物が手元にない不具合を切り分けられるよう、必ずどの段階で落ちたかを残す
+void setError(std::string* error, std::string_view stage, HRESULT hr) {
+    if (error) *error = std::format("{} (0x{:08X})", stage, static_cast<uint32_t>(hr));
+}
+
+/// コードを伴わない失敗(前提条件・上限超過など)を記録する。
+void setError(std::string* error, const std::string& reason) {
+    if (error) *error = reason;
+}
+
 } // namespace
 
-std::shared_ptr<DecodedImage> DecoderWic::decode(const std::filesystem::path& path) {
+std::shared_ptr<DecodedImage> DecoderWic::decode(const std::filesystem::path& path,
+                                                 std::string* error) {
     IWICImagingFactory* factory = wicFactoryForThisThread();
-    if (!factory) return nullptr;
+    if (!factory) {
+        setError(error, "WICファクトリ生成");
+        return nullptr;
+    }
 
     ComPtr<IWICBitmapDecoder> decoder;
-    if (FAILED(factory->CreateDecoderFromFilename(path.c_str(), nullptr, GENERIC_READ,
-                                                  WICDecodeMetadataCacheOnDemand, &decoder))) {
+    HRESULT hr = factory->CreateDecoderFromFilename(path.c_str(), nullptr, GENERIC_READ,
+                                                    WICDecodeMetadataCacheOnDemand, &decoder);
+    if (FAILED(hr)) {
+        // 対応するコーデックが無い(Windows 11 の HEIF/WebP/AVIF 拡張が未導入など)か、
+        // ファイルが開けない・データが壊れている場合にここへ来る
+        setError(error, "デコーダ生成(未対応形式かデータ破損)", hr);
         return nullptr;
     }
 
     ComPtr<IWICBitmapFrameDecode> frame;
-    if (FAILED(decoder->GetFrame(0, &frame))) return nullptr;
+    hr = decoder->GetFrame(0, &frame);
+    if (FAILED(hr)) {
+        setError(error, "フレーム取得", hr);
+        return nullptr;
+    }
+
+    // EXIF 回転は「デコードが終わってから」自前で行う(core/exif の applyExifOrientation)。
+    // IWICBitmapFlipRotator をコーデックへ直結すると、90/270 度回転では出力行ごとに
+    // ソースへ細い矩形を要求するためコーデックが何千回もシークし直し、大きな JPEG
+    // (iPhone の 12〜24MP 写真など)で事実上停止する
+    const UINT16 orientation = readOrientation(frame.Get());
 
     ComPtr<IWICBitmapSource> source = frame;
 
-    // EXIF 回転を適用(スマホ写真などを正しい向きで表示する)
-    const UINT16 orientation = readOrientation(frame.Get());
-    if (orientation > 1) {
-        ComPtr<IWICBitmapFlipRotator> rotator;
-        if (SUCCEEDED(factory->CreateBitmapFlipRotator(&rotator)) &&
-            SUCCEEDED(rotator->Initialize(source.Get(), transformFromOrientation(orientation)))) {
-            source = rotator;
-        }
-    }
-
     UINT width = 0;
     UINT height = 0;
-    if (FAILED(source->GetSize(&width, &height)) || width == 0 || height == 0) return nullptr;
+    hr = source->GetSize(&width, &height);
+    if (FAILED(hr)) {
+        setError(error, "サイズ取得", hr);
+        return nullptr;
+    }
+    if (width == 0 || height == 0) {
+        setError(error, std::format("サイズが不正 ({} x {})", width, height));
+        return nullptr;
+    }
 
     // 巨大画像は描画側の上限に収まるよう縮小してから取り込む
     if (width > kMaxDimension || height > kMaxDimension) {
@@ -95,9 +107,15 @@ std::shared_ptr<DecodedImage> DecoderWic::decode(const std::filesystem::path& pa
         const UINT newWidth = std::max(1u, static_cast<UINT>(width * scale));
         const UINT newHeight = std::max(1u, static_cast<UINT>(height * scale));
         ComPtr<IWICBitmapScaler> scaler;
-        if (FAILED(factory->CreateBitmapScaler(&scaler)) ||
-            FAILED(scaler->Initialize(source.Get(), newWidth, newHeight,
-                                      WICBitmapInterpolationModeFant))) {
+        hr = factory->CreateBitmapScaler(&scaler);
+        if (SUCCEEDED(hr)) {
+            hr = scaler->Initialize(source.Get(), newWidth, newHeight,
+                                    WICBitmapInterpolationModeFant);
+        }
+        if (FAILED(hr)) {
+            setError(error,
+                     std::format("縮小 {} x {} → {} x {}", width, height, newWidth, newHeight),
+                     hr);
             return nullptr;
         }
         source = scaler;
@@ -107,26 +125,35 @@ std::shared_ptr<DecodedImage> DecoderWic::decode(const std::filesystem::path& pa
 
     // D2D が直接扱える 32bpp PBGRA (事前乗算) へ変換
     ComPtr<IWICFormatConverter> converter;
-    if (FAILED(factory->CreateFormatConverter(&converter)) ||
-        FAILED(converter->Initialize(source.Get(), GUID_WICPixelFormat32bppPBGRA,
-                                     WICBitmapDitherTypeNone, nullptr, 0.0,
-                                     WICBitmapPaletteTypeCustom))) {
+    hr = factory->CreateFormatConverter(&converter);
+    if (SUCCEEDED(hr)) {
+        hr = converter->Initialize(source.Get(), GUID_WICPixelFormat32bppPBGRA,
+                                   WICBitmapDitherTypeNone, nullptr, 0.0,
+                                   WICBitmapPaletteTypeCustom);
+    }
+    if (FAILED(hr)) {
+        setError(error, "PBGRA変換", hr);
         return nullptr;
     }
 
+    const size_t byteSize = static_cast<size_t>(width) * height * 4;
     try {
         auto image = std::make_shared<DecodedImage>();
         image->width = width;
         image->height = height;
         const UINT stride = width * 4;
-        image->pixels.resize(static_cast<size_t>(stride) * height);
-        if (FAILED(converter->CopyPixels(nullptr, stride,
-                                         static_cast<UINT>(image->pixels.size()),
-                                         image->pixels.data()))) {
+        image->pixels.resize(byteSize);
+        hr = converter->CopyPixels(nullptr, stride, static_cast<UINT>(image->pixels.size()),
+                                   image->pixels.data());
+        if (FAILED(hr)) {
+            setError(error, std::format("ピクセル取得 ({} x {})", width, height), hr);
             return nullptr;
         }
+        applyExifOrientation(*image, orientation);  // 失敗しても向きが元のまま残るだけ
         return image;
     } catch (const std::bad_alloc&) {
+        setError(error, std::format("メモリ確保に失敗 ({} x {}, {} MB)", width, height,
+                                    byteSize >> 20));
         return nullptr;
     }
 }

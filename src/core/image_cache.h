@@ -62,10 +62,12 @@ public:
      * @param[in]  path   取得する画像のパス。
      * @param[out] failed 非 nullptr のとき、過去にデコード失敗したパスなら true が入る。
      *                    それ以外は false。
+     * @param[out] error  非 nullptr のとき、失敗していればデコーダが返した理由が入る。
+     *                    失敗していない場合は空文字列になる。
      * @return デコード済み画像。未デコード・失敗時は nullptr。
      */
     std::shared_ptr<DecodedImage> tryGet(const std::filesystem::path& path,
-                                         bool* failed = nullptr);
+                                         bool* failed = nullptr, std::string* error = nullptr);
 
     /**
      * @brief 表示対象を最優先でデコード予約する。
@@ -91,6 +93,7 @@ private:
     struct Entry {
         std::shared_ptr<DecodedImage> image;  ///< デコード結果。失敗時は nullptr
         bool failed = false;                  ///< デコードに失敗したパスか
+        std::string error;                    ///< 失敗理由(成功時は空)
         std::list<std::filesystem::path>::iterator lruIt;  ///< lru_ 内の自分の位置
     };
 
@@ -108,9 +111,11 @@ private:
      * @brief デコード結果をキャッシュへ格納する。
      * @param[in] path  格納するパス。
      * @param[in] image デコード結果。nullptr なら失敗として記録する。
+     * @param[in] error 失敗理由(成功時は空文字列)。
      * @pre mutex_ をロック済みであること。
      */
-    void storeLocked(const std::filesystem::path& path, std::shared_ptr<DecodedImage> image);
+    void storeLocked(const std::filesystem::path& path, std::shared_ptr<DecodedImage> image,
+                     std::string error);
 
     /**
      * @brief 上限を超えた分を LRU 順に破棄する。

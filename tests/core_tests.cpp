@@ -14,6 +14,7 @@
 #include "core/config.h"
 #include "core/dib.h"
 #include "core/edit.h"
+#include "core/exif.h"
 #include "core/geometry.h"
 #include "core/image_cache.h"
 #include "core/image_list.h"
@@ -197,6 +198,116 @@ void testConfig() {
     CHECK(cfg.get("keys", "missing", "def") == "def");
     CHECK(cfg.getInt("view", "missing", 42) == 42);
     CHECK(cfg.getColorRGB("view", "fit_upscale", 7) == 7u);  // 色として不正 → 既定値
+}
+
+// 3x2 のテスト画像。各画素の R に連番 (10,11,12 / 20,21,22) を入れて位置を追跡する
+blinker::DecodedImage makeOrientImage() {
+    blinker::DecodedImage img;
+    img.width = 3;
+    img.height = 2;
+    img.pixels.resize(3 * 2 * 4);
+    for (uint32_t y = 0; y < 2; ++y) {
+        for (uint32_t x = 0; x < 3; ++x) {
+            uint8_t* p = img.pixels.data() + (y * 3 + x) * 4;
+            p[0] = 0;
+            p[1] = 0;
+            p[2] = static_cast<uint8_t>((y + 1) * 10 + x);  // R に「行,列」を符号化
+            p[3] = 255;
+        }
+    }
+    return img;
+}
+
+// 画像の R 成分を左上から行優先で並べた列にする
+std::vector<uint8_t> redsOf(const blinker::DecodedImage& img) {
+    std::vector<uint8_t> out;
+    for (size_t i = 0; i < static_cast<size_t>(img.width) * img.height; ++i) {
+        out.push_back(img.pixels[i * 4 + 2]);
+    }
+    return out;
+}
+
+void testApplyExifOrientation() {
+    using blinker::applyExifOrientation;
+    // 元画像 (3x2):  10 11 12
+    //                20 21 22
+    const std::vector<uint8_t> original = {10, 11, 12, 20, 21, 22};
+    CHECK(redsOf(makeOrientImage()) == original);
+
+    // 1 と範囲外は何もしない
+    for (const uint16_t o : {uint16_t{0}, uint16_t{1}, uint16_t{9}}) {
+        auto img = makeOrientImage();
+        CHECK(!applyExifOrientation(img, o));
+        CHECK(img.width == 3 && img.height == 2);
+        CHECK(redsOf(img) == original);
+    }
+
+    // 2: 左右反転 → 12 11 10 / 22 21 20
+    auto img2 = makeOrientImage();
+    CHECK(applyExifOrientation(img2, 2));
+    CHECK(img2.width == 3 && img2.height == 2);
+    CHECK(redsOf(img2) == std::vector<uint8_t>({12, 11, 10, 22, 21, 20}));
+
+    // 3: 180 度 → 22 21 20 / 12 11 10
+    auto img3 = makeOrientImage();
+    CHECK(applyExifOrientation(img3, 3));
+    CHECK(img3.width == 3 && img3.height == 2);
+    CHECK(redsOf(img3) == std::vector<uint8_t>({22, 21, 20, 12, 11, 10}));
+
+    // 4: 上下反転 → 20 21 22 / 10 11 12
+    auto img4 = makeOrientImage();
+    CHECK(applyExifOrientation(img4, 4));
+    CHECK(redsOf(img4) == std::vector<uint8_t>({20, 21, 22, 10, 11, 12}));
+
+    // 5〜8 は縦横が入れ替わり 2x3 になる
+    // 5: 主対角で転置 → 10 20 / 11 21 / 12 22
+    auto img5 = makeOrientImage();
+    CHECK(applyExifOrientation(img5, 5));
+    CHECK(img5.width == 2 && img5.height == 3);
+    CHECK(redsOf(img5) == std::vector<uint8_t>({10, 20, 11, 21, 12, 22}));
+
+    // 6: 時計回り 90 度 → 左下が左上へ来る → 20 10 / 21 11 / 22 12
+    auto img6 = makeOrientImage();
+    CHECK(applyExifOrientation(img6, 6));
+    CHECK(img6.width == 2 && img6.height == 3);
+    CHECK(redsOf(img6) == std::vector<uint8_t>({20, 10, 21, 11, 22, 12}));
+
+    // 7: 副対角で転置 → 22 12 / 21 11 / 20 10
+    auto img7 = makeOrientImage();
+    CHECK(applyExifOrientation(img7, 7));
+    CHECK(redsOf(img7) == std::vector<uint8_t>({22, 12, 21, 11, 20, 10}));
+
+    // 8: 時計回り 270 度 → 12 22 / 11 21 / 10 20
+    auto img8 = makeOrientImage();
+    CHECK(applyExifOrientation(img8, 8));
+    CHECK(img8.width == 2 && img8.height == 3);
+    CHECK(redsOf(img8) == std::vector<uint8_t>({12, 22, 11, 21, 10, 20}));
+
+    // 90 度を 4 回で元に戻る(回転の整合性)
+    auto round = makeOrientImage();
+    for (int i = 0; i < 4; ++i) CHECK(applyExifOrientation(round, 6));
+    CHECK(round.width == 3 && round.height == 2);
+    CHECK(redsOf(round) == original);
+
+    // 反転・転置は 2 回で元に戻る
+    for (const uint16_t o : {uint16_t{2}, uint16_t{3}, uint16_t{4}, uint16_t{5}, uint16_t{7}}) {
+        auto img = makeOrientImage();
+        CHECK(applyExifOrientation(img, o));
+        CHECK(applyExifOrientation(img, o));
+        CHECK(img.width == 3 && img.height == 2);
+        CHECK(redsOf(img) == original);
+    }
+
+    // 壊れた入力(ピクセル数が足りない)では何もしない
+    blinker::DecodedImage broken;
+    broken.width = 100;
+    broken.height = 100;
+    broken.pixels.resize(16);
+    CHECK(!applyExifOrientation(broken, 6));
+    CHECK(broken.width == 100 && broken.height == 100);
+
+    blinker::DecodedImage empty;
+    CHECK(!applyExifOrientation(empty, 6));
 }
 
 void testImageList() {
@@ -420,8 +531,26 @@ void testPixelConvert() {
 // 1x1 のダミー画像を返すテスト用デコーダ。"fail" を含むパスは失敗させる
 class FakeDecoder final : public IImageDecoder {
 public:
-    std::shared_ptr<DecodedImage> decode(const std::filesystem::path& path) override {
-        if (pathToUtf8(path).find("fail") != std::string::npos) return nullptr;
+    std::shared_ptr<DecodedImage> decode(const std::filesystem::path& path,
+                                         std::string* error = nullptr) override {
+        if (pathToUtf8(path).find("fail") != std::string::npos) {
+            if (error) *error = "ピクセル取得 (0x88982F50)";
+            return nullptr;
+        }
+        auto image = std::make_shared<DecodedImage>();
+        image->width = 1;
+        image->height = 1;
+        image->pixels = {0, 0, 0, 255};
+        return image;
+    }
+};
+
+// デコードに時間がかかるデコーダ。openPath の同期取得に間に合わないケースを作る
+class SlowDecoder final : public IImageDecoder {
+public:
+    std::shared_ptr<DecodedImage> decode(const std::filesystem::path&,
+                                         std::string* = nullptr) override {
+        std::this_thread::sleep_for(std::chrono::milliseconds(300));
         auto image = std::make_shared<DecodedImage>();
         image->width = 1;
         image->height = 1;
@@ -453,16 +582,22 @@ void testImageCache() {
     }
 
     bool failed = false;
-    const auto image = cache.tryGet("ok.png", &failed);
+    std::string error = "残っていてはいけない値";
+    const auto image = cache.tryGet("ok.png", &failed, &error);
     CHECK(image != nullptr);
     CHECK(!failed);
     CHECK(image->width == 1);
+    CHECK(error.empty());  // 成功時は理由を残さない
 
-    const auto none = cache.tryGet("fail.png", &failed);
+    const auto none = cache.tryGet("fail.png", &failed, &error);
     CHECK(none == nullptr);
     CHECK(failed);
+    CHECK(error == "ピクセル取得 (0x88982F50)");  // デコーダの失敗理由がそのまま届く
 
-    CHECK(cache.tryGet("never_requested.png") == nullptr);
+    // 未デコードのパスでは失敗理由も付かない
+    CHECK(cache.tryGet("never_requested.png", &failed, &error) == nullptr);
+    CHECK(!failed);
+    CHECK(error.empty());
 }
 
 class FakeHost final : public IAppHost {
@@ -678,6 +813,46 @@ void testAppClipboard() {
     CHECK(clipboard.lastText == pathToUtf8(path));
 }
 
+// 大きい画像(openPath 中にデコードが終わらない)でも「読み込み中」のまま止まらないこと。
+// main_win.cpp と同じ順序 — setOnDecoded → openPath → 通知を受けて onDecodeCompleted
+void testAppSlowDecode() {
+    SlowDecoder decoder;
+    ImageCache cache(decoder);
+    FakeHost host;
+    FakeFileSystem fileSystem;
+    FakeClipboard clipboard;
+    FakeEncoder encoder;
+    FakeAnnotationRasterizer rasterizer;
+
+    std::mutex mutex;
+    std::condition_variable cv;
+    bool notified = false;
+    cache.setOnDecoded([&](const std::filesystem::path&) {
+        std::lock_guard lock(mutex);
+        notified = true;
+        cv.notify_all();
+    });
+
+    App app(host, fileSystem, cache, clipboard, encoder, rasterizer);
+    app.onResize(800, 600);
+    const std::filesystem::path path = "C:/pics/huge.jpeg";
+    fileSystem.files = {path};
+    app.openPath(path);
+
+    // この時点ではまだデコード中(「読み込み中」表示)
+    CHECK(app.currentImage() == nullptr);
+    CHECK(host.lastTitle.find("(読み込み中)") != std::string::npos);
+
+    {
+        std::unique_lock lock(mutex);
+        CHECK(cv.wait_for(lock, std::chrono::seconds(5), [&] { return notified; }));
+    }
+    app.onDecodeCompleted();
+    // 通知後は必ず画像が出ていること(ここで止まると「読み込み中」のまま固まる)
+    CHECK(app.currentImage() != nullptr);
+    CHECK(host.lastTitle.find("(読み込み中)") == std::string::npos);
+}
+
 void testAppStatusBar() {
     FakeDecoder decoder;
     ImageCache cache(decoder);
@@ -750,6 +925,20 @@ void testAppStatusBar() {
     // タイトルバーには常にバージョンと git SHA-1 が付く
     const std::string appName = std::format("Blinker v{} ({})", kAppVersion, kAppGitSha);
     CHECK(host.lastTitle.ends_with(" - " + appName));
+
+    // デコード失敗時は、失敗した段階と HRESULT までステータスバーに出す
+    decoded = false;
+    const std::filesystem::path bad = "C:/pics/fail.png";
+    fileSystem.files = {bad};
+    app.openPath(bad);
+    {
+        std::unique_lock lock(mutex);
+        CHECK(cv.wait_for(lock, std::chrono::seconds(5), [&] { return decoded; }));
+    }
+    app.onDecodeCompleted();
+    CHECK(app.currentImage() == nullptr);
+    CHECK(app.statusBar().leftText == "読み込み失敗: ピクセル取得 (0x88982F50)");
+    CHECK(host.lastTitle.find("(読み込み失敗)") != std::string::npos);
 }
 
 void testAppPasteSave() {
@@ -2192,8 +2381,10 @@ int main() {
     testConfig();
     testDib();
     testPixelConvert();
+    testApplyExifOrientation();
     testImageList();
     testImageCache();
+    testAppSlowDecode();
     testAppClipboard();
     testAppStatusBar();
     testAppPasteSave();
