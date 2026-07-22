@@ -1,6 +1,11 @@
-# CMakeLists.txt の project() バージョンからリリースタグを導出する。
-# リリース手順は「CMakeLists.txt の VERSION を書き換えて main に push する」だけ。
+# CMakeLists.txt の project() バージョンからリリースタグを導出し、release.yml を呼ぶ。
+# リリース手順は「CMakeLists.txt の VERSION を書き換えて main に push する」だけ
+# (release.bat / release.ps1 がそれをやる)。
 # タグは派生物であり、手で打たない(version.h / blinker.rc と同じ扱い)。
+#
+# タグを push しただけでは release.yml は動かない。GITHUB_TOKEN で起こした
+# イベントは新しいワークフローを起動しない、という GitHub の再帰防止の仕様がある。
+# だから push 任せの連鎖にせず、release.yml を workflow_call で直接呼ぶ。
 name: tag
 
 on:
@@ -14,6 +19,9 @@ permissions:
 jobs:
   tag:
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
+      created: ${{ steps.tag.outputs.created }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -30,15 +38,29 @@ jobs:
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
       - name: タグが未作成なら作成して push
+        id: tag
         env:
           VERSION: ${{ steps.ver.outputs.version }}
         run: |
           if git rev-parse -q --verify "refs/tags/v$VERSION" >/dev/null; then
             echo "v$VERSION は既に存在するため何もしない"
+            echo "created=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           git config user.name  'github-actions[bot]'
           git config user.email 'github-actions[bot]@users.noreply.github.com'
           git tag -a "v$VERSION" -m "Blinker v$VERSION"
           git push origin "v$VERSION"
+          echo "created=true" >> "$GITHUB_OUTPUT"
           echo "v$VERSION を作成した" >> "$GITHUB_STEP_SUMMARY"
+
+  # タグを新しく作ったときだけビルドして Release を作る
+  # (既存タグで何もしなかった場合 created=false なので走らせない)
+  release:
+    needs: tag
+    if: needs.tag.outputs.created == 'true'
+    permissions:
+      contents: write
+    uses: ./.github/workflows/release.yml
+    with:
+      tag: v${{ needs.tag.outputs.version }}

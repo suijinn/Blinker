@@ -1,6 +1,15 @@
-# タグ push を検知して Windows 版 blinker.exe をビルドし、GitHub Releases に添付する。
-# タグは tag.yml が CMakeLists.txt から自動作成するので、通常このワークフローも
-# 「VERSION を書き換えて push」だけで連鎖的に走る。
+# タグから Windows 版 blinker.exe をビルドし、GitHub Releases に添付する。
+#
+# 入口は 3 つあるが実体はこのワークフロー 1 つで、どこから来ても同じ経路を通る:
+#   - workflow_call     … tag.yml がタグを作った直後に呼ぶ(通常のリリース経路)
+#   - push (tags)       … 手で打ったタグの救済
+#   - workflow_dispatch … 既存タグに対する再実行(Actions 画面から)
+#
+# tag.yml の「タグ push」でこのワークフローを連鎖起動することはできない。
+# GITHUB_TOKEN で起こしたイベントは新しいワークフローを起動しない、という
+# GitHub の再帰防止の仕様があるため(2026-07 の v0.1.2 で踏んだ。tag.yml は
+# 成功してタグもできるのに release が走らず、Release だけ作られない状態になる)。
+# PAT を持たせれば push でも連鎖するが、資格情報を増やさずに済む workflow_call を採る。
 #
 # ビルドは Ninja プリセットではなく Visual Studio ジェネレータを使う。プリセットは
 # vcvars を要求し、CI では第三者製アクションへの依存が増えるため。配布バイナリを
@@ -12,6 +21,18 @@ name: release
 on:
   push:
     tags: ['v*']
+  workflow_call:
+    inputs:
+      tag:
+        description: 'ビルドするタグ (例: v0.1.2)'
+        required: true
+        type: string
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'ビルドするタグ (例: v0.1.2)'
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -22,16 +43,22 @@ jobs:
     defaults:
       run:
         shell: bash   # windows-latest の既定は pwsh。tag.yml と記法を揃える
+    env:
+      # workflow_call / workflow_dispatch では inputs.tag、タグ push では ref から取る。
+      # workflow_call のとき GITHUB_REF_NAME は呼び出し元の main になるので使えない
+      TAG: ${{ inputs.tag || github.ref_name }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref_name }}
 
       - name: タグと CMakeLists.txt のバージョンの一致を確認
         id: ver
         run: |
-          tag="${GITHUB_REF_NAME#v}"
+          tag="${TAG#v}"
           version=$(sed -n 's/^project(Blinker VERSION \([0-9]\+\.[0-9]\+\.[0-9]\+\).*/\1/p' CMakeLists.txt)
           if [ "$tag" != "$version" ]; then
-            echo "::error::タグ $GITHUB_REF_NAME と CMakeLists.txt の $version が食い違っている"
+            echo "::error::タグ $TAG と CMakeLists.txt の $version が食い違っている"
             exit 1
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
@@ -61,11 +88,17 @@ jobs:
           echo "name=$name" >> "$GITHUB_OUTPUT"
 
       - name: Release を作成して添付
+        # 再実行(workflow_dispatch)でも通るよう、既にある Release には添付し直す
         env:
           GH_TOKEN: ${{ github.token }}
           ASSET: ${{ steps.art.outputs.name }}
         run: |
-          gh release create "$GITHUB_REF_NAME" \
-            --title "Blinker $GITHUB_REF_NAME" \
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG は既にあるので成果物だけ差し替える"
+            gh release upload "$TAG" "$ASSET" --clobber
+            exit 0
+          fi
+          gh release create "$TAG" \
+            --title "Blinker $TAG" \
             --generate-notes \
             "$ASSET"

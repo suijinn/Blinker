@@ -92,8 +92,10 @@ if ($LASTEXITCODE -ne 0) { Fail "push に失敗した" }
 
 Write-Host ""
 Write-Host "push した。以降は GitHub Actions が処理する:" -ForegroundColor Green
-Write-Host "  tag.yml     : main への push を検知して v$Version を作成"
-Write-Host "  release.yml : タグを検知してビルド・テストし、Release に"
+Write-Host "  tag.yml     : main への push を検知して v$Version を作成し、"
+Write-Host "                続けて release.yml を呼ぶ"
+Write-Host "  release.yml : ビルド・テストして Release に"
 Write-Host "                blinker-$Version-win-x64.exe を添付"
 Write-Host ""
 Write-Host "進行の確認: gh run watch / gh release view v$Version"
+Write-Host "失敗して作り直したいとき: gh workflow run release.yml -f tag=v$Version"
