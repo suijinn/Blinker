@@ -124,8 +124,16 @@ push するだけ**(手でそう書き換えてもよい。スクリプトは事
 
 - `version.h` / `blinker.rc` … `configure_file` で生成(既存)
 - **git タグ `vx.y.z`** … `.github/workflows/tag.yml` が push を検知して自動作成
-- **GitHub Release + `blinker-x.y.z-win-x64.exe`** … タグ作成を受けて
-  `.github/workflows/release.yml` がビルド・テストして添付
+- **GitHub Release + `blinker-x.y.z-win-x64.exe`** … tag.yml が続けて
+  `release.yml` を `workflow_call` で呼び、ビルド・テストして添付
+
+**tag.yml から release.yml へは「タグ push で連鎖」させてはならない**(2026-07 の
+v0.1.2 で踏んだ)。GITHUB_TOKEN で起こしたイベントは新しいワークフローを起動しない、
+という GitHub の再帰防止の仕様があり、tag.yml は成功しタグもできるのに release が
+走らず、Release だけ無いという分かりにくい状態になる。PAT を足せば連鎖するが、
+資格情報を増やさずに済む `workflow_call` を採っている。
+release.yml は `push: tags`(手打ちタグの救済)と `workflow_dispatch`(既存タグに
+対する再実行)も受け付けるが、実体は 1 つで経路は共通。
 
 タグを手で打たないこと。手で打つとバージョンの正が二か所に増え、drift しうる。
 CI は既存タグがあれば何もしないので、CMakeLists.txt の他の行を編集しても安全。
