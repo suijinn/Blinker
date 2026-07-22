@@ -6,10 +6,12 @@
 #include <cstddef>
 #include <format>
 #include <string>
+#include <string_view>
 
 #include "core/annotation_edit.h"
 #include "core/edit.h"
 #include "core/pixel_convert.h"
+#include "core/str_util.h"
 #include "core/unicode.h"
 #include "core/version.h"
 
@@ -43,6 +45,44 @@ std::string borderWidthLabel(int width) {
     return width <= 0 ? std::string("なし") : std::format("{}px", width);
 }
 
+// ツールの表示名(メニューとステータスバーで共通)
+std::string_view toolLabel(EditTool tool) {
+    switch (tool) {
+    case EditTool::Crop:    return "トリミング";
+    case EditTool::Rect:    return "矩形";
+    case EditTool::Ellipse: return "楕円";
+    case EditTool::Arrow:   return "矢印";
+    case EditTool::Line:    return "直線";
+    case EditTool::Text:    return "テキスト";
+    }
+    return "";
+}
+
+// blinker.ini の [edit] tool = に書く名前。[keys] の tool_* コマンド名と揃える
+std::optional<EditTool> toolFromName(std::string_view name) {
+    const std::string lower = toLower(trim(name));
+    if (lower == "crop") return EditTool::Crop;
+    if (lower == "rect") return EditTool::Rect;
+    if (lower == "ellipse") return EditTool::Ellipse;
+    if (lower == "arrow") return EditTool::Arrow;
+    if (lower == "line") return EditTool::Line;
+    if (lower == "text") return EditTool::Text;
+    return std::nullopt;
+}
+
+// 図形ツールが作る注釈の種別。Crop は注釈ではないので Rect を返す(呼ばれない)
+AnnotationSpec::Kind kindOfTool(EditTool tool) {
+    switch (tool) {
+    case EditTool::Ellipse: return AnnotationSpec::Kind::Ellipse;
+    case EditTool::Arrow:   return AnnotationSpec::Kind::Arrow;
+    case EditTool::Line:    return AnnotationSpec::Kind::Line;
+    case EditTool::Text:    return AnnotationSpec::Kind::Text;
+    case EditTool::Crop:
+    case EditTool::Rect:    break;
+    }
+    return AnnotationSpec::Kind::Rect;
+}
+
 } // namespace
 
 App::App(IAppHost& host, IFileSystem& fileSystem, ImageCache& cache, IClipboard& clipboard,
@@ -74,6 +114,8 @@ void App::applyConfig(const Config& config) {
     editBorderRGB_ = config.getColorRGB("edit", "border_color", editBorderRGB_);
     editBorderWidth_ = static_cast<float>(std::clamp(
         config.getInt("edit", "border_width", static_cast<int>(editBorderWidth_)), 0, 100));
+    // 起動時の(右ドラッグで実行される)ツール。未指定・未知の名前なら既定のまま
+    if (const auto tool = toolFromName(config.get("edit", "tool"))) setTool(*tool);
     applyLayout();
 }
 
@@ -205,6 +247,24 @@ void App::execute(Command command) {
         break;
     case Command::DeleteAnnotation:
         deleteSelectedAnnotation();
+        break;
+    case Command::SelectToolCrop:
+        setTool(EditTool::Crop);
+        break;
+    case Command::SelectToolRect:
+        setTool(EditTool::Rect);
+        break;
+    case Command::SelectToolEllipse:
+        setTool(EditTool::Ellipse);
+        break;
+    case Command::SelectToolArrow:
+        setTool(EditTool::Arrow);
+        break;
+    case Command::SelectToolLine:
+        setTool(EditTool::Line);
+        break;
+    case Command::SelectToolText:
+        setTool(EditTool::Text);
         break;
     case Command::ToggleSidebar:
         sidebarEnabled_ = !sidebarEnabled_;
@@ -415,12 +475,14 @@ void App::onRightDragStart(Point screenPos) {
     selStartScreen_ = screenPos;
     selStartImage_ = clampToImage(imageToScreen().inverted().apply(screenPos));
     selEndImage_ = selStartImage_;
+    updatePreview();
     host_.requestRedraw();
 }
 
 void App::onRightDragMove(Point screenPos) {
     if (!selecting_) return;
     selEndImage_ = clampToImage(imageToScreen().inverted().apply(screenPos));
+    updatePreview();
     host_.requestRedraw();
 }
 
@@ -431,12 +493,13 @@ void App::onRightDragEnd(Point screenPos) {
         return;
     }
     if (!selecting_) return;
+    selecting_ = false;
     selEndImage_ = clampToImage(imageToScreen().inverted().apply(screenPos));
     const float dx = screenPos.x - selStartScreen_.x;
     const float dy = screenPos.y - selStartScreen_.y;
     if (dx * dx + dy * dy < kDragThresholdPx * kDragThresholdPx) {
-        // 単なる右クリック(移動量が小さい): 注釈の上ならオブジェクトメニューを表示する
-        selecting_ = false;
+        // 単なる右クリック(移動量が小さい): 注釈の上ならオブジェクトメニュー、
+        // そうでなければツール切り替えメニューを出す
         const Point imagePos = imageToScreen().inverted().apply(screenPos);
         const float tolerance = kHitTolerancePx / std::max(viewport_.zoom(), 0.001f);
         if (const auto hit = hitTestAnnotations(annotations_, imagePos, tolerance)) {
@@ -445,12 +508,19 @@ void App::onRightDragEnd(Point screenPos) {
             showObjectMenu(screenPos);
         } else {
             host_.requestRedraw();
+            showToolMenu(screenPos);
         }
         return;
     }
-    // メニュー表示中(モーダル)もラバーバンドは描画されたまま残る。
-    // 設定系の項目(太さ・サイズ・回転・色)を選んだ場合は選択領域を保ったまま
-    // メニューを再表示し、続けて編集を選べるようにする
+    // 事前に選んであるツールをそのまま適用する(メニューは出さない)。
+    // ドラッグ中のプレビューはここで実物の注釈へ置き換わる
+    applyCurrentTool();
+    host_.requestRedraw();
+}
+
+void App::showToolMenu(Point screenPos) {
+    // 設定系の項目(太さ・サイズ・色)を選んだ場合はメニューを再表示し、
+    // 設定を整えてからツールを選べるようにする
     while (true) {
         std::vector<EditMenuEntry> entries;
         const std::vector<MenuItem> items = buildEditMenu(entries);
@@ -458,8 +528,22 @@ void App::onRightDragEnd(Point screenPos) {
         if (!choice || *choice >= entries.size()) break;
         if (applyEditChoice(entries[*choice])) break;
     }
-    selecting_ = false;
     host_.requestRedraw();
+}
+
+void App::setTool(EditTool tool) {
+    // トリミングは一度きりなので、戻り先として直前の図形ツールを覚えておく
+    if (tool != EditTool::Crop) toolAfterCrop_ = tool;
+    tool_ = tool;
+    host_.requestRedraw();  // ステータスバーのツール表示を更新する
+}
+
+void App::applyCurrentTool() {
+    if (tool_ == EditTool::Crop) {
+        if (applyCrop()) setTool(toolAfterCrop_);  // 切り出せたら図形ツールへ戻る
+        return;
+    }
+    applyAnnotation(kindOfTool(tool_));
 }
 
 std::vector<MenuItem> App::buildEditMenu(std::vector<EditMenuEntry>& entries) const {
@@ -470,19 +554,21 @@ std::vector<MenuItem> App::buildEditMenu(std::vector<EditMenuEntry>& entries) co
         item.checked = checked;
         return item;
     };
-    const auto annotate = [&leaf](std::string text, AnnotationSpec::Kind kind) {
-        return leaf(std::move(text), {EditMenuEntry::Action::Annotate, kind, 0});
+    // ツールは選ぶだけで、実際の適用は次の右ドラッグで行う。現在のツールにチェックが付く
+    const auto tool = [&leaf, this](EditTool t) {
+        return leaf(std::string(toolLabel(t)), {EditMenuEntry::Action::SelectTool, t, 0},
+                    t == tool_);
     };
     using Action = EditMenuEntry::Action;
 
     std::vector<MenuItem> items;
-    items.push_back(leaf("トリミング", {Action::Crop}));
+    items.push_back(tool(EditTool::Crop));
     items.push_back(menuSeparator());
-    items.push_back(annotate("矩形", AnnotationSpec::Kind::Rect));
-    items.push_back(annotate("楕円", AnnotationSpec::Kind::Ellipse));
-    items.push_back(annotate("矢印", AnnotationSpec::Kind::Arrow));
-    items.push_back(annotate("直線", AnnotationSpec::Kind::Line));
-    items.push_back(annotate("テキスト", AnnotationSpec::Kind::Text));
+    items.push_back(tool(EditTool::Rect));
+    items.push_back(tool(EditTool::Ellipse));
+    items.push_back(tool(EditTool::Arrow));
+    items.push_back(tool(EditTool::Line));
+    items.push_back(tool(EditTool::Text));
     items.push_back(menuSeparator());
 
     MenuItem stroke;
@@ -490,7 +576,7 @@ std::vector<MenuItem> App::buildEditMenu(std::vector<EditMenuEntry>& entries) co
     for (const int w : {1, 2, 3, 5, 8, 12, 20}) {
         stroke.children.push_back(
             leaf(std::format("{}px", w),
-                 {Action::StrokeWidth, AnnotationSpec::Kind::Rect, static_cast<float>(w)},
+                 {Action::StrokeWidth, EditTool::Rect, static_cast<float>(w)},
                  static_cast<float>(w) == editStrokeWidth_));
     }
     items.push_back(std::move(stroke));
@@ -500,7 +586,7 @@ std::vector<MenuItem> App::buildEditMenu(std::vector<EditMenuEntry>& entries) co
     for (const int s : {12, 14, 18, 24, 36, 48, 72}) {
         font.children.push_back(
             leaf(std::format("{}px", s),
-                 {Action::FontSize, AnnotationSpec::Kind::Rect, static_cast<float>(s)},
+                 {Action::FontSize, EditTool::Rect, static_cast<float>(s)},
                  static_cast<float>(s) == editFontSize_));
     }
     items.push_back(std::move(font));
@@ -513,8 +599,7 @@ std::vector<MenuItem> App::buildEditMenu(std::vector<EditMenuEntry>& entries) co
     fill.text = std::format("塗りつぶし ({})", fillAlphaLabel(editFillAlpha_));
     for (const int a : kFillAlphaChoices) {
         fill.children.push_back(
-            leaf(fillAlphaLabel(a),
-                 {Action::FillAlpha, AnnotationSpec::Kind::Rect, static_cast<float>(a)},
+            leaf(fillAlphaLabel(a), {Action::FillAlpha, EditTool::Rect, static_cast<float>(a)},
                  a == editFillAlpha_));
     }
     fill.children.push_back(menuSeparator());
@@ -529,7 +614,7 @@ std::vector<MenuItem> App::buildEditMenu(std::vector<EditMenuEntry>& entries) co
     for (const int w : kBorderWidthChoices) {
         border.children.push_back(
             leaf(borderWidthLabel(w),
-                 {Action::BorderWidth, AnnotationSpec::Kind::Rect, static_cast<float>(w)},
+                 {Action::BorderWidth, EditTool::Rect, static_cast<float>(w)},
                  static_cast<float>(w) == editBorderWidth_));
     }
     border.children.push_back(menuSeparator());
@@ -765,11 +850,8 @@ void App::showTextStyleMenu(Point screenPos) {
 
 bool App::applyEditChoice(const EditMenuEntry& entry) {
     switch (entry.action) {
-    case EditMenuEntry::Action::Crop:
-        applyCrop();
-        return true;
-    case EditMenuEntry::Action::Annotate:
-        applyAnnotation(entry.kind);
+    case EditMenuEntry::Action::SelectTool:
+        setTool(entry.tool);
         return true;
     case EditMenuEntry::Action::StrokeWidth:
         editStrokeWidth_ = entry.value;
@@ -803,15 +885,15 @@ bool App::applyEditChoice(const EditMenuEntry& entry) {
     return true;
 }
 
-void App::applyCrop() {
-    if (!current_) return;
+bool App::applyCrop() {
+    if (!current_) return false;
     // 部分的にかかったピクセルも含める(floor/ceil)
     const int x0 = static_cast<int>(std::floor(std::min(selStartImage_.x, selEndImage_.x)));
     const int y0 = static_cast<int>(std::floor(std::min(selStartImage_.y, selEndImage_.y)));
     const int x1 = static_cast<int>(std::ceil(std::max(selStartImage_.x, selEndImage_.x)));
     const int y1 = static_cast<int>(std::ceil(std::max(selStartImage_.y, selEndImage_.y)));
     auto cropped = cropImage(*current_, {x0, y0, x1 - x0, y1 - y0});
-    if (!cropped) return;
+    if (!cropped) return false;
     pushUndo();
     current_ = std::move(cropped);
     // 注釈はオブジェクトのまま維持し、切り出した原点ぶんだけ平行移動する
@@ -822,10 +904,10 @@ void App::applyCrop() {
         {static_cast<float>(current_->width), static_cast<float>(current_->height)});
     edited_ = true;
     updateTitle();
+    return true;
 }
 
-void App::applyAnnotation(AnnotationSpec::Kind kind) {
-    if (!current_) return;
+AnnotationSpec App::makeAnnotationSpec(AnnotationSpec::Kind kind) const {
     AnnotationSpec spec;
     spec.kind = kind;
     spec.p1 = selStartImage_;
@@ -839,6 +921,24 @@ void App::applyAnnotation(AnnotationSpec::Kind kind) {
     spec.strokeWidth = std::max(1.0f, editStrokeWidth_ / zoom);
     spec.fontSize = std::max(4.0f, editFontSize_ / zoom);
     spec.borderWidth = editBorderWidth_ > 0 ? std::max(1.0f, editBorderWidth_ / zoom) : 0.0f;
+    return spec;
+}
+
+bool App::previewVisible() const {
+    // トリミングは切り出す範囲、テキストは中身の無い箱で、どちらも実物を描けない。
+    // その 2 つはラバーバンド(App::selection)に任せる
+    return selecting_ && current_ != nullptr && tool_ != EditTool::Crop &&
+           tool_ != EditTool::Text;
+}
+
+void App::updatePreview() {
+    if (!previewVisible()) return;
+    previewSpec_ = makeAnnotationSpec(kindOfTool(tool_));
+}
+
+void App::applyAnnotation(AnnotationSpec::Kind kind) {
+    if (!current_) return;
+    AnnotationSpec spec = makeAnnotationSpec(kind);
     if (kind == AnnotationSpec::Kind::Text) {
         // ドラッグした矩形を空のテキストボックスにして、その場で入力を始める。
         // 内容が空のまま終われば beginTextEdit の created により削除される
@@ -1262,7 +1362,8 @@ Point App::clampToImage(Point imagePos) const {
 
 SelectionView App::selection() const {
     SelectionView sel;
-    sel.visible = selecting_ && current_ != nullptr;
+    // 図形ツールはプレビューで実物を描くので、ラバーバンドは出さない
+    sel.visible = selecting_ && current_ != nullptr && !previewVisible();
     if (!sel.visible) return sel;
     const Matrix3x2 m = imageToScreen();
     sel.p1 = m.apply(selStartImage_);
@@ -1280,6 +1381,7 @@ AnnotationsView App::annotations() const {
     view.handleOffsetPx = kRotationHandleOffsetPx;
     view.handleRadiusPx = kRotationHandleRadiusPx;
     view.resizeHandleSizePx = kResizeHandleSizePx;
+    if (previewVisible()) view.preview = &previewSpec_;
     if (textEditing_ && textEditIndex_ < annotations_.size()) {
         const AnnotationSpec& spec = annotations_[textEditIndex_];
         const BoundsF bounds = annotationBounds(spec);
@@ -1534,7 +1636,9 @@ StatusBarView App::statusBar() const {
     if (!message_.empty()) {
         bar.leftText = message_;
     } else if (current_) {
-        bar.leftText = std::format("{} x {} px", current_->width, current_->height);
+        // 右ドラッグが何をするかは見た目に出ないので、現在のツールをここに出す
+        bar.leftText = std::format("{} x {} px  |  ツール: {}", current_->width,
+                                   current_->height, toolLabel(tool_));
     } else if (loadFailed_) {
         // 失敗した段階とコードまで出す(現物が手元にない不具合を切り分けられるように)
         bar.leftText = loadError_.empty() ? "読み込み失敗"

@@ -138,7 +138,11 @@ void RendererD2D::render(const std::shared_ptr<const DecodedImage>& image,
 
 void RendererD2D::drawAnnotations(const AnnotationsView& annotations,
                                   const Matrix3x2& imageToScreen) {
-    if (!annotations.specs || annotations.specs->empty() || !brush_) return;
+    if (!brush_) return;
+    static const std::vector<AnnotationSpec> kNoSpecs;
+    const std::vector<AnnotationSpec>& specs =
+        annotations.specs ? *annotations.specs : kNoSpecs;
+    if (specs.empty() && !annotations.preview) return;
     const auto toD2D = [](const Matrix3x2& m) {
         return D2D1::Matrix3x2F(m.m11, m.m12, m.m21, m.m22, m.dx, m.dy);
     };
@@ -147,8 +151,8 @@ void RendererD2D::drawAnnotations(const AnnotationsView& annotations,
     const TextEditView& edit = annotations.textEdit;
     const float invZoom = 1.0f / std::max(std::abs(imageToScreen.m11), 0.001f);
     // 画像座標のまま描き、変換で拡縮する(線幅・文字も拡縮され焼き込み結果と一致する)
-    for (size_t i = 0; i < annotations.specs->size(); ++i) {
-        const AnnotationSpec& spec = (*annotations.specs)[i];
+    for (size_t i = 0; i < specs.size(); ++i) {
+        const AnnotationSpec& spec = specs[i];
         D2D1::Matrix3x2F transform = toD2D(imageToScreen);
         if (spec.angleDeg != 0) {
             const Point c = annotationCenter(spec);
@@ -194,11 +198,19 @@ void RendererD2D::drawAnnotations(const AnnotationsView& annotations,
                               brush_.Get(), 1.5f * invZoom);
         }
     }
+    // 右ドラッグ中のプレビュー。確定後と同じ経路で描くので見た目が一致する
+    // (回転は付かず、選択枠・ハンドルも出ない)
+    if (annotations.preview) {
+        target_->SetTransform(toD2D(imageToScreen));
+        brush_->SetColor(colorFromRGB(annotations.preview->colorRGB));
+        drawAnnotationShape(target_.Get(), factory_.Get(), dwriteFactory_.Get(),
+                            *annotations.preview, brush_.Get(), AnnotationDrawParts::All);
+    }
     target_->SetTransform(D2D1::Matrix3x2F::Identity());
 
     // 選択中オブジェクトの破線枠と回転ハンドル(スクリーン座標で等幅に描く)
-    if (!annotations.selected || *annotations.selected >= annotations.specs->size()) return;
-    const AnnotationSpec& spec = (*annotations.specs)[*annotations.selected];
+    if (!annotations.selected || *annotations.selected >= specs.size()) return;
+    const AnnotationSpec& spec = specs[*annotations.selected];
     const std::array<Point, 4> corners = rotatedCorners(spec);
     std::array<D2D1_POINT_2F, 4> pts;
     for (size_t i = 0; i < 4; ++i) {

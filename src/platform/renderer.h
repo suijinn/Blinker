@@ -94,6 +94,9 @@ struct AnnotationsView {
     float handleRadiusPx = 0;        ///< 回転ハンドルの半径(画面px)
     float resizeHandleSizePx = 0;    ///< サイズ変更ハンドル(正方形)の一辺(画面px)
     TextEditView textEdit;           ///< インプレース編集中のキャレット・選択範囲
+    /// 右ドラッグ中のプレビュー(まだ specs には入っていない仮の注釈)。nullptr なら無し。
+    /// specs と同じ見た目で描き、選択枠・ハンドルは付けない
+    const AnnotationSpec* preview = nullptr;
 };
 
 /**

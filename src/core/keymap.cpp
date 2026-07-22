@@ -37,6 +37,13 @@ constexpr std::array kCommandNames = {
     CommandName{"save_as", Command::SaveImageAs},
     CommandName{"undo", Command::Undo},
     CommandName{"delete_annotation", Command::DeleteAnnotation},
+    // ツール切り替えは既定のキーを持たない(blinker.ini の [keys] で割り当てる)
+    CommandName{"tool_crop", Command::SelectToolCrop},
+    CommandName{"tool_rect", Command::SelectToolRect},
+    CommandName{"tool_ellipse", Command::SelectToolEllipse},
+    CommandName{"tool_arrow", Command::SelectToolArrow},
+    CommandName{"tool_line", Command::SelectToolLine},
+    CommandName{"tool_text", Command::SelectToolText},
     CommandName{"sidebar", Command::ToggleSidebar},
     CommandName{"statusbar", Command::ToggleStatusBar},
     CommandName{"escape", Command::Escape},

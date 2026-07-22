@@ -178,6 +178,15 @@ void testKeymap() {
     CHECK(custom.find({KeyCode::Tab}) == Command::NextImage);
     CHECK(custom.find({KeyCode::Right}) == Command::None);       // 置き換え済み
     CHECK(custom.find({KeyCode::Left}) == Command::PrevImage);   // 他コマンドは無傷
+
+    // 編集ツールの切り替えは既定のキーを持たず、ini で割り当てる
+    CHECK(commandFromName("tool_arrow") == Command::SelectToolArrow);
+    CHECK(commandFromName("tool_crop") == Command::SelectToolCrop);
+    Keymap tools = Keymap::defaults();
+    CHECK(tools.find({KeyCode{'A'}}) == Command::None);
+    tools.applyConfig({{"tool_arrow", "A"}, {"tool_text", "T"}});
+    CHECK(tools.find({KeyCode{'A'}}) == Command::SelectToolArrow);
+    CHECK(tools.find({KeyCode{'T'}}) == Command::SelectToolText);
 }
 
 void testConfig() {
@@ -671,6 +680,22 @@ size_t countMenuLeaves(const std::vector<MenuItem>& items) {
     return count;
 }
 
+// 注釈のない場所での右クリック(ドラッグなし)= ツール切り替えメニュー。
+// leafIndex はメニューの末端項目: 0 トリミング, 1 矩形, 2 楕円, 3 矢印, 4 直線, 5 テキスト,
+// 6-12 太さ {1,2,3,5,8,12,20}, 13-19 文字サイズ {12,14,18,24,36,48,72}, 20 色,
+// 21-25 塗りつぶし {0,64,128,191,255}, 26 塗りつぶしの色,
+// 27-32 テキストの枠線 {0,1,2,3,5,8}, 33 枠線の色
+constexpr Point kEmptySpot{600, 450};  // 画像・注釈の外(ツールメニューが開く位置)
+
+// ツールメニューで末端項目を順に選ぶ。設定系(太さ・色など)を選ぶとメニューは
+// 再表示されるので、最後にツールを選ぶか、選ばずに閉じる
+void chooseInToolMenu(App& app, FakeHost& host, std::initializer_list<size_t> choices) {
+    host.menuChoice = std::nullopt;  // menuQueue が尽きたらキャンセル扱いで閉じる
+    host.menuQueue.assign(choices);
+    app.onRightDragStart(kEmptySpot);
+    app.onRightDragEnd(kEmptySpot);  // ドラッグなし = メニュー
+}
+
 class FakeFileSystem final : public IFileSystem {
 public:
     std::vector<std::filesystem::path> listImages(const std::filesystem::path&) override {
@@ -889,7 +914,7 @@ void testAppStatusBar() {
     }
     app.onDecodeCompleted();
     CHECK(app.currentImage() != nullptr);
-    CHECK(app.statusBar().leftText == "1 x 1 px");
+    CHECK(app.statusBar().leftText == "1 x 1 px  |  ツール: 矩形");
 
     // 1x1 画像はビューポート 800x(600-26) の中央 (400, 287) に等倍表示される。
     // その位置にカーソルを置くとピクセル (0,0) の座標と色が出る
@@ -911,7 +936,7 @@ void testAppStatusBar() {
     app.execute(Command::CopyPath);
     CHECK(app.statusBar().leftText == "パスをコピーしました: " + pathToUtf8(path));
     app.onTimer();
-    CHECK(app.statusBar().leftText == "1 x 1 px");
+    CHECK(app.statusBar().leftText == "1 x 1 px  |  ツール: 矩形");
 
     // トグルとフルスクリーンで非表示になる
     app.execute(Command::ToggleStatusBar);
@@ -991,7 +1016,7 @@ void testAppPasteSave() {
     app.execute(Command::PasteImage);
     CHECK(app.currentImage() && app.currentImage()->width == 2);
     CHECK(host.lastTitle.find("(クリップボード)") == 0);
-    CHECK(app.statusBar().leftText == "2 x 1 px");
+    CHECK(app.statusBar().leftText == "2 x 1 px  |  ツール: 矩形");
 
     // デコード完了通知が来ても貼り付け画像は上書きされない
     app.onDecodeCompleted();
@@ -1027,7 +1052,7 @@ void testAppPasteSave() {
     const int encodeCountBefore = encoder.encodeCount;
     app.execute(Command::SaveImageAs);
     CHECK(encoder.encodeCount == encodeCountBefore);
-    CHECK(app.statusBar().leftText == "1 x 1 px");
+    CHECK(app.statusBar().leftText == "1 x 1 px  |  ツール: 矩形");
 
     // 保存失敗
     encoder.ok = false;
@@ -1366,9 +1391,10 @@ void testAppAnnotationObjects() {
     source->pixels.resize(8 * 8 * 4);
     clipboard.pasteImage = source;
     app.execute(Command::PasteImage);
-    host.menuChoice = 1;  // 矩形
+    CHECK(app.currentTool() == EditTool::Rect);  // 既定のツールは矩形
     app.onRightDragStart({396, 283});
     app.onRightDragEnd({400, 287});
+    CHECK(host.menuCount == 0);  // ツールは決まっているのでメニューは出ない
     CHECK(app.annotations().specs->size() == 1);
     CHECK(app.annotations().selected.has_value());
 
@@ -1451,12 +1477,13 @@ void testAppAnnotationObjects() {
     CHECK(app.annotations().specs->front().colorRGB == 0x123456);
 
     // テキスト注釈はその場で入力して追加し、ダブルクリックで再編集する
-    host.menuChoice = 5;  // テキスト
+    chooseInToolMenu(app, host, {5});  // テキスト
+    CHECK(app.currentTool() == EditTool::Text);
     rasterizer.overlayWidth = 24;
     rasterizer.overlayHeight = 44;  // 実測境界 20x40(リサイズテストでハンドルを離すため縦長)
     const int measureCount = rasterizer.rasterizeCount;
     app.onRightDragStart({401, 286});  // 画像 (5,3)
-    app.onRightDragEnd({404, 290});    // 閾値以上のドラッグで編集メニューを出す
+    app.onRightDragEnd({404, 290});    // 閾値以上のドラッグでテキストボックスができる
     CHECK(app.isTextEditing());        // 空のテキストボックスができ、その場で入力できる
     CHECK(host.textEditing);           // host には編集開始が伝わる (IME 有効化)
     CHECK(rasterizer.rasterizeCount == measureCount);  // 内容が空の間は実測しない
@@ -1486,12 +1513,15 @@ void testAppAnnotationObjects() {
     CHECK(app.annotations().specs->back().text == "更新後");
 
     // トリミング後も注釈はオブジェクトのまま維持され、座標が平行移動する
-    host.menuChoice = 0;  // トリミング
+    chooseInToolMenu(app, host, {0});  // トリミング
+    CHECK(app.currentTool() == EditTool::Crop);
     app.onRightDragStart({398, 285});  // 画像 (2,2)
     app.onRightDragEnd({402, 289});    // 画像 (6,6) → 4x4 に切り出し
     CHECK(app.currentImage()->width == 4);
     CHECK(app.annotations().specs->size() == 2);
     CHECK(nearly(app.annotations().specs->front().p1.x, -2));  // (0,0) → (-2,-2)
+    // トリミングは一度きり。実行すると直前に使っていた図形ツール(テキスト)へ戻る
+    CHECK(app.currentTool() == EditTool::Text);
     app.execute(Command::Undo);
     CHECK(app.currentImage()->width == 8);
     CHECK(nearly(app.annotations().specs->front().p1.x, 0));
@@ -1550,38 +1580,68 @@ void testAppEdit() {
     app.execute(Command::PasteImage);
     CHECK(app.currentImage() && app.currentImage()->width == 8);
 
-    // 閾値未満の右ドラッグ(ただの右クリック)は無視
-    app.onRightDragStart({400, 300});
-    app.onRightDragEnd({402, 301});
-    CHECK(host.menuCount == 0);
+    // 起動時のツールは ini で指定できる。未知の名前なら既定(矩形)のまま
+    app.applyConfig(Config::parse("[edit]\ntool = Arrow\n"));
+    CHECK(app.currentTool() == EditTool::Arrow);
+    app.applyConfig(Config::parse("[edit]\ntool = nonsense\n"));
+    CHECK(app.currentTool() == EditTool::Arrow);  // 解釈できない指定は無視する
+    app.applyConfig(Config::parse("[edit]\ntool = rect\n"));
+    CHECK(app.currentTool() == EditTool::Rect);
 
-    // ドラッグ中はラバーバンドが出て、Escape で解除できる
+    // コマンドからもツールを切り替えられる(既定のキーは無く ini で割り当てる)
+    app.execute(Command::SelectToolArrow);
+    CHECK(app.currentTool() == EditTool::Arrow);
+    CHECK(app.statusBar().leftText == "8 x 8 px  |  ツール: 矢印");
+    app.execute(Command::SelectToolRect);
+
+    // 既定のツールは矩形。ドラッグ中はラバーバンドではなく実物のプレビューが出る
+    CHECK(app.currentTool() == EditTool::Rect);
     app.onRightDragStart({396, 283});
     app.onRightDragMove({400, 287});
-    const SelectionView sel = app.selection();
-    CHECK(sel.visible);
-    CHECK(nearly(sel.p1.x, 396) && nearly(sel.p1.y, 283));
-    CHECK(nearly(sel.p2.x, 400) && nearly(sel.p2.y, 287));
-    app.execute(Command::Escape);
-    CHECK(!app.selection().visible);
+    {
+        const AnnotationsView view = app.annotations();
+        CHECK(view.preview != nullptr);
+        CHECK(view.preview->kind == AnnotationSpec::Kind::Rect);
+        CHECK(nearly(view.preview->p1.x, 0) && nearly(view.preview->p2.x, 4));
+        CHECK(nearly(view.preview->strokeWidth, 3));  // 確定後と同じ設定で描かれる
+        CHECK(view.specs->empty());                   // まだ確定していない
+        CHECK(!app.selection().visible);              // プレビュー中はラバーバンドを出さない
+    }
+    app.execute(Command::Escape);  // Escape で解除できる
+    CHECK(app.annotations().preview == nullptr);
+    CHECK(app.annotations().specs->empty());
 
-    // メニューをキャンセルすると何も起きない
-    host.menuChoice = std::nullopt;
-    app.onRightDragStart({396, 283});
-    app.onRightDragEnd({400, 287});
+    // 閾値未満の右ドラッグ(ただの右クリック)はツール切り替えメニューを開く。
+    // 末端項目: ツール6種 + 太さ7 + 文字サイズ7 + 色1 + 塗りつぶし(5+色1) + 枠線(6+色1)
+    // = 34(回転角度はオブジェクト側にある)
+    host.menuChoice = std::nullopt;  // キャンセルするので何も起きない
+    app.onRightDragStart({400, 300});
+    app.onRightDragEnd({402, 301});
     CHECK(host.menuCount == 1);
-    // 末端項目: 編集6種 + 太さ7 + 文字サイズ7 + 色1 + 塗りつぶし(5+色1) + 枠線(6+色1)
-    // = 34(回転角度はオブジェクト側へ移動)
     CHECK(countMenuLeaves(host.lastMenuItems) == 34);
+    CHECK(app.currentTool() == EditTool::Rect);
+    CHECK(app.annotations().specs->empty());
     CHECK(app.currentImage()->width == 8);
     CHECK(rasterizer.rasterizeCount == 0);
 
-    // トリミング: 画像座標 (0,0)-(4,4) → 4x4
-    host.menuChoice = 0;
+    // トリミングとテキストは形が定まらないのでラバーバンドを出す
+    chooseInToolMenu(app, host, {0});  // トリミング
+    CHECK(app.currentTool() == EditTool::Crop);
     app.onRightDragStart({396, 283});
+    app.onRightDragMove({400, 287});
+    {
+        const SelectionView sel = app.selection();
+        CHECK(sel.visible);
+        CHECK(nearly(sel.p1.x, 396) && nearly(sel.p1.y, 283));
+        CHECK(nearly(sel.p2.x, 400) && nearly(sel.p2.y, 287));
+        CHECK(app.annotations().preview == nullptr);
+    }
+
+    // トリミング: 画像座標 (0,0)-(4,4) → 4x4。一度きりの操作なので実行後は矩形へ戻る
     app.onRightDragEnd({400, 287});
     CHECK(app.currentImage()->width == 4 && app.currentImage()->height == 4);
-    CHECK(app.statusBar().leftText == "4 x 4 px");
+    CHECK(app.currentTool() == EditTool::Rect);
+    CHECK(app.statusBar().leftText == "4 x 4 px  |  ツール: 矩形");
     CHECK(host.lastTitle.find("(編集済み)") != std::string::npos);
     CHECK(!app.selection().visible);
 
@@ -1594,7 +1654,6 @@ void testAppEdit() {
     app.onTimer();
 
     // 矩形: 画像へは焼き込まず注釈オブジェクトとして追加され、追加直後は選択状態になる
-    host.menuChoice = 1;
     app.onRightDragStart({396, 283});
     app.onRightDragEnd({400, 287});
     CHECK(rasterizer.rasterizeCount == 0);  // 図形の追加ではラスタライズしない
@@ -1627,7 +1686,7 @@ void testAppEdit() {
     CHECK(source->pixels[(1 * 8 + 1) * 4 + 2] == 0);
 
     // テキスト: 空のまま確定すると追加されない。入力があれば実測して追加される
-    host.menuChoice = 5;
+    chooseInToolMenu(app, host, {5});
     app.onRightDragStart({396, 283});
     app.onRightDragEnd({400, 287});
     CHECK(app.isTextEditing());
@@ -1652,18 +1711,17 @@ void testAppEdit() {
         CHECK(nearly(text.p2.x, 20) && nearly(text.p2.y, 8));  // 実測境界が p2 に入る
     }
 
-    // 設定変更を選ぶとメニューが再表示され、選択領域を保ったまま続けて編集できる。
-    // 末端 index: 0-5 編集, 6-12 太さ {1,2,3,5,8,12,20}, 13-19 文字サイズ
+    // 設定変更を選ぶとメニューが再表示され、続けてツールを選べる。
+    // 末端 index: 0-5 ツール, 6-12 太さ {1,2,3,5,8,12,20}, 13-19 文字サイズ
     // {12,14,18,24,36,48,72}, 20 色
-    host.menuChoice = std::nullopt;
-    host.menuQueue = {10 /*太さ8px*/, 1 /*矩形*/};
+    chooseInToolMenu(app, host, {10 /*太さ8px*/, 1 /*矩形*/});
+    CHECK(host.menuQueue.empty());
     app.onRightDragStart({396, 283});
     app.onRightDragEnd({400, 287});
-    CHECK(host.menuQueue.empty());
     CHECK(nearly(app.annotations().specs->back().strokeWidth, 8));
 
     // 文字サイズ 24px + 複数行テキスト。変更済みの設定も引き継がれる
-    host.menuQueue = {16 /*文字24px*/, 5 /*テキスト*/};
+    chooseInToolMenu(app, host, {16 /*文字24px*/, 5 /*テキスト*/});
     app.onRightDragStart({396, 283});
     app.onRightDragEnd({400, 287});
     app.insertText("1行目");
@@ -1675,40 +1733,39 @@ void testAppEdit() {
 
     // 色の変更: ダイアログの結果が以降の編集に使われる。キャンセルなら元のまま
     host.colorChoice = 0x00CC66;
-    host.menuQueue = {20 /*色*/, 4 /*直線*/};
+    chooseInToolMenu(app, host, {20 /*色*/, 4 /*直線*/});
     app.onRightDragStart({396, 283});
     app.onRightDragEnd({400, 287});
     CHECK(host.colorPickerCount == 1);
     CHECK(host.lastColorPickerInitial == 0xFF3B30);
     CHECK(app.annotations().specs->back().colorRGB == 0x00CC66);
     host.colorChoice = std::nullopt;
-    host.menuQueue = {20 /*色 (キャンセル)*/, 4 /*直線*/};
+    chooseInToolMenu(app, host, {20 /*色 (キャンセル)*/, 4 /*直線*/});
     app.onRightDragStart({396, 283});
     app.onRightDragEnd({400, 287});
     CHECK(host.colorPickerCount == 2);
     CHECK(app.annotations().specs->back().colorRGB == 0x00CC66);
 
-    // 設定変更だけしてメニューをキャンセル → 編集は適用されず設定は残る
+    // 設定変更だけしてメニューを閉じる → 何も追加されず設定だけ残る
     const size_t annotationCountBefore = app.annotations().specs->size();
-    host.menuQueue = {8 /*太さ3px*/};  // 続くメニュー再表示は menuChoice = nullopt で閉じる
-    app.onRightDragStart({396, 283});
-    app.onRightDragEnd({400, 287});
+    chooseInToolMenu(app, host, {8 /*太さ3px*/});  // ツールは選ばずに閉じる
     CHECK(app.annotations().specs->size() == annotationCountBefore);
     CHECK(!app.selection().visible);
-    host.menuQueue = {1 /*矩形*/};
+    CHECK(app.currentTool() == EditTool::Line);  // 直前のツールのまま
+    chooseInToolMenu(app, host, {1 /*矩形*/});
     app.onRightDragStart({396, 283});
     app.onRightDragEnd({400, 287});
     CHECK(nearly(app.annotations().specs->back().strokeWidth, 3));  // 3px に戻っている
 
     // 塗りつぶし: 末端 index 21-25 が不透明度 {0,64,128,191,255}、26 が塗りつぶしの色。
     // 色を選ぶと塗りなしのままにならないよう不透明で塗り始める
-    host.menuQueue = {23 /*不透明度 128*/, 1 /*矩形*/};
+    chooseInToolMenu(app, host, {23 /*不透明度 128*/, 1 /*矩形*/});
     app.onRightDragStart({396, 283});
     app.onRightDragEnd({400, 287});
     CHECK(app.annotations().specs->back().fillAlpha == 128);
     CHECK(app.annotations().specs->back().fillRGB == 0xFFFFFF);  // 既定は白
     host.colorChoice = 0x3366FF;
-    host.menuQueue = {21 /*塗りなしへ戻す*/, 26 /*塗りつぶしの色*/, 2 /*楕円*/};
+    chooseInToolMenu(app, host, {21 /*塗りなしへ戻す*/, 26 /*塗りつぶしの色*/, 2 /*楕円*/});
     app.onRightDragStart({396, 283});
     app.onRightDragEnd({400, 287});
     {
@@ -1732,7 +1789,7 @@ void testAppEdit() {
 
     // テキストの枠線: 末端 index 27-32 が太さ {0,1,2,3,5,8}、33 が枠線の色。
     // 枠線ぶん余白が広がるので実測境界も縮む (24x12 の overlay - 余白 (2+太さ/2)*2)
-    host.menuQueue = {29 /*枠線 2px*/, 5 /*テキスト*/};
+    chooseInToolMenu(app, host, {29 /*枠線 2px*/, 5 /*テキスト*/});
     rasterizer.overlayWidth = 24;
     rasterizer.overlayHeight = 12;
     app.onRightDragStart({396, 283});
@@ -1744,13 +1801,11 @@ void testAppEdit() {
         CHECK(nearly(spec.borderWidth, 2));
         CHECK(nearly(spec.p2.x - spec.p1.x, 18) && nearly(spec.p2.y - spec.p1.y, 6));
     }
-    host.menuQueue = {27 /*枠線なしへ戻す*/};
-    app.onRightDragStart({396, 283});
-    app.onRightDragEnd({400, 287});
+    chooseInToolMenu(app, host, {27 /*枠線なしへ戻す*/});
 
     // 確定時の実測(ラスタライズ)失敗はメッセージを出す。入力済みの内容は残す
     rasterizer.ok = false;
-    host.menuChoice = 5;
+    chooseInToolMenu(app, host, {5 /*テキスト*/});
     const size_t countBeforeFail = app.annotations().specs->size();
     app.onRightDragStart({396, 283});
     app.onRightDragEnd({400, 287});
@@ -2092,7 +2147,7 @@ void testAppTextEditing() {
     const auto screenOf = [&toScreen](float x, float y) { return toScreen.apply({x, y}); };
 
     // テキストボックスを作って入力する
-    host.menuChoice = 5;  // テキスト
+    chooseInToolMenu(app, host, {5});  // テキストツールへ切り替える
     app.onRightDragStart(screenOf(10, 10));
     app.onRightDragEnd(screenOf(50, 30));
     CHECK(app.isTextEditing());
@@ -2222,8 +2277,7 @@ void testAppTextEditing() {
 
     // 編集中の Ctrl+Z は編集開始前へ戻す(新規作成なら注釈ごと消える)
     const size_t countBeforeUndo = app.annotations().specs->size();
-    host.menuChoice = 5;
-    app.onRightDragStart(screenOf(10, 60));
+    app.onRightDragStart(screenOf(10, 60));  // ツールはテキストのまま(切り替え不要)
     app.onRightDragEnd(screenOf(50, 80));
     app.insertText("捨てる");
     app.onKey({KeyChord{static_cast<KeyCode>('Z'), true, false, false}});
@@ -2231,7 +2285,6 @@ void testAppTextEditing() {
     CHECK(app.annotations().specs->size() == countBeforeUndo);
 
     // 画像が切り替わると編集は破棄され、host にも終了が伝わる
-    host.menuChoice = 5;
     app.onRightDragStart(screenOf(10, 60));
     app.onRightDragEnd(screenOf(50, 80));
     app.insertText("破棄される");
@@ -2270,7 +2323,7 @@ void testAppTextStyles() {
         return KeyChord{static_cast<KeyCode>(c), true, false, false};
     };
 
-    host.menuChoice = 5;  // テキスト
+    chooseInToolMenu(app, host, {5});  // テキストツールへ切り替える
     app.onRightDragStart(screenOf(10, 10));
     app.onRightDragEnd(screenOf(50, 30));
     app.insertText("abcdef");
@@ -2368,6 +2421,7 @@ void testNaturalCompare() {
 } // namespace
 
 int main() {
+    std::cout << std::unitbuf;  // 途中で落ちても FAIL の出力を失わない
     testUnicode();
     testUtf16Offsets();
     testNaturalCompare();

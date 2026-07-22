@@ -148,24 +148,17 @@ void WindowSdl::handleEvent(const SDL_Event& event) {
                 lastDragX_ = pos.x;
                 lastDragY_ = pos.y;
             }
-        } else if (event.button.button == SDL_BUTTON_RIGHT) {
-            rightDragging_ = true;
-            SDL_CaptureMouse(true);
-            app_->onRightDragStart(pos);
         }
+        // 右ドラッグ(編集)は SDL バックエンドでは扱わない。ツールの切り替えに必要な
+        // ポップアップメニューも注釈の描画も未実装で、見えない注釈だけが増えてしまう
         return;
     }
     case SDL_EVENT_MOUSE_BUTTON_UP: {
         if (!app_) return;
-        const Point pos = toPixels(event.button.x, event.button.y);
         if (event.button.button == SDL_BUTTON_LEFT) {
             dragging_ = false;
             SDL_CaptureMouse(false);
             app_->onMouseUp();
-        } else if (event.button.button == SDL_BUTTON_RIGHT && rightDragging_) {
-            rightDragging_ = false;
-            SDL_CaptureMouse(false);
-            app_->onRightDragEnd(pos);
         }
         return;
     }
@@ -177,7 +170,6 @@ void WindowSdl::handleEvent(const SDL_Event& event) {
             lastDragX_ = pos.x;
             lastDragY_ = pos.y;
         }
-        if (rightDragging_) app_->onRightDragMove(pos);
         app_->onMouseMove(pos, (SDL_GetModState() & SDL_KMOD_SHIFT) != 0);
         return;
     }

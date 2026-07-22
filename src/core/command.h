@@ -41,6 +41,12 @@ enum class Command {
     SaveImageAs,       ///< 表示中の画像を名前を付けて保存 (PNG/JPEG/BMP)
     Undo,              ///< 直前の編集(トリミング・図形・テキスト)を取り消す
     DeleteAnnotation,  ///< 選択中の注釈オブジェクトを削除
+    SelectToolCrop,    ///< 右ドラッグのツールをトリミングに切り替える
+    SelectToolRect,    ///< 右ドラッグのツールを矩形に切り替える
+    SelectToolEllipse, ///< 右ドラッグのツールを楕円に切り替える
+    SelectToolArrow,   ///< 右ドラッグのツールを矢印に切り替える
+    SelectToolLine,    ///< 右ドラッグのツールを直線に切り替える
+    SelectToolText,    ///< 右ドラッグのツールをテキストに切り替える
     ToggleSidebar,     ///< ファイル名一覧のサイドバーの表示切り替え
     ToggleStatusBar,   ///< ステータスバーの表示切り替え
     Escape,            ///< フルスクリーン解除。通常時は終了
