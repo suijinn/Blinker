@@ -65,6 +65,8 @@ cmake --preset linux-release && cmake --build --preset linux-release
   SDL版が core の `naturalCompare`(いずれもエクスプローラと同じ自然順)
 - ソースはUTF-8(日本語コメント可)。`/utf-8` フラグ必須
 - 設定は `blinker.exe` と同階層の `blinker.ini`(書式: docs/blinker.ini.example)
+- アイコンの正は `assets/make_icon.ps1`。`assets/blinker.ico` はその生成物なので手で差し替えない
+  (`pwsh -File assets\make_icon.ps1` で16〜256pxの8サイズを再生成する)
 
 ## Doxygenコメント(必須)
 
