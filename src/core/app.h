@@ -446,11 +446,14 @@ private:
 
     /**
      * @brief 編集メニューの末端項目が表す操作。
-     * @note 設定系(StrokeWidth/FontSize/PickColor)はメニューを再表示して続けて選択できる。
+     * @note 設定系(Crop/Annotate 以外)はメニューを再表示して続けて選択できる。
      */
     struct EditMenuEntry {
         /// @brief 末端項目が表す操作の種類。
-        enum class Action { Crop, Annotate, StrokeWidth, FontSize, PickColor };
+        enum class Action {
+            Crop, Annotate, StrokeWidth, FontSize, PickColor,
+            FillAlpha, PickFillColor, BorderWidth, PickBorderColor
+        };
         Action action;                                           ///< 操作の種類
         AnnotationSpec::Kind kind = AnnotationSpec::Kind::Rect;  ///< Annotate 用の図形種別
         float value = 0;                                         ///< 設定系の値
@@ -459,9 +462,12 @@ private:
     /// @brief 注釈オブジェクトを右クリックしたときのメニューの末端項目。
     struct ObjectMenuEntry {
         /// @brief 末端項目が表す操作の種類。
-        enum class Action { EditText, Delete, Angle, StrokeWidth, FontSize, PickColor };
+        enum class Action {
+            EditText, Delete, Angle, StrokeWidth, FontSize, PickColor,
+            FillAlpha, PickFillColor, BorderWidth, PickBorderColor
+        };
         Action action;    ///< 操作の種類
-        float value = 0;  ///< Angle/StrokeWidth/FontSize の値
+        float value = 0;  ///< Angle/StrokeWidth/FontSize/FillAlpha/BorderWidth の値
     };
 
     /**
@@ -701,6 +707,10 @@ private:
     uint32_t editColorRGB_ = 0xFF3B30;  ///< 新規注釈の色(0xRRGGBB)
     float editStrokeWidth_ = 3.0f;  ///< 線幅。画面px基準(適用時に 1/zoom で画像座標へ換算)
     float editFontSize_ = 18.0f;    ///< フォントサイズ。画面px基準(同上)
+    uint32_t editFillRGB_ = 0xFFFFFF;  ///< 新規注釈の塗りつぶし色(0xRRGGBB)
+    int editFillAlpha_ = 0;            ///< 塗りつぶしの不透明度(0-255)。0 は塗りなし
+    uint32_t editBorderRGB_ = 0x000000;  ///< 新規テキストの枠線色(0xRRGGBB)
+    float editBorderWidth_ = 0;  ///< 枠線幅。画面px基準(同上)。0 は枠線なし
 };
 
 } // namespace blinker

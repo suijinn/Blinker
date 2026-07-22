@@ -57,13 +57,15 @@ bool hitTestAnnotation(const AnnotationSpec& spec, Point imagePos, float toleran
     // 回転は bbox 中心周りなので、点を逆回転してから無回転の形状と比較する
     const Point q = spec.angleDeg != 0 ? rotateAround(imagePos, c, -spec.angleDeg) : imagePos;
     const float reach = spec.strokeWidth * 0.5f + tolerance;
+    // 塗りつぶしてある図形は内部も掴めるようにする(見た目どおりの当たり判定にする)
+    const bool filled = spec.fillAlpha > 0;
     switch (spec.kind) {
     case AnnotationSpec::Kind::Rect: {
         const bool insideOuter = q.x >= b.minX - reach && q.x <= b.maxX + reach &&
                                  q.y >= b.minY - reach && q.y <= b.maxY + reach;
         const bool insideInner = q.x > b.minX + reach && q.x < b.maxX - reach &&
                                  q.y > b.minY + reach && q.y < b.maxY - reach;
-        return insideOuter && !insideInner;
+        return insideOuter && (filled || !insideInner);
     }
     case AnnotationSpec::Kind::Ellipse: {
         const float rx = (b.maxX - b.minX) * 0.5f;
@@ -75,7 +77,7 @@ bool hitTestAnnotation(const AnnotationSpec& spec, Point imagePos, float toleran
             const float ny = (q.y - c.y) / ey;
             return nx * nx + ny * ny <= 1.0f;
         };
-        return inside(rx + reach, ry + reach) && !inside(rx - reach, ry - reach);
+        return inside(rx + reach, ry + reach) && (filled || !inside(rx - reach, ry - reach));
     }
     case AnnotationSpec::Kind::Line:
     case AnnotationSpec::Kind::Arrow:
