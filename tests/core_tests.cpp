@@ -1,6 +1,7 @@
 // core 層の単体テスト。フレームワーク不使用の軽量 CHECK マクロで検証する。
 // 実行: build/<preset>/tests/core_tests.exe (ctest からも起動される)
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <condition_variable>
@@ -16,6 +17,7 @@
 #include "core/edit.h"
 #include "core/exif.h"
 #include "core/geometry.h"
+#include "core/help.h"
 #include "core/image_cache.h"
 #include "core/image_list.h"
 #include "core/keymap.h"
@@ -187,6 +189,99 @@ void testKeymap() {
     tools.applyConfig({{"tool_arrow", "A"}, {"tool_text", "T"}});
     CHECK(tools.find({KeyCode{'A'}}) == Command::SelectToolArrow);
     CHECK(tools.find({KeyCode{'T'}}) == Command::SelectToolText);
+
+    // 操作一覧 (F1)
+    CHECK(km.find({KeyCode::F1}) == Command::ToggleHelp);
+    CHECK(commandFromName("help") == Command::ToggleHelp);
+}
+
+void testChordToString() {
+    CHECK(Keymap::chordToString({KeyCode{'O'}, true}) == "Ctrl+O");
+    CHECK(Keymap::chordToString({KeyCode{'C'}, true, true}) == "Ctrl+Shift+C");
+    CHECK(Keymap::chordToString({KeyCode::Right}) == "Right");
+    CHECK(Keymap::chordToString({KeyCode::PageDown}) == "PageDown");
+    CHECK(Keymap::chordToString({KeyCode::F11}) == "F11");
+    CHECK(Keymap::chordToString({KeyCode::Plus}) == "+");
+    CHECK(Keymap::chordToString({KeyCode{'0'}}) == "0");
+    CHECK(Keymap::chordToString({KeyCode::None}).empty());
+    CHECK(Keymap::chordToString({KeyCode::Left, true, false, true}) == "Ctrl+Alt+Left");
+
+    // 表示用のキー名がそのまま blinker.ini に書けること(表示表と解析表の drift 検出)。
+    // 既定のバインドを総当たりで往復させる
+    const Keymap km = Keymap::defaults();
+    size_t roundTripped = 0;
+    for (int cmd = 0; cmd <= static_cast<int>(Command::Quit); ++cmd) {
+        for (const KeyChord& chord : km.chordsFor(static_cast<Command>(cmd))) {
+            const std::string text = Keymap::chordToString(chord);
+            CHECK(!text.empty());
+            const auto parsed = Keymap::parseChord(text);
+            CHECK(parsed && *parsed == chord);
+            ++roundTripped;
+        }
+    }
+    CHECK(roundTripped > 20);  // 既定表を素通りしていないことの歯止め
+
+    // chordsFor の並びは修飾なしが先で、格納順(unordered_map)に依存しない
+    const std::vector<KeyChord> pan = km.chordsFor(Command::PanLeft);
+    CHECK(pan.size() == 1);
+    CHECK((pan[0] == KeyChord{KeyCode::Left, true}));
+    const std::vector<KeyChord> quit = km.chordsFor(Command::Quit);
+    CHECK(quit.size() == 2);
+    CHECK((quit[0] == KeyChord{KeyCode{'Q'}}));        // 修飾なしが先
+    CHECK((quit[1] == KeyChord{KeyCode{'W'}, true}));  // Ctrl+W
+    CHECK(km.chordsFor(Command::SelectToolArrow).empty());
+}
+
+void testHelpLines() {
+    const Keymap km = Keymap::defaults();
+    CHECK(keysLabel(km, Command::NextImage) == "Right Down PageDown Space");
+    CHECK(keysLabel(km, Command::ToggleHelp) == "F1");
+    CHECK(keysLabel(km, Command::SelectToolArrow).empty());  // 既定では未割り当て
+
+    const std::vector<HelpLine> lines = buildHelpLines(km);
+    const auto has = [&lines](std::string_view text) {
+        return std::any_of(lines.begin(), lines.end(),
+                           [text](const HelpLine& line) { return line.text == text; });
+    };
+    const auto hasHeader = [&lines](std::string_view text) {
+        return std::any_of(lines.begin(), lines.end(), [text](const HelpLine& line) {
+            return line.header && line.text == text;
+        });
+    };
+
+    CHECK(hasHeader("表示"));
+    CHECK(hasHeader("マウス"));
+    CHECK(has("次の画像  Right Down PageDown Space"));
+    CHECK(has("この操作一覧  F1"));
+    CHECK(has("右 90 度回転  R"));
+    CHECK(has("パスをコピー  Ctrl+Shift+C"));
+    // キーの割り当てがない操作は行ごと出ない
+    CHECK(!has("矢印ツール  "));
+    CHECK(std::none_of(lines.begin(), lines.end(), [](const HelpLine& line) {
+        return line.text.starts_with("矢印ツール");
+    }));
+
+    // ini でキーを変えたら一覧もそれに追従する(README のような固定テキストではない)
+    Keymap custom = Keymap::defaults();
+    custom.applyConfig({{"next", "N"}, {"tool_arrow", "A"}});
+    const std::vector<HelpLine> customLines = buildHelpLines(custom);
+    const auto hasCustom = [&customLines](std::string_view text) {
+        return std::any_of(customLines.begin(), customLines.end(),
+                           [text](const HelpLine& line) { return line.text == text; });
+    };
+    CHECK(hasCustom("次の画像  N"));
+    CHECK(hasCustom("矢印ツール  A"));
+
+    // 節の中身が全部消えたら見出しも出さない
+    Keymap stripped = Keymap::defaults();
+    stripped.unbindCommand(Command::OpenFile);
+    stripped.unbindCommand(Command::SaveImageAs);
+    stripped.unbindCommand(Command::CopyImage);
+    stripped.unbindCommand(Command::CopyPath);
+    stripped.unbindCommand(Command::PasteImage);
+    const std::vector<HelpLine> strippedLines = buildHelpLines(stripped);
+    CHECK(std::none_of(strippedLines.begin(), strippedLines.end(),
+                       [](const HelpLine& line) { return line.text == "ファイル"; }));
 }
 
 void testConfig() {
@@ -1176,6 +1271,166 @@ void testAppSidebar() {
     sb = app.sidebar();
     CHECK(sb.visible);
     CHECK(nearly(sb.width, 300));
+}
+
+void testAppHelpSidebar() {
+    FakeDecoder decoder;
+    ImageCache cache(decoder);
+    FakeHost host;
+    FakeFileSystem fileSystem;
+    FakeClipboard clipboard;
+    FakeEncoder encoder;
+    FakeAnnotationRasterizer rasterizer;
+    App app(host, fileSystem, cache, clipboard, encoder, rasterizer);
+    app.onResize(800, 600);
+    for (int i = 1; i <= 30; ++i) {
+        fileSystem.files.push_back(std::format("C:/pics/f{:02}.png", i));
+    }
+    std::mutex mutex;
+    std::condition_variable cv;
+    bool decoded = false;
+    cache.setOnDecoded([&](const std::filesystem::path&) {
+        std::lock_guard lock(mutex);
+        decoded = true;
+        cv.notify_all();
+    });
+    app.openPath(fileSystem.files[0]);
+    {
+        std::unique_lock lock(mutex);
+        CHECK(cv.wait_for(lock, std::chrono::seconds(5), [&] { return decoded; }));
+    }
+    app.onDecodeCompleted();
+    CHECK(app.currentImage() != nullptr);
+
+    // F1 相当で操作一覧を開く。既定の幅 (220) より広げないと「操作名 + キー」が入らない
+    CHECK(app.sidebarMode() == SidebarMode::Files);
+    app.execute(Command::ToggleHelp);
+    SidebarView sb = app.sidebar();
+    CHECK(sb.visible);
+    CHECK(app.sidebarMode() == SidebarMode::Help);
+    CHECK(nearly(sb.width, 300));
+    CHECK(!sb.items.empty());
+    CHECK(sb.items[0].text == "表示");
+    CHECK(sb.items[0].current);  // 見出しはハイライトで描く
+    // 中身はファイル名ではなくキー一覧
+    CHECK(sb.items[1].text == "次の画像  Right Down PageDown Space");
+    // 30 ファイルより行数が多いので、内容の高さもファイル一覧とは別物になる
+    CHECK(sb.contentHeight > 30 * 24);
+
+    // 画像はサイドバー (300px) の右側に描かれる
+    CHECK(nearly(app.imageToScreen().apply({0.5f, 0.5f}).x, 300 + 250));
+
+    // 一覧上のクリックは画像を切り替えない(消費だけする)
+    const std::string titleBefore = host.lastTitle;
+    CHECK(app.onMouseDown({100, 100}));
+    CHECK(host.lastTitle == titleBefore);
+
+    // ホイールでスクロールでき、末尾・先頭でクランプされる
+    app.onWheel(-100.0f, {100, 300});
+    const float maxScroll = app.sidebar().contentHeight - app.sidebar().height;
+    CHECK(nearly(app.sidebar().scrollOffset, maxScroll));
+    app.onWheel(100.0f, {100, 300});
+    CHECK(nearly(app.sidebar().scrollOffset, 0));
+
+    // Ctrl+B 相当は閉じずにファイル名一覧へ切り替える
+    app.execute(Command::ToggleSidebar);
+    sb = app.sidebar();
+    CHECK(sb.visible);
+    CHECK(app.sidebarMode() == SidebarMode::Files);
+    CHECK(nearly(sb.width, 220));
+    CHECK(sb.items[0].text == "f01.png");
+
+    // F1 → もう一度 F1 で閉じる
+    app.execute(Command::ToggleHelp);
+    CHECK(app.sidebar().visible && app.sidebarMode() == SidebarMode::Help);
+    app.execute(Command::ToggleHelp);
+    CHECK(!app.sidebar().visible);
+
+    // 開いている間の Esc は「閉じる」。アプリ終了やフルスクリーン解除より優先する
+    app.execute(Command::ToggleHelp);
+    host.fullscreen = true;
+    app.execute(Command::Escape);
+    CHECK(!app.sidebar().visible);
+    CHECK(host.fullscreen);  // フルスクリーンは解除されていない
+    app.execute(Command::Escape);
+    CHECK(!host.fullscreen);
+    host.fullscreen = false;
+
+    // ini でキーを変えると一覧の内容も追従する
+    app.applyConfig(Config::parse("[view]\nsidebar_width = 400\n[keys]\nnext = N\n"));
+    app.execute(Command::ToggleHelp);
+    sb = app.sidebar();
+    CHECK(nearly(sb.width, 400));  // 設定が kHelpSidebarWidth より広ければそちらを使う
+    CHECK(sb.items[1].text == "次の画像  N");
+
+    // 起動時の案内はステータスバーに出る(未割り当てキーの案内に次ぐ2つ目の導線)
+    App fresh(host, fileSystem, cache, clipboard, encoder, rasterizer);
+    fresh.onResize(800, 600);
+    fresh.showStartupHint();
+    CHECK(fresh.statusBar().leftText == "F1 で操作一覧");
+    CHECK(host.lastTimerMs > 0);  // 一定時間で消える
+
+    // ini で無効にできる
+    App quiet(host, fileSystem, cache, clipboard, encoder, rasterizer);
+    quiet.onResize(800, 600);
+    quiet.applyConfig(Config::parse("[view]\nhelp_hint = false\n"));
+    quiet.showStartupHint();
+    CHECK(quiet.statusBar().leftText.empty());
+    CHECK(!quiet.onKey({KeyCode{'J'}}));  // 未割り当てキーでも黙ったまま
+    CHECK(quiet.statusBar().leftText.empty());
+}
+
+// 未割り当てのキーを押した瞬間 = ヘルプが要る瞬間。ここが案内の主役
+void testAppHelpHint() {
+    FakeDecoder decoder;
+    ImageCache cache(decoder);
+    FakeHost host;
+    FakeFileSystem fileSystem;
+    FakeClipboard clipboard;
+    FakeEncoder encoder;
+    FakeAnnotationRasterizer rasterizer;
+    App app(host, fileSystem, cache, clipboard, encoder, rasterizer);
+    app.onResize(800, 600);
+
+    // 何も割り当てられていないキー → 消費はしないが案内を出す
+    CHECK(!app.onKey({KeyCode{'J'}}));
+    CHECK(app.statusBar().leftText == "F1 で操作一覧");
+
+    // 同じ案内の出しっぱなし(キーリピート)では再通知しない
+    host.lastTimerMs = 0;
+    CHECK(!app.onKey({KeyCode{'J'}}));
+    CHECK(host.lastTimerMs == 0);
+
+    // 割り当てのあるキーでは出ない。コマンドの通知があればそちらが優先される
+    app.onTimer();  // 案内が時間切れで消えた状態にする
+    CHECK(app.statusBar().leftText.empty());
+    CHECK(app.onKey({KeyCode{'B'}}));  // ステータスバーの表示切替
+    CHECK(app.onKey({KeyCode{'B'}}));  // 元に戻す
+    CHECK(app.statusBar().leftText.empty());
+
+    // 操作一覧を出している間は案内しない(見えているものを案内しても意味がない)
+    app.execute(Command::ToggleHelp);
+    CHECK(!app.onKey({KeyCode{'J'}}));
+    CHECK(app.statusBar().leftText.empty());
+    app.execute(Command::ToggleHelp);
+    CHECK(!app.onKey({KeyCode{'J'}}));
+    CHECK(app.statusBar().leftText == "F1 で操作一覧");
+
+    // ini でキーを変えれば案内の文面も変わる
+    App rebound(host, fileSystem, cache, clipboard, encoder, rasterizer);
+    rebound.onResize(800, 600);
+    rebound.applyConfig(Config::parse("[keys]\nhelp = H\n"));
+    CHECK(!rebound.onKey({KeyCode{'J'}}));
+    CHECK(rebound.statusBar().leftText == "H で操作一覧");
+    CHECK(rebound.onKey({KeyCode{'H'}}));  // 新しいキーで実際に開く
+    CHECK(rebound.sidebarMode() == SidebarMode::Help);
+
+    // ヘルプ自体を無効化(未割り当て)にしたら、案内する先がないので黙る
+    App unbound(host, fileSystem, cache, clipboard, encoder, rasterizer);
+    unbound.onResize(800, 600);
+    unbound.applyConfig(Config::parse("[keys]\nhelp =\n"));
+    CHECK(!unbound.onKey({KeyCode::F1}));
+    CHECK(unbound.statusBar().leftText.empty());
 }
 
 void testEditFunctions() {
@@ -2432,6 +2687,8 @@ int main() {
     testViewportFit();
     testViewportZoomAt();
     testKeymap();
+    testChordToString();
+    testHelpLines();
     testConfig();
     testDib();
     testPixelConvert();
@@ -2443,6 +2700,8 @@ int main() {
     testAppStatusBar();
     testAppPasteSave();
     testAppSidebar();
+    testAppHelpSidebar();
+    testAppHelpHint();
     testEditFunctions();
     testAnnotationGeometry();
     testAppAnnotationObjects();

@@ -49,6 +49,7 @@ enum class Command {
     SelectToolText,    ///< 右ドラッグのツールをテキストに切り替える
     ToggleSidebar,     ///< ファイル名一覧のサイドバーの表示切り替え
     ToggleStatusBar,   ///< ステータスバーの表示切り替え
+    ToggleHelp,        ///< サイドバーにキー一覧(ヘルプ)を表示 / 非表示
     Escape,            ///< フルスクリーン解除。通常時は終了
     Quit,              ///< アプリケーションを終了
 };

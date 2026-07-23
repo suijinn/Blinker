@@ -91,6 +91,7 @@ int WINAPI wWinMain(HINSTANCE hinstance, HINSTANCE, PWSTR, int showCommand) {
         if (const auto initialPath = pathFromCommandLine(); !initialPath.empty()) {
             app.openPath(initialPath);
         }
+        app.showStartupHint();  // 画像情報より優先して出るので openPath の後に呼ぶ
 
         MSG msg;
         while (GetMessageW(&msg, nullptr, 0, 0) > 0) {
