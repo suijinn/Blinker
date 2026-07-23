@@ -2,17 +2,19 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <string>
 #include <vector>
 
 /**
  * @file text_style.h
- * @brief テキスト内の部分書式(色・太字・斜体・下線)を表す範囲リストと、その編集の純関数。
+ * @brief テキスト内の部分書式(色・太字・斜体・下線・フォント)を表す範囲リストと、
+ *        その編集の純関数。
  *
  * OS ヘッダに依存しない(単体テスト対象)。位置はすべて UTF-8 のバイト位置で、
  * 対象の文字列とは独立に保持する(文字列側は TextEditBuffer / AnnotationSpec::text)。
  *
  * 範囲リストは常に「開始位置の昇順・重なりなし・既定のままの範囲は持たない」
- * 正規形で保つ。書式を指定していない部分は AnnotationSpec の colorRGB と
+ * 正規形で保つ。書式を指定していない部分は AnnotationSpec の colorRGB・fontFamily と
  * 標準の字形(太字・斜体・下線なし)で描かれる。
  */
 
@@ -32,6 +34,8 @@ struct TextStyleRun {
     bool underline = false; ///< 下線を引くか
     bool hasColor = false;  ///< colorRGB を使うか。false なら注釈全体の色
     uint32_t colorRGB = 0;  ///< 文字色(0xRRGGBB)。hasColor が false なら無意味
+    /// フォントファミリ名(UTF-8)。空なら注釈全体のフォント(AnnotationSpec::fontFamily)
+    std::string fontFamily;
 
     /**
      * @brief 全メンバの一致で比較する。
@@ -104,6 +108,18 @@ void setTextStyleFlag(std::vector<TextStyleRun>& runs, size_t begin, size_t end,
  */
 void setTextStyleColor(std::vector<TextStyleRun>& runs, size_t begin, size_t end,
                        uint32_t colorRGB);
+
+/**
+ * @brief 範囲へフォントを設定する。
+ * @param[in,out] runs   更新する範囲リスト。正規形で返る。
+ * @param[in]     begin  対象範囲の開始バイト位置。
+ * @param[in]     end    対象範囲の終了バイト位置。end <= begin なら何もしない。
+ * @param[in]     family フォントファミリ名(UTF-8)。空文字列を渡すと指定を外し、
+ *                       その範囲は注釈全体のフォントで描かれるようになる。
+ * @note 同じ範囲の太字・斜体・下線・色は保たれる。
+ */
+void setTextStyleFontFamily(std::vector<TextStyleRun>& runs, size_t begin, size_t end,
+                            const std::string& family);
 
 /**
  * @brief 文字列の編集に合わせて範囲の位置をずらす。

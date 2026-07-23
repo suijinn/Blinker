@@ -9,6 +9,7 @@
 #include <format>
 #include <iostream>
 #include <mutex>
+#include <set>
 
 #include "core/annotation_edit.h"
 #include "core/app.h"
@@ -775,11 +776,20 @@ size_t countMenuLeaves(const std::vector<MenuItem>& items) {
     return count;
 }
 
+// メニュー構造から見出しが prefix で始まる項目を探す(末端 index に依存せず中身を見る)
+const MenuItem* findMenuItem(const std::vector<MenuItem>& items, std::string_view prefix) {
+    for (const MenuItem& item : items) {
+        if (item.text.starts_with(prefix)) return &item;
+    }
+    return nullptr;
+}
+
 // 注釈のない場所での右クリック(ドラッグなし)= ツール切り替えメニュー。
 // leafIndex はメニューの末端項目: 0 トリミング, 1 矩形, 2 楕円, 3 矢印, 4 直線, 5 テキスト,
-// 6-12 太さ {1,2,3,5,8,12,20}, 13-19 文字サイズ {12,14,18,24,36,48,72}, 20 色,
-// 21-25 塗りつぶし {0,64,128,191,255}, 26 塗りつぶしの色,
-// 27-32 テキストの枠線 {0,1,2,3,5,8}, 33 枠線の色
+// 6-12 太さ {1,2,3,5,8,12,20}, 13-19 文字サイズ {12,14,18,24,36,48,72},
+// 20-27 フォント(候補8種。FakeAnnotationRasterizer は全て入っていることにする), 28 色,
+// 29-33 塗りつぶし {0,64,128,191,255}, 34 塗りつぶしの色,
+// 35-40 テキストの枠線 {0,1,2,3,5,8}, 41 枠線の色
 constexpr Point kEmptySpot{600, 450};  // 画像・注釈の外(ツールメニューが開く位置)
 
 // ツールメニューで末端項目を順に選ぶ。設定系(太さ・色など)を選ぶとメニューは
@@ -881,6 +891,13 @@ public:
                  static_cast<float>(utf16End) * kCharWidth, kLineHeight}};
     }
 
+    // 既定では候補のフォントがすべて入っている環境として振る舞う
+    // (メニューの末端 index を環境に依らず固定するため)
+    bool hasFontFamily(const std::string& family) override {
+        ++hasFontFamilyCount;
+        return missingFonts.count(family) == 0;
+    }
+
     bool ok = true;
     int rasterizeCount = 0;
     uint32_t overlayWidth = 1;
@@ -888,6 +905,8 @@ public:
     int overlayX = 0;
     int overlayY = 0;
     AnnotationSpec lastSpec;
+    std::set<std::string> missingFonts;  // 「入っていない」ことにするフォント
+    int hasFontFamilyCount = 0;
 };
 
 void testAppClipboard() {
@@ -1913,13 +1932,13 @@ void testAppEdit() {
     CHECK(app.annotations().specs->empty());
 
     // 閾値未満の右ドラッグ(ただの右クリック)はツール切り替えメニューを開く。
-    // 末端項目: ツール6種 + 太さ7 + 文字サイズ7 + 色1 + 塗りつぶし(5+色1) + 枠線(6+色1)
-    // = 34(回転角度はオブジェクト側にある)
+    // 末端項目: ツール6種 + 太さ7 + 文字サイズ7 + フォント8 + 色1 + 塗りつぶし(5+色1)
+    // + 枠線(6+色1) = 42(回転角度はオブジェクト側にある)
     host.menuChoice = std::nullopt;  // キャンセルするので何も起きない
     app.onRightDragStart({400, 300});
     app.onRightDragEnd({402, 301});
     CHECK(host.menuCount == 1);
-    CHECK(countMenuLeaves(host.lastMenuItems) == 34);
+    CHECK(countMenuLeaves(host.lastMenuItems) == 42);
     CHECK(app.currentTool() == EditTool::Rect);
     CHECK(app.annotations().specs->empty());
     CHECK(app.currentImage()->width == 8);
@@ -2014,7 +2033,7 @@ void testAppEdit() {
 
     // 設定変更を選ぶとメニューが再表示され、続けてツールを選べる。
     // 末端 index: 0-5 ツール, 6-12 太さ {1,2,3,5,8,12,20}, 13-19 文字サイズ
-    // {12,14,18,24,36,48,72}, 20 色
+    // {12,14,18,24,36,48,72}, 20-27 フォント, 28 色
     chooseInToolMenu(app, host, {10 /*太さ8px*/, 1 /*矩形*/});
     CHECK(host.menuQueue.empty());
     app.onRightDragStart({396, 283});
@@ -2034,14 +2053,14 @@ void testAppEdit() {
 
     // 色の変更: ダイアログの結果が以降の編集に使われる。キャンセルなら元のまま
     host.colorChoice = 0x00CC66;
-    chooseInToolMenu(app, host, {20 /*色*/, 4 /*直線*/});
+    chooseInToolMenu(app, host, {28 /*色*/, 4 /*直線*/});
     app.onRightDragStart({396, 283});
     app.onRightDragEnd({400, 287});
     CHECK(host.colorPickerCount == 1);
     CHECK(host.lastColorPickerInitial == 0xFF3B30);
     CHECK(app.annotations().specs->back().colorRGB == 0x00CC66);
     host.colorChoice = std::nullopt;
-    chooseInToolMenu(app, host, {20 /*色 (キャンセル)*/, 4 /*直線*/});
+    chooseInToolMenu(app, host, {28 /*色 (キャンセル)*/, 4 /*直線*/});
     app.onRightDragStart({396, 283});
     app.onRightDragEnd({400, 287});
     CHECK(host.colorPickerCount == 2);
@@ -2058,15 +2077,15 @@ void testAppEdit() {
     app.onRightDragEnd({400, 287});
     CHECK(nearly(app.annotations().specs->back().strokeWidth, 3));  // 3px に戻っている
 
-    // 塗りつぶし: 末端 index 21-25 が不透明度 {0,64,128,191,255}、26 が塗りつぶしの色。
+    // 塗りつぶし: 末端 index 29-33 が不透明度 {0,64,128,191,255}、34 が塗りつぶしの色。
     // 色を選ぶと塗りなしのままにならないよう不透明で塗り始める
-    chooseInToolMenu(app, host, {23 /*不透明度 128*/, 1 /*矩形*/});
+    chooseInToolMenu(app, host, {31 /*不透明度 128*/, 1 /*矩形*/});
     app.onRightDragStart({396, 283});
     app.onRightDragEnd({400, 287});
     CHECK(app.annotations().specs->back().fillAlpha == 128);
     CHECK(app.annotations().specs->back().fillRGB == 0xFFFFFF);  // 既定は白
     host.colorChoice = 0x3366FF;
-    chooseInToolMenu(app, host, {21 /*塗りなしへ戻す*/, 26 /*塗りつぶしの色*/, 2 /*楕円*/});
+    chooseInToolMenu(app, host, {29 /*塗りなしへ戻す*/, 34 /*塗りつぶしの色*/, 2 /*楕円*/});
     app.onRightDragStart({396, 283});
     app.onRightDragEnd({400, 287});
     {
@@ -2088,9 +2107,9 @@ void testAppEdit() {
     CHECK(app.annotations().specs->back().fillAlpha == 255);
     host.menuChoice = std::nullopt;  // 以降は menuQueue を使う(設定系は再表示されるため)
 
-    // テキストの枠線: 末端 index 27-32 が太さ {0,1,2,3,5,8}、33 が枠線の色。
+    // テキストの枠線: 末端 index 35-40 が太さ {0,1,2,3,5,8}、41 が枠線の色。
     // 枠線ぶん余白が広がるので実測境界も縮む (24x12 の overlay - 余白 (2+太さ/2)*2)
-    chooseInToolMenu(app, host, {29 /*枠線 2px*/, 5 /*テキスト*/});
+    chooseInToolMenu(app, host, {37 /*枠線 2px*/, 5 /*テキスト*/});
     rasterizer.overlayWidth = 24;
     rasterizer.overlayHeight = 12;
     app.onRightDragStart({396, 283});
@@ -2102,7 +2121,7 @@ void testAppEdit() {
         CHECK(nearly(spec.borderWidth, 2));
         CHECK(nearly(spec.p2.x - spec.p1.x, 18) && nearly(spec.p2.y - spec.p1.y, 6));
     }
-    chooseInToolMenu(app, host, {27 /*枠線なしへ戻す*/});
+    chooseInToolMenu(app, host, {35 /*枠線なしへ戻す*/});
 
     // 確定時の実測(ラスタライズ)失敗はメッセージを出す。入力済みの内容は残す
     rasterizer.ok = false;
@@ -2313,6 +2332,19 @@ void testTextStyleRuns() {
     setTextStyleFlag(off, 0, 3, TextStyleFlag::Italic, false);
     CHECK(off.empty());
 
+    // フォントも他の属性と独立。指定を外した範囲は(他が無ければ)消える
+    std::vector<TextStyleRun> font{{0, 6, false, false, true, false, 0}};
+    setTextStyleFontFamily(font, 2, 4, "Meiryo");
+    CHECK(font.size() == 3);
+    CHECK((font[1] == TextStyleRun{2, 4, false, false, true, false, 0, "Meiryo"}));
+    setTextStyleFontFamily(font, 0, 6, "MS Mincho");
+    CHECK(font.size() == 1);  // 全体が同じ書式になったのでまとまる
+    CHECK((font[0] == TextStyleRun{0, 6, false, false, true, false, 0, "MS Mincho"}));
+    setTextStyleFontFamily(font, 0, 6, "");
+    CHECK((font[0] == TextStyleRun{0, 6, false, false, true, false, 0}));
+    setTextStyleFlag(font, 0, 6, TextStyleFlag::Underline, false);
+    CHECK(font.empty());
+
     // 指定位置の書式(どの範囲にも無ければ既定)
     const std::vector<TextStyleRun> at{{2, 5, false, false, true, false, 0}};
     CHECK(textStyleAt(at, 3).underline);
@@ -2361,7 +2393,22 @@ void testTextEditBufferStyles() {
     TextEditBuffer none("abc");
     CHECK(!none.toggleSelectionFlag(TextStyleFlag::Bold));
     CHECK(!none.setSelectionColor(0x123456));
+    CHECK(!none.setSelectionFontFamily("Meiryo"));
     CHECK(none.styles().empty());
+
+    // 選択範囲だけのフォント変更。同じ指定を繰り返しても変化なしを返す
+    TextEditBuffer font("abcdef");
+    font.setCaret(1, false);
+    font.setCaret(4, true);
+    CHECK(font.setSelectionFontFamily("Meiryo"));
+    CHECK(font.styles().size() == 1);
+    CHECK((font.styles()[0] == TextStyleRun{1, 4, false, false, false, false, 0, "Meiryo"}));
+    CHECK(font.selectionStyle().fontFamily == "Meiryo");
+    CHECK(!font.setSelectionFontFamily("Meiryo"));
+    // 文字列の編集にも他の書式と同じように追従する
+    font.setCaret(0, false);
+    font.insert("XY");
+    CHECK((font.styles()[0] == TextStyleRun{3, 6, false, false, false, false, 0, "Meiryo"}));
 
     // 色・太字・斜体・下線は同じ範囲に共存でき、独立にトグルできる
     TextEditBuffer both("abcdef");
@@ -2660,7 +2707,8 @@ void testAppTextStyles() {
     app.onRightDragEnd(screenOf(20, 15));
     CHECK(app.isTextEditing());  // 右クリックで編集が終わらない
     CHECK(host.menuCount == menusBefore + 1);
-    CHECK(countMenuLeaves(host.lastMenuItems) == 4);  // 太字・斜体・下線・文字色
+    // 末端 index: 0-2 太字・斜体・下線, 3-10 フォント(候補8種), 11 文字色
+    CHECK(countMenuLeaves(host.lastMenuItems) == 12);
     CHECK(!host.lastMenuItems[0].checked);            // 太字は付いていない
     CHECK(!host.lastMenuItems[1].checked);            // 斜体も付いていない
     CHECK(host.lastMenuItems[2].checked);             // 下線は付いている
@@ -2674,7 +2722,7 @@ void testAppTextStyles() {
     app.onKey(ctrl('I'));  // 斜体を戻して以降のテストを素直にする
 
     // メニューから文字色を選ぶと、選択部分だけ色が付く(下線はそのまま)
-    host.menuChoice = 3;  // 文字色...
+    host.menuChoice = 11;  // 文字色...
     host.colorChoice = 0x00FF00;
     app.onRightDragStart(screenOf(20, 15));
     app.onRightDragEnd(screenOf(20, 15));
@@ -2683,6 +2731,36 @@ void testAppTextStyles() {
           TextStyleRun{0, 3, false, false, true, true, 0x00FF00}));
     // 色を指定していないので、ピッカーの初期値は注釈全体の色
     CHECK(host.lastColorPickerInitial == app.annotations().specs->back().colorRGB);
+
+    // メニューからフォントを選ぶと選択部分だけ書体が変わる(他の書式・全体のフォントは不変)
+    host.menuChoice = 5;  // フォント: 3 游ゴシック UI, 4 游明朝, 5 メイリオ
+    app.onRightDragStart(screenOf(20, 15));
+    app.onRightDragEnd(screenOf(20, 15));
+    CHECK(app.annotations().specs->back().styles.size() == 1);
+    CHECK((app.annotations().specs->back().styles[0] ==
+          TextStyleRun{0, 3, false, false, true, true, 0x00FF00, "Meiryo"}));
+    CHECK(app.annotations().specs->back().fontFamily == kDefaultFontFamily);
+
+    // 見出しとチェックは選択範囲に付いているフォントに追従する
+    host.menuChoice = std::nullopt;
+    app.onRightDragStart(screenOf(20, 15));
+    app.onRightDragEnd(screenOf(20, 15));
+    {
+        const MenuItem* family = findMenuItem(host.lastMenuItems, "フォント (");
+        CHECK(family != nullptr);
+        if (family) {
+            CHECK(family->text == "フォント (メイリオ)");
+            CHECK(family->children[2].checked);   // メイリオ
+            CHECK(!family->children[0].checked);  // 游ゴシック UI
+        }
+    }
+
+    // 注釈全体と同じフォントを選ぶと指定が外れる(他の書式は残る)
+    host.menuChoice = 3;  // 游ゴシック UI = 注釈全体のフォント
+    app.onRightDragStart(screenOf(20, 15));
+    app.onRightDragEnd(screenOf(20, 15));
+    CHECK((app.annotations().specs->back().styles[0] ==
+          TextStyleRun{0, 3, false, false, true, true, 0x00FF00}));
 
     // 確定しても書式は残り、再編集でも引き継がれる
     app.onKey({KeyCode::Escape});
@@ -2698,6 +2776,88 @@ void testAppTextStyles() {
     app.onRightDragStart(screenOf(90, 90));
     app.onRightDragEnd(screenOf(90, 90));
     CHECK(!app.isTextEditing());
+}
+
+void testAppFontFamily() {
+    FakeDecoder decoder;
+    ImageCache cache(decoder);
+    FakeHost host;
+    FakeFileSystem fs;
+    FakeClipboard clipboard;
+    FakeEncoder encoder;
+    FakeAnnotationRasterizer rasterizer;
+    App app(host, fs, cache, clipboard, encoder, rasterizer);
+
+    app.onResize(800, 600);
+    auto source = std::make_shared<DecodedImage>();
+    source->width = 100;
+    source->height = 100;
+    source->pixels.resize(100 * 100 * 4);
+    clipboard.pasteImage = source;
+    app.execute(Command::PasteImage);
+    app.execute(Command::ZoomActual);
+    const Matrix3x2 toScreen = app.imageToScreen();
+    rasterizer.overlayWidth = 44;
+    rasterizer.overlayHeight = 24;
+    const auto screenOf = [&toScreen](float x, float y) { return toScreen.apply({x, y}); };
+    // テキストを 1 つ作って確定する
+    const auto addText = [&](const char* body) {
+        app.onRightDragStart(screenOf(10, 10));
+        app.onRightDragEnd(screenOf(50, 30));
+        app.insertText(body);
+        app.onKey({KeyCode::Escape});
+    };
+
+    // 設定の適用ではシステムフォントを列挙しない(問い合わせはメニューを開いたときだけ)
+    app.applyConfig(Config::parse("[edit]\ncolor = 112233\n"));
+    CHECK(rasterizer.hasFontFamilyCount == 0);
+
+    // 既定のフォントは新規テキストへそのまま載る
+    chooseInToolMenu(app, host, {5 /*テキスト*/});
+    CHECK(rasterizer.hasFontFamilyCount > 0);
+    addText("あ");
+    CHECK(app.annotations().specs->back().fontFamily == kDefaultFontFamily);
+
+    // ツールメニューのフォント(末端 index 20-27)から選ぶと以降の新規テキストへ効く
+    chooseInToolMenu(app, host, {22 /*メイリオ*/});
+    addText("い");
+    CHECK(app.annotations().specs->back().fontFamily == "Meiryo");
+    CHECK(app.annotations().specs->front().fontFamily == kDefaultFontFamily);  // 既存は不変
+
+    // オブジェクトメニュー(テキスト)の末端 index:
+    // 0 編集, 1 削除, 2-9 回転, 10-16 文字サイズ, 17-24 フォント, 25 色,
+    // 26-30 塗りつぶし, 31 塗りつぶしの色, 32-37 枠線, 38 枠線の色
+    CHECK(app.onMouseDown(screenOf(20, 15)));  // 直近のテキストを選択
+    app.onMouseUp();
+    host.menuChoice = 17;  // 游ゴシック UI
+    app.onRightDragStart(screenOf(20, 15));
+    app.onRightDragEnd(screenOf(20, 15));
+    CHECK(countMenuLeaves(host.lastMenuItems) == 39);
+    CHECK(app.annotations().specs->back().fontFamily == "Yu Gothic UI");
+    app.execute(Command::Undo);
+    CHECK(app.annotations().specs->back().fontFamily == "Meiryo");
+
+    // ini では候補表にない名前も指定できる(入っていなければ描画側がフォールバックする)
+    app.applyConfig(Config::parse("[edit]\nfont_family = BIZ UDPMincho\n"));
+    addText("う");
+    CHECK(app.annotations().specs->back().fontFamily == "BIZ UDPMincho");
+
+    // 入っていないフォントは候補から外れ、候補表にない現在のフォントは末尾に足される
+    // (選び直したあとで戻れるように)
+    rasterizer.missingFonts = {"Yu Mincho", "MS Mincho"};
+    host.menuChoice = std::nullopt;
+    app.onRightDragStart(kEmptySpot);
+    app.onRightDragEnd(kEmptySpot);
+    const MenuItem* family = findMenuItem(host.lastMenuItems, "フォント (");
+    CHECK(family != nullptr);
+    if (family) {
+        CHECK(family->text == "フォント (BIZ UDPMincho)");
+        CHECK(family->children.size() == 7);  // 候補 8 - 欠け 2 + 現在のフォント 1
+        CHECK(family->children.back().text == "BIZ UDPMincho");
+        CHECK(family->children.back().checked);
+        CHECK(findMenuItem(family->children, "游明朝") == nullptr);
+        CHECK(findMenuItem(family->children, "メイリオ") != nullptr);
+    }
 }
 
 void testNaturalCompare() {
@@ -2754,6 +2914,7 @@ int main() {
     testAppEdit();
     testAppTextEditing();
     testAppTextStyles();
+    testAppFontFamily();
 
     if (g_failures == 0) {
         std::cout << "all tests passed\n";

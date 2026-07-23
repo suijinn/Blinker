@@ -22,6 +22,11 @@ DWRITE_TEXT_RANGE toTextRange(const std::string& text, const TextStyleRun& run) 
     return {begin, end > begin ? end - begin : 0};
 }
 
+/// 描画に使うフォントファミリ名。未指定なら既定
+std::wstring fontFamilyOf(const AnnotationSpec& spec) {
+    return utf8ToWide(spec.fontFamily.empty() ? kDefaultFontFamily : spec.fontFamily);
+}
+
 D2D1_COLOR_F colorFrom(uint32_t rgb, float alpha) {
     return D2D1::ColorF(((rgb >> 16) & 0xFF) / 255.0f, ((rgb >> 8) & 0xFF) / 255.0f,
                         (rgb & 0xFF) / 255.0f, alpha);
@@ -45,9 +50,12 @@ ComPtr<IDWriteTextLayout> createAnnotationTextLayout(IDWriteFactory* dwrite,
                                                      const AnnotationSpec& spec,
                                                      float maxHeight) {
     ComPtr<IDWriteTextFormat> format;
-    if (FAILED(dwrite->CreateTextFormat(L"Segoe UI", nullptr, DWRITE_FONT_WEIGHT_NORMAL,
-                                        DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
-                                        spec.fontSize, L"ja-jp", &format))) {
+    // 入っていないファミリ名でも CreateTextFormat は成功し、DirectWrite の
+    // フォールバックで描かれる(文字が出なくなることはない)
+    if (FAILED(dwrite->CreateTextFormat(fontFamilyOf(spec).c_str(), nullptr,
+                                        DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL,
+                                        DWRITE_FONT_STRETCH_NORMAL, spec.fontSize, L"ja-jp",
+                                        &format))) {
         return nullptr;
     }
     const float wrapWidth = std::max(std::abs(spec.p2.x - spec.p1.x), spec.fontSize);
@@ -58,14 +66,17 @@ ComPtr<IDWriteTextLayout> createAnnotationTextLayout(IDWriteFactory* dwrite,
                                         wrapWidth, maxHeight, &layout))) {
         return nullptr;
     }
-    // 太字・斜体・下線は文字送りや行の高さに影響するため、計測に使うレイアウトにも
-    // 反映する(色は見た目だけなので、描画時に drawing effect として与える)
+    // 太字・斜体・下線・フォントは文字送りや行の高さに影響するため、計測に使う
+    // レイアウトにも反映する(色は見た目だけなので、描画時に drawing effect として与える)
     for (const TextStyleRun& run : spec.styles) {
         const DWRITE_TEXT_RANGE range = toTextRange(spec.text, run);
         if (range.length == 0) continue;
         if (run.bold) layout->SetFontWeight(DWRITE_FONT_WEIGHT_BOLD, range);
         if (run.italic) layout->SetFontStyle(DWRITE_FONT_STYLE_ITALIC, range);
         if (run.underline) layout->SetUnderline(TRUE, range);
+        if (!run.fontFamily.empty()) {
+            layout->SetFontFamilyName(utf8ToWide(run.fontFamily).c_str(), range);
+        }
     }
     return layout;
 }

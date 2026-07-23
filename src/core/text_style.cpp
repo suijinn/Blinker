@@ -8,7 +8,7 @@ namespace {
 /// 位置以外の書式が同じか(隣接範囲をまとめてよいかの判定)
 bool sameAttributes(const TextStyleRun& a, const TextStyleRun& b) {
     if (a.bold != b.bold || a.italic != b.italic || a.underline != b.underline ||
-        a.hasColor != b.hasColor) {
+        a.hasColor != b.hasColor || a.fontFamily != b.fontFamily) {
         return false;
     }
     return !a.hasColor || a.colorRGB == b.colorRGB;
@@ -28,7 +28,8 @@ bool flagOf(const TextStyleRun& run, TextStyleFlag flag) {
 
 /// 属性を 1 つも指定していない範囲(捨ててよい範囲)か
 bool isDefaultStyle(const TextStyleRun& run) {
-    return !run.bold && !run.italic && !run.underline && !run.hasColor;
+    return !run.bold && !run.italic && !run.underline && !run.hasColor &&
+           run.fontFamily.empty();
 }
 
 /**
@@ -146,6 +147,11 @@ void setTextStyleColor(std::vector<TextStyleRun>& runs, size_t begin, size_t end
         run.hasColor = true;
         run.colorRGB = colorRGB;
     });
+}
+
+void setTextStyleFontFamily(std::vector<TextStyleRun>& runs, size_t begin, size_t end,
+                            const std::string& family) {
+    applyToRange(runs, begin, end, [&family](TextStyleRun& run) { run.fontFamily = family; });
 }
 
 void adjustTextStyles(std::vector<TextStyleRun>& runs, size_t offset, size_t removed,

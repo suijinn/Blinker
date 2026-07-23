@@ -58,6 +58,13 @@ public:
     std::vector<TextRangeRect> selectionRects(const AnnotationSpec& spec, size_t utf16Begin,
                                               size_t utf16End) override;
 
+    /**
+     * @brief フォントファミリがシステムフォントコレクションにあるかを返す。
+     * @param[in] family 調べるフォントファミリ名(UTF-8)。
+     * @return 見つかれば true。DirectWrite の初期化に失敗している場合は false。
+     */
+    bool hasFontFamily(const std::string& family) override;
+
 private:
     /**
      * @brief 計測用のテキストレイアウトを作る。

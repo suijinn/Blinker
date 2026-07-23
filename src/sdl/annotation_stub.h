@@ -46,6 +46,12 @@ public:
     std::vector<TextRangeRect> selectionRects(const AnnotationSpec&, size_t, size_t) override {
         return {};
     }
+
+    /**
+     * @brief フォントの有無の問い合わせ(常に無し)。
+     * @return 常に false。
+     */
+    bool hasFontFamily(const std::string&) override { return false; }
 };
 
 } // namespace blinker
