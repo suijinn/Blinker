@@ -323,16 +323,20 @@ public:
     /**
      * @brief 右ドラッグ中の選択領域(とプレビュー)を更新する。
      * @param[in] screenPos 現在位置(スクリーン座標)。
+     * @param[in] shift     Shift が押されているか。押されていれば選択領域を正方形にする
+     *                      (直線・矢印ツールを除く)。
      */
-    void onRightDragMove(Point screenPos);
+    void onRightDragMove(Point screenPos, bool shift = false);
 
     /**
      * @brief 右ドラッグを終了し、現在のツールを選択領域へ適用する。
      * @param[in] screenPos 終了位置(スクリーン座標)。メニューの表示位置にもなる。
+     * @param[in] shift     Shift が押されているか。押されていれば選択領域を正方形にする
+     *                      (直線・矢印ツールを除く)。
      * @note 移動量が閾値未満(= 単なる右クリック)なら適用せず、注釈の上なら
      *       オブジェクトメニュー、そうでなければツール切り替えメニューを表示する。
      */
-    void onRightDragEnd(Point screenPos);
+    void onRightDragEnd(Point screenPos, bool shift = false);
 
     /**
      * @brief 右ドラッグで実行される現在のツールを返す。
@@ -515,6 +519,15 @@ private:
      * @return 画像内へクランプされた座標。
      */
     Point clampToImage(Point imagePos) const;
+
+    /**
+     * @brief 右ドラッグ中のポインタ位置を選択領域の終点(画像座標)へ変換する。
+     * @param[in] screenPos ポインタ位置(スクリーン座標)。
+     * @param[in] shift     Shift が押されているか。
+     * @return 画像内へクランプした終点。shift かつ正方形にできるツールなら、
+     *         選択領域が正方形になる位置へ寄せたもの。
+     */
+    Point dragEndImage(Point screenPos, bool shift) const;
 
     /**
      * @brief ツール切り替えメニューの末端項目が表す操作。

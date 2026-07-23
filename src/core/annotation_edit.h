@@ -36,6 +36,18 @@ struct BoundsF {
 Point rotateAround(Point p, Point center, float deg);
 
 /**
+ * @brief ドラッグ先の点を、始点から見て正方形になる位置へ寄せる。
+ *
+ * 正方形の矩形・真円を描くための Shift ドラッグに使う。一辺は縦横の移動量の
+ * 小さいほうに合わせるので、始点と p が画像内にあれば結果も画像内に収まる。
+ *
+ * @param[in] anchor ドラッグの始点。
+ * @param[in] p      現在のドラッグ先。
+ * @return anchor から見て縦横の絶対値が等しい点(向きは p 側のまま)。
+ */
+Point constrainToSquare(Point anchor, Point p);
+
+/**
  * @brief 注釈の回転前バウンディングボックスを求める。
  * @param[in] spec 対象の注釈。
  * @return p1/p2 を正規化した矩形(画像座標)。

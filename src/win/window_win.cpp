@@ -87,8 +87,19 @@ LRESULT MainWindow::handleMessage(UINT msg, WPARAM wp, LPARAM lp) {
         return 0;
     case WM_KEYDOWN:
     case WM_SYSKEYDOWN:
+        // マウスを止めたまま Shift を押し引きしてもプレビューが追従するようにする
+        if (rightDragging_ && wp == VK_SHIFT) {
+            updateRightDragShift(true);
+            return 0;
+        }
         if (handleKey(wp)) return 0;
         break;  // 未割り当てキーは既定処理へ(Alt+F4 等を殺さない)
+    case WM_KEYUP:
+        if (rightDragging_ && wp == VK_SHIFT) {
+            updateRightDragShift(false);
+            return 0;
+        }
+        break;
     case WM_CHAR:
         handleChar(static_cast<wchar_t>(wp));
         return 0;
@@ -142,7 +153,9 @@ LRESULT MainWindow::handleMessage(UINT msg, WPARAM wp, LPARAM lp) {
                 lastDragPos_ = pt;
             }
             if (rightDragging_) {
-                app_->onRightDragMove({static_cast<float>(pt.x), static_cast<float>(pt.y)});
+                lastRightDragPos_ = pt;
+                app_->onRightDragMove({static_cast<float>(pt.x), static_cast<float>(pt.y)},
+                                      (wp & MK_SHIFT) != 0);
             }
             app_->onMouseMove({static_cast<float>(pt.x), static_cast<float>(pt.y)},
                               (GetKeyState(VK_SHIFT) & 0x8000) != 0);
@@ -152,6 +165,7 @@ LRESULT MainWindow::handleMessage(UINT msg, WPARAM wp, LPARAM lp) {
     case WM_RBUTTONDOWN: {
         const POINT pt{GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
         rightDragging_ = true;
+        lastRightDragPos_ = pt;
         SetCapture(hwnd_);
         if (app_) app_->onRightDragStart({static_cast<float>(pt.x), static_cast<float>(pt.y)});
         return 0;
@@ -161,7 +175,10 @@ LRESULT MainWindow::handleMessage(UINT msg, WPARAM wp, LPARAM lp) {
         rightDragging_ = false;
         ReleaseCapture();  // メニュー表示より先にキャプチャを解放する
         const POINT pt{GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
-        if (app_) app_->onRightDragEnd({static_cast<float>(pt.x), static_cast<float>(pt.y)});
+        if (app_) {
+            app_->onRightDragEnd({static_cast<float>(pt.x), static_cast<float>(pt.y)},
+                                 (wp & MK_SHIFT) != 0);
+        }
         return 0;
     }
     case WM_SETCURSOR:
@@ -226,6 +243,13 @@ void MainWindow::handleLeftDown(POINT pt) {
     }
     dragging_ = true;
     lastDragPos_ = pt;
+}
+
+void MainWindow::updateRightDragShift(bool shift) {
+    if (!app_) return;
+    app_->onRightDragMove({static_cast<float>(lastRightDragPos_.x),
+                           static_cast<float>(lastRightDragPos_.y)},
+                          shift);
 }
 
 void MainWindow::onPaint() {

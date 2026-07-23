@@ -96,6 +96,7 @@ std::vector<HelpLine> buildHelpLines(const Keymap& keymap) {
     text("拡大 / 縮小", "ホイール");
     text("スクロール", "左ドラッグ");
     text("現在のツールを実行", "右ドラッグ");
+    text("正方形 / 真円で描く", "Shift+右ドラッグ");
     text("ツール・書式メニュー", "余白で右クリック");
     text("図形・テキストを選択", "左クリック");
     text("選択中のオブジェクトを移動", "左ドラッグ");

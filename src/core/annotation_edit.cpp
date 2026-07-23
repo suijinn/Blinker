@@ -30,6 +30,13 @@ Point rotateAround(Point p, Point center, float deg) {
     return {center.x + dx * c - dy * s, center.y + dx * s + dy * c};
 }
 
+Point constrainToSquare(Point anchor, Point p) {
+    const float dx = p.x - anchor.x;
+    const float dy = p.y - anchor.y;
+    const float side = std::min(std::abs(dx), std::abs(dy));
+    return {anchor.x + std::copysign(side, dx), anchor.y + std::copysign(side, dy)};
+}
+
 BoundsF annotationBounds(const AnnotationSpec& spec) {
     return {std::min(spec.p1.x, spec.p2.x), std::min(spec.p1.y, spec.p2.y),
             std::max(spec.p1.x, spec.p2.x), std::max(spec.p1.y, spec.p2.y)};

@@ -533,14 +533,14 @@ void App::onRightDragStart(Point screenPos) {
     host_.requestRedraw();
 }
 
-void App::onRightDragMove(Point screenPos) {
+void App::onRightDragMove(Point screenPos, bool shift) {
     if (!selecting_) return;
-    selEndImage_ = clampToImage(imageToScreen().inverted().apply(screenPos));
+    selEndImage_ = dragEndImage(screenPos, shift);
     updatePreview();
     host_.requestRedraw();
 }
 
-void App::onRightDragEnd(Point screenPos) {
+void App::onRightDragEnd(Point screenPos, bool shift) {
     if (textStyleMenuPending_) {
         textStyleMenuPending_ = false;
         showTextStyleMenu(screenPos);
@@ -548,7 +548,7 @@ void App::onRightDragEnd(Point screenPos) {
     }
     if (!selecting_) return;
     selecting_ = false;
-    selEndImage_ = clampToImage(imageToScreen().inverted().apply(screenPos));
+    selEndImage_ = dragEndImage(screenPos, shift);
     const float dx = screenPos.x - selStartScreen_.x;
     const float dy = screenPos.y - selStartScreen_.y;
     if (dx * dx + dy * dy < kDragThresholdPx * kDragThresholdPx) {
@@ -1422,6 +1422,13 @@ Point App::clampToImage(Point imagePos) const {
     if (!current_) return imagePos;
     return {std::clamp(imagePos.x, 0.0f, static_cast<float>(current_->width)),
             std::clamp(imagePos.y, 0.0f, static_cast<float>(current_->height))};
+}
+
+Point App::dragEndImage(Point screenPos, bool shift) const {
+    const Point p = clampToImage(imageToScreen().inverted().apply(screenPos));
+    // 直線・矢印は正方形の bbox = 45 度固定になってしまうので対象外
+    if (!shift || tool_ == EditTool::Line || tool_ == EditTool::Arrow) return p;
+    return constrainToSquare(selStartImage_, p);
 }
 
 SelectionView App::selection() const {
