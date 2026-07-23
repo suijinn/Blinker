@@ -173,9 +173,18 @@ public:
     bool setSelectionColor(uint32_t colorRGB);
 
     /**
+     * @brief 選択範囲にフォントを設定する。
+     * @param[in] family フォントファミリ名(UTF-8)。空文字列なら指定を外し、
+     *                   注釈全体のフォントで描かれるようになる(書式メニューで
+     *                   注釈全体と同じフォントを選んだときはこちらを使う)。
+     * @return 書式が変化したら true。選択がなければ false(何もしない)。
+     */
+    bool setSelectionFontFamily(const std::string& family);
+
+    /**
      * @brief 選択範囲の先頭に適用されている書式を返す。
      * @return 選択の開始位置を含む範囲。書式が無ければ既定の書式。
-     * @note メニューに現在の文字色を表示するために使う。
+     * @note メニューに現在の文字色・フォントを表示するために使う。
      */
     TextStyleRun selectionStyle() const;
 

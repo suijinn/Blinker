@@ -106,6 +106,13 @@ bool TextEditBuffer::setSelectionColor(uint32_t colorRGB) {
     return styles_ != before;
 }
 
+bool TextEditBuffer::setSelectionFontFamily(const std::string& family) {
+    if (!hasSelection()) return false;
+    const std::vector<TextStyleRun> before = styles_;
+    setTextStyleFontFamily(styles_, selectionBegin(), selectionEnd(), family);
+    return styles_ != before;
+}
+
 TextStyleRun TextEditBuffer::selectionStyle() const {
     return textStyleAt(styles_, selectionBegin());
 }

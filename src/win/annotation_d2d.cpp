@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cmath>
 
+#include "core/unicode.h"
 #include "win/annotation_draw.h"
 #include "win/wic_factory.h"
 
@@ -93,6 +94,21 @@ std::vector<TextRangeRect> AnnotationD2D::selectionRects(const AnnotationSpec& s
         rects.push_back({h.left, h.top, h.left + h.width, h.top + h.height});
     }
     return rects;
+}
+
+bool AnnotationD2D::hasFontFamily(const std::string& family) {
+    if (!dwriteFactory_ || family.empty()) return false;
+    ComPtr<IDWriteFontCollection> collection;
+    // checkForUpdates = FALSE。コレクションは DirectWrite 側でキャッシュされる
+    if (FAILED(dwriteFactory_->GetSystemFontCollection(&collection)) || !collection) {
+        return false;
+    }
+    UINT32 index = 0;
+    BOOL exists = FALSE;
+    if (FAILED(collection->FindFamilyName(utf8ToWide(family).c_str(), &index, &exists))) {
+        return false;
+    }
+    return exists != FALSE;
 }
 
 AnnotationOverlay AnnotationD2D::rasterize(const AnnotationSpec& spec) {

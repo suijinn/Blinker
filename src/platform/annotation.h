@@ -18,6 +18,15 @@
 namespace blinker {
 
 /**
+ * @brief Text 注釈の既定フォントファミリ(AnnotationSpec::fontFamily が空のとき使われる)。
+ *
+ * 欧文フォントを既定にすると和文だけがフォールバックで別書体になり字面が揃わないため、
+ * 和欧文を 1 書体で賄えるものを選んでいる。入っていない環境では描画側
+ * (DirectWrite)のフォールバックに任せる。
+ */
+inline constexpr const char* kDefaultFontFamily = "Yu Gothic UI";
+
+/**
  * @brief 画像へ描き込む注釈(図形・テキスト)1 件の指定。
  *
  * 座標・太さはすべて画像座標。
@@ -32,6 +41,8 @@ struct AnnotationSpec {
     float strokeWidth = 1;   ///< 線幅(画像座標)。Text では使わない(borderWidth を見る)
     float angleDeg = 0;      ///< バウンディングボックス中心周りの回転(時計回り、度)
     float fontSize = 16;     ///< Text 用のフォントサイズ(画像座標)
+    /// Text 用のフォントファミリ名(UTF-8)。空なら kDefaultFontFamily
+    std::string fontFamily;
     /// 塗りつぶし色(0xRRGGBB)。Rect/Ellipse/Text で使う
     uint32_t fillRGB = 0xFFFFFF;
     /// 塗りつぶしの不透明度(0-255)。0 は塗らない(完全な透過)、255 で不透明
@@ -39,8 +50,8 @@ struct AnnotationSpec {
     uint32_t borderRGB = 0;  ///< Text 用の枠線色(0xRRGGBB)
     float borderWidth = 0;   ///< Text 用の枠線幅(画像座標)。0 は枠線なし
     std::string text;        ///< Text 用の文字列(UTF-8。改行 LF 可)
-    /// Text 用の部分書式(色・太字・斜体・下線)。位置は text 内の UTF-8 バイト位置。
-    /// 覆われていない部分は colorRGB と標準の字形(太字・斜体・下線なし)で描かれる
+    /// Text 用の部分書式(色・太字・斜体・下線・フォント)。位置は text 内の UTF-8 バイト位置。
+    /// 覆われていない部分は colorRGB・fontFamily と標準の字形(太字・斜体・下線なし)で描かれる
     std::vector<TextStyleRun> styles;
 };
 
@@ -140,6 +151,15 @@ public:
      */
     virtual std::vector<TextRangeRect> selectionRects(const AnnotationSpec& spec,
                                                       size_t utf16Begin, size_t utf16End) = 0;
+
+    /**
+     * @brief フォントファミリが描画に使えるか(システムに入っているか)を返す。
+     * @param[in] family 調べるフォントファミリ名(UTF-8)。
+     * @return 使えるなら true。
+     * @note フォント選択メニューの候補を、実際に入っているものだけへ絞るのに使う。
+     *       呼ぶのはメニューを開いたときだけで、起動時には呼ばない。
+     */
+    virtual bool hasFontFamily(const std::string& family) = 0;
 };
 
 } // namespace blinker

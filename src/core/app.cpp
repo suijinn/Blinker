@@ -7,6 +7,7 @@
 #include <format>
 #include <string>
 #include <string_view>
+#include <utility>
 
 #include "core/annotation_edit.h"
 #include "core/edit.h"
@@ -44,6 +45,34 @@ std::string fillAlphaLabel(int alpha) {
 
 std::string borderWidthLabel(int width) {
     return width <= 0 ? std::string("なし") : std::format("{}px", width);
+}
+
+// フォントの選択肢。{表示ラベル, 描画側へ渡すファミリ名}。和文ゴシック・明朝・
+// UD・欧文・等幅を一通り並べてある。入っていないものはメニューに出さない
+constexpr std::array<std::pair<const char*, const char*>, 8> kFontFamilyChoices{{
+    {"游ゴシック UI", "Yu Gothic UI"},
+    {"游明朝", "Yu Mincho"},
+    {"メイリオ", "Meiryo"},
+    {"BIZ UDPゴシック", "BIZ UDPGothic"},
+    {"MS ゴシック", "MS Gothic"},
+    {"MS 明朝", "MS Mincho"},
+    {"Segoe UI", "Segoe UI"},
+    {"Consolas", "Consolas"},
+}};
+
+// 実際に描画に使われるフォント名。未指定(空)は既定フォントとして扱う。
+// std::string を渡しても一時オブジェクトを作らないよう、引数・戻り値とも view で通す
+std::string_view effectiveFontFamily(std::string_view family) {
+    return family.empty() ? std::string_view(kDefaultFontFamily) : family;
+}
+
+// メニューの見出しに出す名前。候補表にあれば日本語ラベル、無ければファミリ名のまま
+std::string fontFamilyLabel(std::string_view family) {
+    const std::string_view name = effectiveFontFamily(family);
+    for (const auto& [label, value] : kFontFamilyChoices) {
+        if (name == value) return label;
+    }
+    return std::string(name);
 }
 
 // ツールの表示名(メニューとステータスバーで共通)
@@ -124,6 +153,11 @@ void App::applyConfig(const Config& config) {
         config.getInt("edit", "stroke_width", static_cast<int>(editStrokeWidth_)), 1, 100));
     editFontSize_ = static_cast<float>(
         std::clamp(config.getInt("edit", "font_size", static_cast<int>(editFontSize_)), 6, 200));
+    // フォントは候補表に無い名前も受け付ける(入っていなければ描画側がフォールバックする)。
+    // 存在確認はしない(起動時にシステムフォントを列挙したくないため)
+    if (const std::string family{trim(config.get("edit", "font_family"))}; !family.empty()) {
+        editFontFamily_ = family;
+    }
     editFillRGB_ = config.getColorRGB("edit", "fill_color", editFillRGB_);
     editFillAlpha_ = std::clamp(config.getInt("edit", "fill_alpha", editFillAlpha_), 0, 255);
     editBorderRGB_ = config.getColorRGB("edit", "border_color", editBorderRGB_);
@@ -600,6 +634,23 @@ void App::applyCurrentTool() {
     applyAnnotation(kindOfTool(tool_));
 }
 
+std::vector<std::pair<std::string, std::string>> App::fontFamilyChoices(
+    std::string_view current) const {
+    const std::string_view effective = effectiveFontFamily(current);
+    std::vector<std::pair<std::string, std::string>> choices;
+    bool listed = false;
+    for (const auto& [label, family] : kFontFamilyChoices) {
+        if (effective == family) {
+            listed = true;  // 現在のフォントは、入っていなくても選び直せるよう必ず出す
+        } else if (!rasterizer_.hasFontFamily(family)) {
+            continue;
+        }
+        choices.emplace_back(label, family);
+    }
+    if (!listed) choices.emplace_back(effective, effective);
+    return choices;
+}
+
 std::vector<MenuItem> App::buildEditMenu(std::vector<EditMenuEntry>& entries) const {
     const auto leaf = [&entries](std::string text, EditMenuEntry entry, bool checked = false) {
         entries.push_back(entry);
@@ -649,6 +700,14 @@ std::vector<MenuItem> App::buildEditMenu(std::vector<EditMenuEntry>& entries) co
                  static_cast<float>(s) == editFontSize_));
     }
     items.push_back(std::move(font));
+
+    MenuItem family;
+    family.text = std::format("フォント ({})", fontFamilyLabel(editFontFamily_));
+    for (const auto& [label, name] : fontFamilyChoices(editFontFamily_)) {
+        family.children.push_back(
+            leaf(label, {Action::FontFamily, EditTool::Rect, 0, name}, name == editFontFamily_));
+    }
+    items.push_back(std::move(family));
 
     items.push_back(
         leaf(std::format("色の変更... (#{:06X})", editColorRGB_), {Action::PickColor}));
@@ -727,6 +786,16 @@ std::vector<MenuItem> App::buildObjectMenu(const AnnotationSpec& spec,
                                          static_cast<float>(s) == spec.fontSize));
         }
         items.push_back(std::move(font));
+
+        MenuItem family;
+        family.text = std::format("フォント ({})", fontFamilyLabel(spec.fontFamily));
+        // 未指定(空)の注釈は既定フォントで描かれるので、そちらにチェックを付ける
+        const std::string_view current = effectiveFontFamily(spec.fontFamily);
+        for (const auto& [label, name] : fontFamilyChoices(current)) {
+            family.children.push_back(
+                leaf(label, {Action::FontFamily, 0, name}, name == current));
+        }
+        items.push_back(std::move(family));
     } else {
         MenuItem stroke;
         stroke.text =
@@ -813,6 +882,19 @@ void App::showObjectMenu(Point screenPos) {
         spec = std::move(updated);
         break;
     }
+    case ObjectMenuEntry::Action::FontFamily: {
+        if (spec.fontFamily == entry.family) return;
+        // 字幅・行の高さが変わるため、文字サイズと同じく実測し直す
+        AnnotationSpec updated = spec;
+        updated.fontFamily = entry.family;
+        if (!measureTextExtent(updated)) {
+            showMessage("描画に失敗しました");
+            return;
+        }
+        pushUndo();
+        spec = std::move(updated);
+        break;
+    }
     case ObjectMenuEntry::Action::PickColor: {
         const auto rgb = host_.showColorPicker(spec.colorRGB);
         if (!rgb || *rgb == spec.colorRGB) return;
@@ -874,7 +956,8 @@ void App::showObjectMenu(Point screenPos) {
 void App::showTextStyleMenu(Point screenPos) {
     if (!textEditing_ || !textBuffer_.hasSelection()) return;
     if (textEditIndex_ >= annotations_.size()) return;
-    // トグルできる属性を並べ、最後に文字色。末端項目の index はこの順に対応する
+    // トグルできる属性を並べ、続いてフォント、最後に文字色。
+    // 末端項目の index はこの順に対応する
     static constexpr std::array<std::pair<const char*, TextStyleFlag>, 3> kFlags{{
         {"太字", TextStyleFlag::Bold},
         {"斜体", TextStyleFlag::Italic},
@@ -888,19 +971,47 @@ void App::showTextStyleMenu(Point screenPos) {
         items.push_back(std::move(item));
     }
     items.push_back(menuSeparator());
-    // 色を指定していない範囲は注釈全体の色で描かれるので、そちらを見出しと初期値に使う
+    // 色・フォントを指定していない範囲は注釈全体のもので描かれるので、
+    // そちらを見出しと初期値に使う
+    const AnnotationSpec& spec = annotations_[textEditIndex_];
     const TextStyleRun style = textBuffer_.selectionStyle();
-    const uint32_t initialColor =
-        style.hasColor ? style.colorRGB : annotations_[textEditIndex_].colorRGB;
+    const uint32_t initialColor = style.hasColor ? style.colorRGB : spec.colorRGB;
+    // 注釈全体のフォントはメニュー表示後にも使うため、参照ではなく値で持つ
+    const std::string wholeFamily{effectiveFontFamily(spec.fontFamily)};
+    const std::string_view currentFamily = style.fontFamily.empty()
+                                               ? std::string_view(wholeFamily)
+                                               : std::string_view(style.fontFamily);
+
+    // 末端 index: 0-2 が太字・斜体・下線、続いてフォントの候補、最後に文字色
+    const std::vector<std::pair<std::string, std::string>> families =
+        fontFamilyChoices(currentFamily);
+    MenuItem family;
+    family.text = std::format("フォント ({})", fontFamilyLabel(currentFamily));
+    for (const auto& [label, name] : families) {
+        MenuItem item;
+        item.text = label;
+        item.checked = name == currentFamily;
+        family.children.push_back(std::move(item));
+    }
+    items.push_back(std::move(family));
+
     MenuItem color;
     color.text = std::format("文字色... (#{:06X})", initialColor);
     items.push_back(std::move(color));
 
+    const size_t familyBase = kFlags.size();                 // フォント候補の先頭
+    const size_t colorIndex = familyBase + families.size();  // 文字色
     const auto choice = host_.showContextMenu(items, screenPos);
     bool changed = false;
     if (choice && *choice < kFlags.size()) {
         changed = textBuffer_.toggleSelectionFlag(kFlags[*choice].second);
-    } else if (choice && *choice == kFlags.size()) {
+    } else if (choice && *choice < colorIndex) {
+        // 注釈全体と同じフォントを選んだら指定を外す(範囲を残さず、
+        // 以降は全体のフォント変更に追従する)
+        const std::string& picked = families[*choice - familyBase].second;
+        changed = textBuffer_.setSelectionFontFamily(picked == wholeFamily ? std::string()
+                                                                          : picked);
+    } else if (choice && *choice == colorIndex) {
         if (const auto rgb = host_.showColorPicker(initialColor)) {
             changed = textBuffer_.setSelectionColor(*rgb);
         }
@@ -922,6 +1033,9 @@ bool App::applyEditChoice(const EditMenuEntry& entry) {
         return false;
     case EditMenuEntry::Action::FontSize:
         editFontSize_ = entry.value;
+        return false;
+    case EditMenuEntry::Action::FontFamily:
+        editFontFamily_ = entry.family;
         return false;
     case EditMenuEntry::Action::PickColor:
         if (const auto rgb = host_.showColorPicker(editColorRGB_)) editColorRGB_ = *rgb;
@@ -980,6 +1094,7 @@ AnnotationSpec App::makeAnnotationSpec(AnnotationSpec::Kind kind) const {
     spec.fillRGB = editFillRGB_;
     spec.fillAlpha = editFillAlpha_;
     spec.borderRGB = editBorderRGB_;
+    spec.fontFamily = editFontFamily_;
     // 線幅・文字サイズ・枠線幅は「画面上での見た目」基準で画像座標へ換算する
     const float zoom = std::max(viewport_.zoom(), 0.001f);
     spec.strokeWidth = std::max(1.0f, editStrokeWidth_ / zoom);

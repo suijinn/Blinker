@@ -5,6 +5,8 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
+#include <utility>
 #include <vector>
 
 #include "core/annotation_edit.h"
@@ -536,24 +538,39 @@ private:
     struct EditMenuEntry {
         /// @brief 末端項目が表す操作の種類。
         enum class Action {
-            SelectTool, StrokeWidth, FontSize, PickColor,
+            SelectTool, StrokeWidth, FontSize, FontFamily, PickColor,
             FillAlpha, PickFillColor, BorderWidth, PickBorderColor
         };
         Action action;                    ///< 操作の種類
         EditTool tool = EditTool::Rect;   ///< SelectTool で選ばれたツール
         float value = 0;                  ///< 設定系の値
+        std::string family;               ///< FontFamily で選ばれたフォント名(UTF-8)
     };
 
     /// @brief 注釈オブジェクトを右クリックしたときのメニューの末端項目。
     struct ObjectMenuEntry {
         /// @brief 末端項目が表す操作の種類。
         enum class Action {
-            EditText, Delete, Angle, StrokeWidth, FontSize, PickColor,
+            EditText, Delete, Angle, StrokeWidth, FontSize, FontFamily, PickColor,
             FillAlpha, PickFillColor, BorderWidth, PickBorderColor
         };
-        Action action;    ///< 操作の種類
-        float value = 0;  ///< Angle/StrokeWidth/FontSize/FillAlpha/BorderWidth の値
+        Action action;       ///< 操作の種類
+        float value = 0;     ///< Angle/StrokeWidth/FontSize/FillAlpha/BorderWidth の値
+        std::string family;  ///< FontFamily で選ばれたフォント名(UTF-8)
     };
+
+    /**
+     * @brief フォント選択メニューに並べる候補を求める。
+     *
+     * 定義済みの候補のうち、ラスタライザが「使える」と答えたものだけを返す。
+     * current が候補に無い場合(ini で任意のフォントを指定した場合など)は
+     * 末尾に足して、選び直したあとでも戻れるようにする。
+     *
+     * @param[in] current 現在のフォントファミリ名(UTF-8)。空なら既定フォント。
+     * @return 表示ラベルとフォントファミリ名の組。並びは定義順。
+     */
+    std::vector<std::pair<std::string, std::string>> fontFamilyChoices(
+        std::string_view current) const;
 
     /**
      * @brief ツール切り替えメニューの構造を組み立てる。
@@ -840,6 +857,8 @@ private:
     uint32_t editColorRGB_ = 0xFF3B30;  ///< 新規注釈の色(0xRRGGBB)
     float editStrokeWidth_ = 3.0f;  ///< 線幅。画面px基準(適用時に 1/zoom で画像座標へ換算)
     float editFontSize_ = 18.0f;    ///< フォントサイズ。画面px基準(同上)
+    /// 新規テキストのフォントファミリ名(UTF-8)。常に非空
+    std::string editFontFamily_ = kDefaultFontFamily;
     uint32_t editFillRGB_ = 0xFFFFFF;  ///< 新規注釈の塗りつぶし色(0xRRGGBB)
     int editFillAlpha_ = 0;            ///< 塗りつぶしの不透明度(0-255)。0 は塗りなし
     uint32_t editBorderRGB_ = 0x000000;  ///< 新規テキストの枠線色(0xRRGGBB)
