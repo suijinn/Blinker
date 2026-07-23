@@ -31,16 +31,17 @@ struct StatusBarView {
     std::string rightText;       ///< カーソル位置の座標と色(UTF-8)
 };
 
-/// @brief サイドバー(ファイル名一覧)の 1 項目。
+/// @brief サイドバーの 1 項目。
 struct SidebarItem {
-    std::string text;      ///< 表示するファイル名(UTF-8)
-    bool current = false;  ///< 表示中(一覧の現在位置)ならハイライトする
+    std::string text;      ///< 表示する文字列(UTF-8)
+    bool current = false;  ///< ハイライトするか(ファイル名一覧なら現在の画像、操作一覧なら見出し)
 };
 
 /**
- * @brief サイドバー(ファイル名一覧)の描画内容。
+ * @brief サイドバー(ファイル名一覧 / 操作一覧)の描画内容。
  *
- * App が可視範囲の項目だけを組み立てる。領域はウィンドウ左端 (0, 0)-(width, height) で、
+ * App が可視範囲の項目だけを組み立てる。何の一覧かはレンダラからは見えない
+ * (App::sidebarMode が決める)。領域はウィンドウ左端 (0, 0)-(width, height) で、
  * ステータスバーの高さは含まない。
  */
 struct SidebarView {

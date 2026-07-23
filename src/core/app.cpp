@@ -10,6 +10,7 @@
 
 #include "core/annotation_edit.h"
 #include "core/edit.h"
+#include "core/help.h"
 #include "core/pixel_convert.h"
 #include "core/str_util.h"
 #include "core/unicode.h"
@@ -70,6 +71,19 @@ std::optional<EditTool> toolFromName(std::string_view name) {
     return std::nullopt;
 }
 
+// ツール切り替えに対応するコマンド。メニュー項目にキー表記を出すために使う
+Command commandOfTool(EditTool tool) {
+    switch (tool) {
+    case EditTool::Crop:    return Command::SelectToolCrop;
+    case EditTool::Rect:    return Command::SelectToolRect;
+    case EditTool::Ellipse: return Command::SelectToolEllipse;
+    case EditTool::Arrow:   return Command::SelectToolArrow;
+    case EditTool::Line:    return Command::SelectToolLine;
+    case EditTool::Text:    return Command::SelectToolText;
+    }
+    return Command::None;
+}
+
 // 図形ツールが作る注釈の種別。Crop は注釈ではないので Rect を返す(呼ばれない)
 AnnotationSpec::Kind kindOfTool(EditTool tool) {
     switch (tool) {
@@ -104,6 +118,7 @@ void App::applyConfig(const Config& config) {
     sidebarWidth_ = static_cast<float>(
         std::clamp(config.getInt("view", "sidebar_width", static_cast<int>(sidebarWidth_)), 120,
                    480));
+    helpHintEnabled_ = config.getBool("view", "help_hint", helpHintEnabled_);
     editColorRGB_ = config.getColorRGB("edit", "color", editColorRGB_);
     editStrokeWidth_ = static_cast<float>(std::clamp(
         config.getInt("edit", "stroke_width", static_cast<int>(editStrokeWidth_)), 1, 100));
@@ -117,6 +132,23 @@ void App::applyConfig(const Config& config) {
     // 起動時の(右ドラッグで実行される)ツール。未指定・未知の名前なら既定のまま
     if (const auto tool = toolFromName(config.get("edit", "tool"))) setTool(*tool);
     applyLayout();
+}
+
+bool App::showHelpHint() {
+    if (!helpHintEnabled_) return false;
+    // 既に一覧が出ているなら案内は不要
+    if (sidebarEnabled_ && sidebarMode_ == SidebarMode::Help) return false;
+    const std::string keys = keysLabel(keymap_, Command::ToggleHelp);
+    if (keys.empty()) return false;  // ini で外されているなら案内しない
+    const std::string hint = std::format("{} で操作一覧", keys);
+    // キーリピートで押しっぱなしのときに毎フレーム再描画を要求しない
+    if (message_ == hint) return false;
+    showMessage(hint);
+    return true;
+}
+
+void App::showStartupHint() {
+    showHelpHint();
 }
 
 void App::openPath(const fs::path& path) {
@@ -267,9 +299,22 @@ void App::execute(Command command) {
         setTool(EditTool::Text);
         break;
     case Command::ToggleSidebar:
-        sidebarEnabled_ = !sidebarEnabled_;
+        // 操作一覧が出ている間は、閉じるのではなくファイル名一覧へ切り替える
+        sidebarEnabled_ = !(sidebarEnabled_ && sidebarMode_ == SidebarMode::Files);
+        sidebarMode_ = SidebarMode::Files;
         applyLayout();
         if (sidebarEnabled_) scrollSidebarToCurrent();
+        onViewChanged();  // フィット再計算でズーム率表示が変わりうる
+        break;
+    case Command::ToggleHelp:
+        sidebarEnabled_ = !(sidebarEnabled_ && sidebarMode_ == SidebarMode::Help);
+        if (sidebarEnabled_) {
+            sidebarMode_ = SidebarMode::Help;
+            // ini 適用後のキーバインドから作る。開くたびに作り直すので設定変更にも追従する
+            helpLines_ = buildHelpLines(keymap_);
+            sidebarScroll_ = 0;
+        }
+        applyLayout();
         onViewChanged();  // フィット再計算でズーム率表示が変わりうる
         break;
     case Command::ToggleStatusBar:
@@ -285,6 +330,9 @@ void App::execute(Command command) {
         } else if (selecting_) {
             selecting_ = false;
             host_.requestRedraw();
+        } else if (sidebarEnabled_ && sidebarMode_ == SidebarMode::Help) {
+            // ヘルプを見ている最中の Esc で終了してしまわないよう、まず閉じる
+            execute(Command::ToggleHelp);
         } else if (host_.isFullscreen()) {
             host_.setFullscreen(false);
         } else {
@@ -303,7 +351,12 @@ bool App::onKey(const KeyChord& chord) {
     // 編集中はキー入力を文字編集へ回し、コマンドの暴発を防ぐ
     if (textEditing_) return handleTextEditKey(chord);
     const Command command = keymap_.find(chord);
-    if (command == Command::None) return false;
+    if (command == Command::None) {
+        // 効くはずのキーを押して何も起きなかった = ヘルプが要る瞬間。
+        // キーを覚えている利用者にはここを通らないので一生出ない
+        showHelpHint();
+        return false;
+    }
     execute(command);
     return true;
 }
@@ -332,7 +385,8 @@ bool App::onMouseDown(Point screenPos) {
     if (sidebarVisible() && screenPos.x < sidebarOffset()) {
         // ステータスバー上(サイドバー領域外)はどちらの操作でもないため消費だけする
         if (textEditing_) commitTextEdit();  // 画像切替の前に編集を確定する
-        if (screenPos.y >= 0 && screenPos.y < sidebarViewHeight()) {
+        if (sidebarMode_ == SidebarMode::Files && screenPos.y >= 0 &&
+            screenPos.y < sidebarViewHeight()) {
             const size_t index =
                 static_cast<size_t>((screenPos.y + sidebarScroll_) / kSidebarItemHeight);
             if (index < list_.size() && (list_.jumpTo(index) || clipboardImage_)) {
@@ -554,10 +608,15 @@ std::vector<MenuItem> App::buildEditMenu(std::vector<EditMenuEntry>& entries) co
         item.checked = checked;
         return item;
     };
-    // ツールは選ぶだけで、実際の適用は次の右ドラッグで行う。現在のツールにチェックが付く
+    // ツールは選ぶだけで、実際の適用は次の右ドラッグで行う。現在のツールにチェックが付く。
+    // ini でキーを割り当てていれば、'\t' 区切りで右寄せのアクセラレータ表記として出る
     const auto tool = [&leaf, this](EditTool t) {
-        return leaf(std::string(toolLabel(t)), {EditMenuEntry::Action::SelectTool, t, 0},
-                    t == tool_);
+        std::string text(toolLabel(t));
+        if (const std::string keys = keysLabel(keymap_, commandOfTool(t)); !keys.empty()) {
+            text += '\t';
+            text += keys;
+        }
+        return leaf(std::move(text), {EditMenuEntry::Action::SelectTool, t, 0}, t == tool_);
     };
     using Action = EditMenuEntry::Action;
 
@@ -640,7 +699,12 @@ std::vector<MenuItem> App::buildObjectMenu(const AnnotationSpec& spec,
     if (spec.kind == AnnotationSpec::Kind::Text) {
         items.push_back(leaf("テキストを編集", {Action::EditText}));
     }
-    items.push_back(leaf("削除", {Action::Delete}));
+    std::string deleteText = "削除";
+    if (const std::string keys = keysLabel(keymap_, Command::DeleteAnnotation); !keys.empty()) {
+        deleteText += '\t';
+        deleteText += keys;
+    }
+    items.push_back(leaf(std::move(deleteText), {Action::Delete}));
     items.push_back(menuSeparator());
 
     MenuItem angle;
@@ -1552,7 +1616,14 @@ bool App::sidebarVisible() const {
 }
 
 float App::sidebarOffset() const {
-    return sidebarVisible() ? sidebarWidth_ : 0.0f;
+    if (!sidebarVisible()) return 0.0f;
+    // 操作一覧は「操作名 + キー」が入りきらないと読めないので、狭い設定でも広げる
+    return sidebarMode_ == SidebarMode::Help ? std::max(sidebarWidth_, kHelpSidebarWidth)
+                                             : sidebarWidth_;
+}
+
+size_t App::sidebarItemCount() const {
+    return sidebarMode_ == SidebarMode::Help ? helpLines_.size() : list_.size();
 }
 
 float App::sidebarViewHeight() const {
@@ -1562,11 +1633,13 @@ float App::sidebarViewHeight() const {
 
 void App::clampSidebarScroll() {
     const float maxScroll = std::max(
-        0.0f, static_cast<float>(list_.size()) * kSidebarItemHeight - sidebarViewHeight());
+        0.0f,
+        static_cast<float>(sidebarItemCount()) * kSidebarItemHeight - sidebarViewHeight());
     sidebarScroll_ = std::clamp(sidebarScroll_, 0.0f, maxScroll);
 }
 
 void App::scrollSidebarToCurrent() {
+    if (sidebarMode_ == SidebarMode::Help) return;  // 操作一覧に「現在項目」はない
     if (list_.empty()) {
         sidebarScroll_ = 0;
         return;
@@ -1652,7 +1725,7 @@ SidebarView App::sidebar() const {
     SidebarView sb;
     sb.visible = sidebarVisible();
     if (!sb.visible) return sb;
-    sb.width = sidebarWidth_;
+    sb.width = sidebarOffset();
     sb.height = sidebarViewHeight();
     sb.itemHeight = kSidebarItemHeight;
     sb.backgroundRGB = darkTheme_ ? 0x252526 : 0xF3F3F3;
@@ -1661,14 +1734,20 @@ SidebarView App::sidebar() const {
     sb.currentTextRGB = darkTheme_ ? 0xFFFFFF : 0x1A1A1A;
     sb.scrollbarRGB = darkTheme_ ? 0x666666 : 0xA0A0A0;
     sb.scrollOffset = sidebarScroll_;
-    sb.contentHeight = static_cast<float>(list_.size()) * kSidebarItemHeight;
+    const size_t count = sidebarItemCount();
+    sb.contentHeight = static_cast<float>(count) * kSidebarItemHeight;
 
     // 可視範囲の項目だけを渡す(先頭が部分的に隠れる分は firstItemY が負になる)
     const size_t first = static_cast<size_t>(sidebarScroll_ / kSidebarItemHeight);
     sb.firstItemY = static_cast<float>(first) * kSidebarItemHeight - sidebarScroll_;
     const size_t maxVisible = static_cast<size_t>(sb.height / kSidebarItemHeight) + 2;
-    for (size_t i = first; i < list_.size() && i < first + maxVisible; ++i) {
-        sb.items.push_back({pathToUtf8(list_.at(i).filename()), i == list_.index()});
+    for (size_t i = first; i < count && i < first + maxVisible; ++i) {
+        if (sidebarMode_ == SidebarMode::Help) {
+            // 見出し行を current の強調表示で描く(レンダラは両モードを区別しない)
+            sb.items.push_back({helpLines_[i].text, helpLines_[i].header});
+        } else {
+            sb.items.push_back({pathToUtf8(list_.at(i).filename()), i == list_.index()});
+        }
     }
     return sb;
 }

@@ -1,7 +1,9 @@
 #include "core/keymap.h"
 
+#include <algorithm>
 #include <array>
 #include <charconv>
+#include <format>
 #include <vector>
 
 #include "core/str_util.h"
@@ -46,6 +48,7 @@ constexpr std::array kCommandNames = {
     CommandName{"tool_text", Command::SelectToolText},
     CommandName{"sidebar", Command::ToggleSidebar},
     CommandName{"statusbar", Command::ToggleStatusBar},
+    CommandName{"help", Command::ToggleHelp},
     CommandName{"escape", Command::Escape},
     CommandName{"quit", Command::Quit},
 };
@@ -79,6 +82,33 @@ constexpr std::array kKeyNames = {
     KeyName{"minus", KeyCode::Minus},
     KeyName{"-", KeyCode::Minus},
 };
+
+// 表示用のキー名(kKeyNames は別名を複数持つため、逆引きの正はこちら)。
+// ここの表記は必ず parseChord が受け付けるものにすること(往復を単体テストで検証している)
+constexpr std::array kKeyDisplayNames = {
+    KeyName{"Left", KeyCode::Left},
+    KeyName{"Right", KeyCode::Right},
+    KeyName{"Up", KeyCode::Up},
+    KeyName{"Down", KeyCode::Down},
+    KeyName{"Home", KeyCode::Home},
+    KeyName{"End", KeyCode::End},
+    KeyName{"PageUp", KeyCode::PageUp},
+    KeyName{"PageDown", KeyCode::PageDown},
+    KeyName{"Space", KeyCode::Space},
+    KeyName{"Enter", KeyCode::Enter},
+    KeyName{"Esc", KeyCode::Escape},
+    KeyName{"Backspace", KeyCode::Backspace},
+    KeyName{"Delete", KeyCode::Delete},
+    KeyName{"Tab", KeyCode::Tab},
+    KeyName{"Insert", KeyCode::Insert},
+    KeyName{"+", KeyCode::Plus},
+    KeyName{"-", KeyCode::Minus},
+};
+
+// 修飾キーの有無を「修飾なしが先」になる整数へ畳む(chordsFor の並び順の安定化用)
+unsigned modifierRank(const KeyChord& chord) {
+    return (chord.ctrl ? 4u : 0u) | (chord.shift ? 2u : 0u) | (chord.alt ? 1u : 0u);
+}
 
 } // namespace
 
@@ -126,6 +156,7 @@ Keymap Keymap::defaults() {
     b(KeyCode::Delete, Command::DeleteAnnotation);
     b(KeyCode{'B'}, Command::ToggleSidebar, true);  // Ctrl+B
     b(KeyCode{'B'}, Command::ToggleStatusBar);
+    b(KeyCode::F1, Command::ToggleHelp);
     b(KeyCode::Escape, Command::Escape);
     b(KeyCode{'Q'}, Command::Quit);
     b(KeyCode{'W'}, Command::Quit, true);
@@ -144,6 +175,51 @@ void Keymap::bind(const KeyChord& chord, Command cmd) {
 
 void Keymap::unbindCommand(Command cmd) {
     std::erase_if(bindings_, [cmd](const auto& kv) { return kv.second == cmd; });
+}
+
+std::string Keymap::chordToString(const KeyChord& chord) {
+    if (chord.key == KeyCode::None) return {};
+
+    std::string keyName;
+    for (const auto& e : kKeyDisplayNames) {
+        if (e.key == chord.key) {
+            keyName = e.name;
+            break;
+        }
+    }
+    if (keyName.empty()) {
+        const auto code = static_cast<uint16_t>(chord.key);
+        if (code >= static_cast<uint16_t>(KeyCode::F1) &&
+            code <= static_cast<uint16_t>(KeyCode::F12)) {
+            keyName = std::format("F{}", code - static_cast<uint16_t>(KeyCode::F1) + 1);
+        } else if ((code >= 'A' && code <= 'Z') || (code >= '0' && code <= '9')) {
+            keyName = static_cast<char>(code);
+        } else {
+            return {};  // 表記を持たないキー
+        }
+    }
+
+    std::string result;
+    if (chord.ctrl) result += "Ctrl+";
+    if (chord.shift) result += "Shift+";
+    if (chord.alt) result += "Alt+";
+    result += keyName;
+    return result;
+}
+
+std::vector<KeyChord> Keymap::chordsFor(Command cmd) const {
+    std::vector<KeyChord> result;
+    for (const auto& [chord, bound] : bindings_) {
+        if (bound == cmd) result.push_back(chord);
+    }
+    // bindings_ は unordered_map なので、表示順が実行ごとに変わらないよう明示的に並べる
+    std::sort(result.begin(), result.end(), [](const KeyChord& a, const KeyChord& b) {
+        const unsigned ra = modifierRank(a);
+        const unsigned rb = modifierRank(b);
+        if (ra != rb) return ra < rb;
+        return static_cast<uint16_t>(a.key) < static_cast<uint16_t>(b.key);
+    });
+    return result;
 }
 
 std::optional<KeyChord> Keymap::parseChord(std::string_view text) {

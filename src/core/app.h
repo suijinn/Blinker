@@ -11,6 +11,7 @@
 #include "core/command.h"
 #include "core/config.h"
 #include "core/geometry.h"
+#include "core/help.h"
 #include "core/image_cache.h"
 #include "core/image_list.h"
 #include "core/keymap.h"
@@ -40,6 +41,17 @@ struct MenuItem {
     bool checked = false;             ///< チェックマークを付けるか
     bool separator = false;           ///< 区切り線として扱うか
     std::vector<MenuItem> children;   ///< サブメニューの項目(空なら末端項目)
+};
+
+/**
+ * @brief サイドバーに何を表示しているか。
+ *
+ * どちらのモードも同じ SidebarView(文字列のリスト)として描画される。
+ * レンダラはモードを知らない。
+ */
+enum class SidebarMode {
+    Files,  ///< フォルダ内のファイル名一覧(クリックでその画像へ移動)
+    Help,   ///< 操作一覧(現在のキーバインドから生成。クリックは無効)
 };
 
 /**
@@ -175,6 +187,17 @@ public:
      * @param[in] dark true ならダーク配色。ステータスバー・サイドバーの配色に反映される。
      */
     void setDarkTheme(bool dark) { darkTheme_ = dark; }
+
+    /**
+     * @brief 操作一覧の存在を知らせる通知をステータスバーに出す(起動時に一度)。
+     *
+     * 案内の主役は「未割り当てのキーを押したとき」(App::onKey)で、これはその補助。
+     * 出す条件は showHelpHint と同じ。
+     *
+     * @note applyConfig の後、ウィンドウに App を接続してから呼ぶこと
+     *       (通知タイマーと再描画要求が host へ飛ぶ)。
+     */
+    void showStartupHint();
 
     /**
      * @brief 画像ファイルまたはフォルダを開く。
@@ -382,6 +405,12 @@ public:
     SidebarView sidebar() const;
 
     /**
+     * @brief サイドバーの表示モードを返す。
+     * @return ファイル名一覧か操作一覧か。サイドバーが非表示でも最後のモードを返す。
+     */
+    SidebarMode sidebarMode() const { return sidebarMode_; }
+
+    /**
      * @brief 選択中のラバーバンドの描画内容を組み立てる。
      * @return 選択領域(スクリーン座標)。選択中でなければ visible = false。
      */
@@ -397,6 +426,8 @@ private:
     static constexpr float kPanStepPx = 64.0f;         ///< パンコマンド 1 回の移動量
     static constexpr float kStatusBarHeight = 26.0f;   ///< ステータスバーの高さ
     static constexpr float kSidebarItemHeight = 24.0f; ///< サイドバー 1 項目の高さ
+    /// 操作一覧モードでの最低幅。「操作名 + キー」が収まらないと用をなさないため広げる
+    static constexpr float kHelpSidebarWidth = 300.0f;
 
     /// @brief undo 1 段分のスナップショット(画像と注釈一覧)。
     struct UndoState {
@@ -430,9 +461,15 @@ private:
 
     /**
      * @brief サイドバーの占める幅を返す。
-     * @return サイドバー幅(px)。非表示なら 0。
+     * @return サイドバー幅(px)。非表示なら 0。操作一覧モードでは kHelpSidebarWidth 以上。
      */
     float sidebarOffset() const;
+
+    /**
+     * @brief サイドバーに並ぶ項目数を返す。
+     * @return モードに応じた項目数(ファイル数、または操作一覧の行数)。
+     */
+    size_t sidebarItemCount() const;
 
     /**
      * @brief サイドバー領域の高さを返す。
@@ -461,6 +498,16 @@ private:
      * @param[in] text 表示する文字列(UTF-8)。所有権を受け取る。
      */
     void showMessage(std::string text);
+
+    /**
+     * @brief 操作一覧の存在をステータスバーで案内する。
+     *
+     * blinker.ini の [view] help_hint = false、Command::ToggleHelp が未割り当て、
+     * 既に操作一覧を表示中、同じ案内を表示中(キーリピート)のいずれかなら何もしない。
+     *
+     * @return 案内を出したら true。上記の理由で出さなかったら false。
+     */
+    bool showHelpHint();
 
     /**
      * @brief 画像座標を画像の範囲内へ丸める。
@@ -716,8 +763,12 @@ private:
     SizeF clientSize_{};  ///< クライアント領域全体(サイドバー + ビューポート + ステータスバー)
     bool statusBarEnabled_ = true;
     bool sidebarEnabled_ = false;
+    SidebarMode sidebarMode_ = SidebarMode::Files;
     float sidebarWidth_ = 220.0f;
     float sidebarScroll_ = 0.0f;  ///< 一覧のスクロール量 (px)
+    /// 操作一覧の表示行。毎フレーム組み立てずに Command::ToggleHelp で開いたときだけ作る
+    std::vector<HelpLine> helpLines_;
+    bool helpHintEnabled_ = true;  ///< 操作一覧の存在をステータスバーで案内するか
     bool darkTheme_ = true;
     std::string message_;    ///< ステータスバー左側の通知(タイマーで消える。UTF-8)
     std::string hoverText_;  ///< ステータスバー右側(カーソル位置の座標・色。UTF-8)

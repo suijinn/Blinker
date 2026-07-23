@@ -11,7 +11,11 @@ statusbar = true
 # サイドバー(ファイル名一覧、Ctrl+Bでトグル)を起動時に表示するか
 sidebar = false
 # サイドバーの幅 (px, 120-480)
+# 操作一覧 (F1) を出している間だけは、狭くても 300px まで広げて表示する
 sidebar_width = 220
+# 「F1 で操作一覧」の案内をステータスバーに数秒間出すか。
+# 出るのは起動時と、どのコマンドにも割り当てられていないキーを押したとき
+help_hint = true
 # フィット表示時にウィンドウより小さい画像を拡大するか
 fit_upscale = false
 # 前後何枚を先読みするか (0-8)
@@ -54,7 +58,7 @@ border_width = 0
 #   next prev first last zoom_in zoom_out fit actual_size
 #   pan_left pan_right pan_up pan_down rotate_cw rotate_ccw
 #   fullscreen open copy_image copy_path paste save_as undo delete_annotation
-#   sidebar statusbar escape quit
+#   sidebar statusbar help escape quit
 #   tool_crop tool_rect tool_ellipse tool_arrow tool_line tool_text
 #     (右ドラッグで実行するツールの切り替え。既定のキーは割り当てていない)
 #

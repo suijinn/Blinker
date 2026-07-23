@@ -5,6 +5,7 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <vector>
 
 #include "core/command.h"
 
@@ -97,6 +98,22 @@ public:
      * @return 解析結果。認識できない表記なら std::nullopt。
      */
     static std::optional<KeyChord> parseChord(std::string_view text);
+
+    /**
+     * @brief KeyChord をキー表記文字列へ変換する(parseChord の逆)。
+     * @param[in] chord 変換するキー入力。
+     * @return "Ctrl+O" "Shift+R" "Right" "F11" "+" 形式。key が None なら空文字列。
+     * @note 戻り値はそのまま parseChord へ渡せる(blinker.ini の [keys] に書ける表記)。
+     */
+    static std::string chordToString(const KeyChord& chord);
+
+    /**
+     * @brief 指定コマンドに割り当てられているキーをすべて返す。
+     * @param[in] cmd 検索するコマンド。
+     * @return 割り当てられたキー入力。バインドがなければ空。
+     * @note 並びは修飾なし → Ctrl/Shift/Alt の順で安定(内部の格納順に依存しない)。
+     */
+    std::vector<KeyChord> chordsFor(Command cmd) const;
 
     /**
      * @brief blinker.ini の [keys] セクションを適用する。

@@ -86,6 +86,7 @@ int main(int argc, char** argv) {
         if (argc >= 2 && argv[1] && argv[1][0] != '\0') {
             app.openPath(pathFromUtf8(argv[1]));
         }
+        app.showStartupHint();  // 画像情報より優先して出るので openPath の後に呼ぶ
 
         window.run();
     }  // cache のデストラクタがワーカースレッドを join してから SDL を終了する
