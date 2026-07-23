@@ -1569,6 +1569,14 @@ void testAnnotationGeometry() {
     translateAnnotation(moved, 5, 7);
     CHECK(nearly(moved.p1.x, 5) && nearly(moved.p1.y, 7) && nearly(moved.p2.x, 15));
 
+    // Shift ドラッグの正方形化: 一辺は縦横の小さいほうに合わせ、向きは保つ
+    CHECK(nearly(constrainToSquare({10, 10}, {40, 30}).x, 30));
+    CHECK(nearly(constrainToSquare({10, 10}, {40, 30}).y, 30));
+    const Point upLeft = constrainToSquare({10, 10}, {-40, 0});
+    CHECK(nearly(upLeft.x, 0) && nearly(upLeft.y, 0));
+    const Point degenerate = constrainToSquare({10, 10}, {40, 10});
+    CHECK(nearly(degenerate.x, 10) && nearly(degenerate.y, 10));
+
     // 回転ハンドル: 無回転なら上辺中央の真上
     AnnotationSpec plain;
     plain.p1 = {0, 0};
@@ -1864,6 +1872,44 @@ void testAppEdit() {
     }
     app.execute(Command::Escape);  // Escape で解除できる
     CHECK(app.annotations().preview == nullptr);
+    CHECK(app.annotations().specs->empty());
+
+    // Shift ドラッグは正方形になる。画像 (0,0)-(6,5) → 短いほう(5)に合わせて (5,5)
+    app.onRightDragStart({396, 283});
+    app.onRightDragMove({402, 288}, true);
+    CHECK(nearly(app.annotations().preview->p2.x, 5));
+    CHECK(nearly(app.annotations().preview->p2.y, 5));
+    app.onRightDragEnd({402, 288}, true);
+    CHECK(app.annotations().specs->size() == 1);
+    {
+        const AnnotationSpec spec = app.annotations().specs->back();
+        CHECK(nearly(spec.p1.x, 0) && nearly(spec.p1.y, 0));
+        CHECK(nearly(spec.p2.x, 5) && nearly(spec.p2.y, 5));
+    }
+
+    // 真円も同じ経路。左上向きのドラッグでも符号を保つ(画像 (6,6) → (1,1))
+    app.execute(Command::SelectToolEllipse);
+    app.onRightDragStart({402, 289});
+    app.onRightDragEnd({397, 284}, true);
+    {
+        const AnnotationSpec spec = app.annotations().specs->back();
+        CHECK(spec.kind == AnnotationSpec::Kind::Ellipse);
+        CHECK(nearly(spec.p1.x, 6) && nearly(spec.p1.y, 6));
+        CHECK(nearly(spec.p2.x, 1) && nearly(spec.p2.y, 1));
+    }
+
+    // 直線・矢印は 45 度固定になってしまうので正方形化しない
+    app.execute(Command::SelectToolLine);
+    app.onRightDragStart({396, 283});
+    app.onRightDragEnd({402, 288}, true);
+    {
+        const AnnotationSpec spec = app.annotations().specs->back();
+        CHECK(spec.kind == AnnotationSpec::Kind::Line);
+        CHECK(nearly(spec.p2.x, 6) && nearly(spec.p2.y, 5));
+    }
+
+    app.execute(Command::SelectToolRect);
+    while (!app.annotations().specs->empty()) app.execute(Command::Undo);
     CHECK(app.annotations().specs->empty());
 
     // 閾値未満の右ドラッグ(ただの右クリック)はツール切り替えメニューを開く。

@@ -151,6 +151,13 @@ private:
      */
     void handleLeftDown(POINT pt);
 
+    /**
+     * @brief 右ドラッグ中に Shift の状態が変わったことを App へ伝える。
+     * @param[in] shift Shift が押されたなら true、離されたなら false。
+     * @pre rightDragging_ が true であること。
+     */
+    void updateRightDragShift(bool shift);
+
     /// @brief WM_PAINT を処理し、App のスナップショットをレンダラへ渡す。
     void onPaint();
 
@@ -220,6 +227,7 @@ private:
     LONG savedStyle_ = 0;
     bool dragging_ = false;
     bool rightDragging_ = false;  ///< 編集領域の選択中(右ボタン)
+    POINT lastRightDragPos_{};    ///< 右ドラッグ中の最後のポインタ位置(Shift 押下時の再計算用)
     POINT lastDragPos_{};
     bool trackingMouseLeave_ = false;
     // テキスト編集(インプレース)の状態
