@@ -275,6 +275,16 @@ void App::execute(Command command) {
             showMessage("パスのコピーに失敗しました");
         }
         break;
+    case Command::CopyFile:
+        // コピーされるのはディスク上の元ファイル(未保存の編集内容は含まれない)
+        if (clipboardImage_ || list_.empty()) {
+            showMessage("コピーするファイルがありません");
+        } else if (clipboard_.setFiles({list_.current()})) {
+            showMessage("ファイルをコピーしました: " + pathToUtf8(list_.current()));
+        } else {
+            showMessage("ファイルのコピーに失敗しました");
+        }
+        break;
     case Command::PasteImage:
         if (auto image = clipboard_.getImage(); image && image->width > 0 && image->height > 0) {
             discardEdits();

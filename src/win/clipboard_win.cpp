@@ -1,7 +1,10 @@
 #include "win/clipboard_win.h"
 
+#include <shlobj.h>  // DROPFILES / CFSTR_PREFERREDDROPEFFECT / DROPEFFECT_COPY
+
 #include <algorithm>
 #include <cstring>
+#include <system_error>
 #include <vector>
 
 #include "core/dib.h"
@@ -134,6 +137,50 @@ bool ClipboardWin::setImage(const DecodedImage& image) {
         GlobalFree(handle24);
         ok = false;
     }
+    CloseClipboard();
+    return ok;
+}
+
+bool ClipboardWin::setFiles(const std::vector<std::filesystem::path>& paths) {
+    if (paths.empty()) return false;
+
+    // CF_HDROP のパス列: 各パスを NUL 終端で並べ、末尾にもう 1 つ NUL を置く。
+    // 貼り付け先のカレントディレクトリは当てにできないため必ず絶対パスにする
+    std::wstring list;
+    for (const auto& path : paths) {
+        std::error_code ec;
+        const std::filesystem::path full = std::filesystem::absolute(path, ec);
+        list += (ec ? path : full).native();
+        list.push_back(L'\0');
+    }
+    list.push_back(L'\0');
+
+    // DROPFILES ヘッダの直後にパス列が続く 1 つのメモリブロック
+    std::vector<uint8_t> buffer(sizeof(DROPFILES) + list.size() * sizeof(wchar_t));
+    DROPFILES header{};
+    header.pFiles = static_cast<DWORD>(sizeof(DROPFILES));  // パス列までのオフセット
+    header.fWide = TRUE;
+    std::memcpy(buffer.data(), &header, sizeof(header));
+    std::memcpy(buffer.data() + sizeof(header), list.data(), list.size() * sizeof(wchar_t));
+
+    // 貼り付け側が「移動」と解釈して元ファイルを消さないよう、コピーであることを明示する
+    // CFSTR_PREFERREDDROPEFFECT は TCHAR マクロ。UNICODE 定義下なので W 版に解決される
+    const UINT dropEffectFormat = RegisterClipboardFormat(CFSTR_PREFERREDDROPEFFECT);
+    const DWORD dropEffect = DROPEFFECT_COPY;
+
+    HGLOBAL handleFiles = allocGlobal(buffer.data(), buffer.size());
+    HGLOBAL handleEffect = allocGlobal(&dropEffect, sizeof(dropEffect));
+    if (!handleFiles || !handleEffect || dropEffectFormat == 0 || !openClipboard(owner_)) {
+        if (handleFiles) GlobalFree(handleFiles);
+        if (handleEffect) GlobalFree(handleEffect);
+        return false;
+    }
+
+    EmptyClipboard();
+    const bool ok = SetClipboardData(CF_HDROP, handleFiles) != nullptr;
+    if (!ok) GlobalFree(handleFiles);
+    // 効果の指定は失敗しても既定(コピー)で貼り付けられるため成否には含めない
+    if (!SetClipboardData(dropEffectFormat, handleEffect)) GlobalFree(handleEffect);
     CloseClipboard();
     return ok;
 }

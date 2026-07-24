@@ -160,10 +160,12 @@ void testKeymap() {
     CHECK(chord && chord->key == KeyCode::F11);
     CHECK(km.find({KeyCode{'C'}, true}) == Command::CopyImage);         // Ctrl+C
     CHECK(km.find({KeyCode{'C'}, true, true}) == Command::CopyPath);    // Shift+Ctrl+C
+    CHECK(km.find({KeyCode{'C'}, false, true}) == Command::CopyFile);   // Shift+C
     CHECK(km.find({KeyCode{'V'}, true}) == Command::PasteImage);        // Ctrl+V
     CHECK(km.find({KeyCode{'S'}, true}) == Command::SaveImageAs);       // Ctrl+S
     CHECK(km.find({KeyCode{'B'}}) == Command::ToggleStatusBar);
     CHECK(km.find({KeyCode{'B'}, true}) == Command::ToggleSidebar);     // Ctrl+B
+    CHECK(commandFromName("copy_file") == Command::CopyFile);
     CHECK(commandFromName("paste") == Command::PasteImage);
     CHECK(commandFromName("save_as") == Command::SaveImageAs);
     CHECK(commandFromName("sidebar") == Command::ToggleSidebar);
@@ -256,6 +258,7 @@ void testHelpLines() {
     CHECK(has("この操作一覧  F1"));
     CHECK(has("右 90 度回転  R"));
     CHECK(has("パスをコピー  Ctrl+Shift+C"));
+    CHECK(has("ファイルをコピー  Shift+C"));
     // キーの割り当てがない操作は行ごと出ない
     CHECK(!has("矢印ツール  "));
     CHECK(std::none_of(lines.begin(), lines.end(), [](const HelpLine& line) {
@@ -279,6 +282,7 @@ void testHelpLines() {
     stripped.unbindCommand(Command::SaveImageAs);
     stripped.unbindCommand(Command::CopyImage);
     stripped.unbindCommand(Command::CopyPath);
+    stripped.unbindCommand(Command::CopyFile);
     stripped.unbindCommand(Command::PasteImage);
     const std::vector<HelpLine> strippedLines = buildHelpLines(stripped);
     CHECK(std::none_of(strippedLines.begin(), strippedLines.end(),
@@ -822,10 +826,19 @@ public:
         lastText = text;
         return true;
     }
+    bool setFiles(const std::vector<std::filesystem::path>& paths) override {
+        if (paths.empty()) return false;
+        ++filesCount;
+        lastFiles = paths;
+        return filesOk;
+    }
     std::shared_ptr<DecodedImage> getImage() override { return pasteImage; }
     std::string getText() override { return pasteText; }
 
     int imageCount = 0;
+    int filesCount = 0;
+    bool filesOk = true;  // setFiles の戻り値(失敗経路の確認用)
+    std::vector<std::filesystem::path> lastFiles;
     std::string pasteText;  // getText の応答
     uint32_t lastWidth = 0;
     std::vector<uint8_t> lastPixels;
@@ -922,8 +935,10 @@ void testAppClipboard() {
     // 画像を開いていない状態では何もコピーされない
     app.execute(Command::CopyImage);
     app.execute(Command::CopyPath);
+    app.execute(Command::CopyFile);
     CHECK(clipboard.imageCount == 0);
     CHECK(clipboard.lastText.empty());
+    CHECK(clipboard.filesCount == 0);
 
     // デコード完了を同期して待てるようにしてから画像を開く
     std::mutex mutex;
@@ -950,6 +965,16 @@ void testAppClipboard() {
 
     app.execute(Command::CopyPath);
     CHECK(clipboard.lastText == pathToUtf8(path));
+
+    // ファイルのコピーは表示中の 1 件を渡す(実体は編集前のディスク上のファイル)
+    app.execute(Command::CopyFile);
+    CHECK(clipboard.filesCount == 1);
+    CHECK(clipboard.lastFiles == std::vector<std::filesystem::path>{path});
+
+    // 書き込みに失敗したらメッセージで知らせる
+    clipboard.filesOk = false;
+    app.execute(Command::CopyFile);
+    CHECK(app.statusBar().leftText == "ファイルのコピーに失敗しました");
 }
 
 // 大きい画像(openPath 中にデコードが終わらない)でも「読み込み中」のまま止まらないこと。
@@ -1139,6 +1164,11 @@ void testAppPasteSave() {
     // 貼り付け表示中はパスのコピーを拒否(一覧のパスとは無関係のため)
     app.execute(Command::CopyPath);
     CHECK(app.statusBar().leftText == "コピーするパスがありません");
+
+    // ファイルのコピーも同様(貼り付け画像に対応するファイルは存在しない)
+    app.execute(Command::CopyFile);
+    CHECK(app.statusBar().leftText == "コピーするファイルがありません");
+    CHECK(clipboard.filesCount == 0);
 
     // 貼り付け画像の保存: 既定名は「クリップボード.png」
     host.savePath = std::filesystem::path("C:/out/pasted.png");

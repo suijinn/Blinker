@@ -1,7 +1,9 @@
 #pragma once
 
+#include <filesystem>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "platform/decoder.h"
 
@@ -35,6 +37,18 @@ public:
      * @return 書き込めたら true。失敗時は false。
      */
     virtual bool setText(const std::string& text) = 0;
+
+    /**
+     * @brief ファイル(実体)をクリップボードへ書き込む。
+     *
+     * エクスプローラ等のファイラに貼り付けるとファイルがコピーされる形式で書き込む
+     * (Windows は CF_HDROP、SDL バックエンドは text/uri-list)。
+     * 相対パスは実装側で絶対パスへ解決される。
+     *
+     * @param[in] paths 書き込むファイルのパス。空なら失敗扱い。
+     * @return 書き込めたら true。失敗時は false。
+     */
+    virtual bool setFiles(const std::vector<std::filesystem::path>& paths) = 0;
 
     /**
      * @brief クリップボードの画像を取得する。

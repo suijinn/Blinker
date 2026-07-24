@@ -69,6 +69,7 @@ std::vector<HelpLine> buildHelpLines(const Keymap& keymap) {
     row(Command::SaveImageAs, "名前を付けて保存");
     row(Command::CopyImage, "画像をコピー");
     row(Command::CopyPath, "パスをコピー");
+    row(Command::CopyFile, "ファイルをコピー");
     row(Command::PasteImage, "貼り付け");
 
     header("編集");
