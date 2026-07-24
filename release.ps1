@@ -1,4 +1,4 @@
-# Blinker のリリース。
+﻿# Blinker のリリース。
 #
 #   .\release.ps1 x.y.z      (または release.bat x.y.z)
 #

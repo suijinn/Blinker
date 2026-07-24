@@ -64,6 +64,13 @@ cmake --preset linux-release && cmake --build --preset linux-release
 - パス比較は大文字小文字を無視(Windows準拠)。フォルダ内ソートは Win版が `StrCmpLogicalW`、
   SDL版が core の `naturalCompare`(いずれもエクスプローラと同じ自然順)
 - ソースはUTF-8(日本語コメント可)。`/utf-8` フラグ必須
+- **`.ps1` だけは UTF-8 **BOM 付き** で保存する**(C++ソースはBOMなしのまま)。
+  Windows PowerShell 5.1 は BOM のない `.ps1` を ANSI コードページ(日本語環境では CP932)
+  として読むため、日本語コメント・文字列が化けて構文エラーになる。`release.bat` は
+  `powershell`(=5.1)を呼ぶので、BOM を落とすと `release.bat x.y.z` が即死する
+  (2026-07 に踏んだ)。エディタやツールで書き換えた後は先頭 3 バイトが `EF BB BF` か確認すること。
+  検算: `powershell -NoProfile -Command "$e=$null; [void][System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path release.ps1).Path,[ref]$null,[ref]$e); $e.Count"`
+  が `0` を返せばよい
 - 設定は `blinker.exe` と同階層の `blinker.ini`(書式: docs/blinker.ini.example)
 - アイコンの正は `assets/make_icon.ps1`。`assets/blinker.ico` はその生成物なので手で差し替えない
   (`pwsh -File assets\make_icon.ps1` で16〜256pxの8サイズを再生成する)
