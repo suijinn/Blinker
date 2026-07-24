@@ -126,8 +126,15 @@ push するだけ**(手でそう書き換えてもよい。スクリプトは事
 
 - `version.h` / `blinker.rc` … `configure_file` で生成(既存)
 - **git タグ `vx.y.z`** … `.github/workflows/tag.yml` が push を検知して自動作成
-- **GitHub Release + `blinker-x.y.z-win-x64.exe`** … tag.yml が続けて
+- **GitHub Release + `blinker.exe`** … tag.yml が続けて
   `release.yml` を `workflow_call` で呼び、ビルド・テストして添付
+
+添付ファイル名に版番号は付けない(付けると利用者が更新のたびに「既定のアプリ」を
+設定し直すことになる)。アセット名の一意性は Release 単位なので同名でも衝突しない。
+版は exe のプロパティ(`blinker.rc` の `FILEVERSION`)とタイトルバー
+(`... - Blinker vx.y.z (sha)`)で分かる。
+最新版は固定 URL で取れる:
+`https://github.com/suijinn/Blinker/releases/latest/download/blinker.exe`
 
 **tag.yml から release.yml へは「タグ push で連鎖」させてはならない**(2026-07 の
 v0.1.2 で踏んだ)。GITHUB_TOKEN で起こしたイベントは新しいワークフローを起動しない、

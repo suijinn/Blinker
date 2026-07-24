@@ -53,7 +53,6 @@ jobs:
           ref: ${{ inputs.tag || github.ref_name }}
 
       - name: タグと CMakeLists.txt のバージョンの一致を確認
-        id: ver
         run: |
           tag="${TAG#v}"
           version=$(sed -n 's/^project(Blinker VERSION \([0-9]\+\.[0-9]\+\.[0-9]\+\).*/\1/p' CMakeLists.txt)
@@ -61,7 +60,6 @@ jobs:
             echo "::error::タグ $TAG と CMakeLists.txt の $version が食い違っている"
             exit 1
           fi
-          echo "version=$version" >> "$GITHUB_OUTPUT"
 
       - name: Configure
         # ジェネレータは指定せず CMake に検出させる。windows-latest のイメージが載せる
@@ -78,20 +76,18 @@ jobs:
       - name: Test
         run: ctest --test-dir build/ci -C Release --output-on-failure
 
-      - name: 成果物にバージョン名を付ける
-        id: art
-        env:
-          VERSION: ${{ steps.ver.outputs.version }}
-        run: |
-          name="blinker-$VERSION-win-x64.exe"
-          cp build/ci/Release/blinker.exe "$name"
-          echo "name=$name" >> "$GITHUB_OUTPUT"
-
       - name: Release を作成して添付
-        # 再実行(workflow_dispatch)でも通るよう、既にある Release には添付し直す
+        # 再実行(workflow_dispatch)でも通るよう、既にある Release には添付し直す。
+        #
+        # 添付名は版番号を含めず常に blinker.exe にする。アセット名の一意性は
+        # Release 単位なので、版が違えば同名でも衝突しない。利用者が
+        # 「既定のアプリ」の設定を版ごとにやり直さずに済むよう、上書き更新できる
+        # 名前を保つのが狙い(版は exe のプロパティの FILEVERSION で分かる)。
+        # 副産物として最新版が固定 URL で取れる:
+        #   https://github.com/suijinn/Blinker/releases/latest/download/blinker.exe
         env:
           GH_TOKEN: ${{ github.token }}
-          ASSET: ${{ steps.art.outputs.name }}
+          ASSET: build/ci/Release/blinker.exe
         run: |
           if gh release view "$TAG" >/dev/null 2>&1; then
             echo "Release $TAG は既にあるので成果物だけ差し替える"
