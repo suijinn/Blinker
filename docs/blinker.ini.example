@@ -60,7 +60,7 @@ border_width = 0
 # 使えるコマンド:
 #   next prev first last zoom_in zoom_out fit actual_size
 #   pan_left pan_right pan_up pan_down rotate_cw rotate_ccw
-#   fullscreen open copy_image copy_path paste save_as undo delete_annotation
+#   fullscreen open copy_image copy_path copy_file paste save_as undo delete_annotation
 #   sidebar statusbar help escape quit
 #   tool_crop tool_rect tool_ellipse tool_arrow tool_line tool_text
 #     (右ドラッグで実行するツールの切り替え。既定のキーは割り当てていない)

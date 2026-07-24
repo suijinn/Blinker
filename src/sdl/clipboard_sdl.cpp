@@ -4,6 +4,8 @@
 
 #include <algorithm>
 #include <cstring>
+#include <format>
+#include <system_error>
 #include <vector>
 
 #include "sdl/decoder_stb.h"
@@ -13,6 +15,8 @@ namespace blinker {
 namespace {
 
 constexpr const char* kMimePng = "image/png";
+constexpr const char* kMimeUriList = "text/uri-list";
+constexpr const char* kMimeGnome = "x-special/gnome-copied-files";
 
 // SDL_SetClipboardData は要求時コールバックでデータを渡す方式のため、
 // エンコード済み PNG をクリップボードの生存期間だけ保持する
@@ -34,6 +38,51 @@ void pngCleanupCallback(void* userdata) {
     delete static_cast<PngHolder*>(userdata);
 }
 
+// パスを file:// URI にする(RFC 3986 の unreserved と '/' 以外をパーセントエンコード)
+std::string toFileUri(const std::filesystem::path& path) {
+    std::error_code ec;
+    const std::filesystem::path full = std::filesystem::absolute(path, ec);
+    const std::string utf8 = (ec ? path : full).generic_string();
+
+    std::string uri = "file://";
+    for (const char c : utf8) {
+        const auto byte = static_cast<unsigned char>(c);
+        const bool unreserved = (byte >= 'A' && byte <= 'Z') || (byte >= 'a' && byte <= 'z') ||
+                                (byte >= '0' && byte <= '9') || byte == '-' || byte == '.' ||
+                                byte == '_' || byte == '~' || byte == '/';
+        if (unreserved) {
+            uri += c;
+        } else {
+            uri += std::format("%{:02X}", byte);
+        }
+    }
+    return uri;
+}
+
+// uri-list と gnome 形式の両方を、クリップボードの生存期間だけ保持する
+struct FilesHolder {
+    std::string uriList;  ///< text/uri-list(CRLF 区切り)
+    std::string gnome;    ///< x-special/gnome-copied-files("copy" + LF + URI)
+};
+
+const void* filesDataCallback(void* userdata, const char* mimeType, size_t* size) {
+    auto* holder = static_cast<FilesHolder*>(userdata);
+    const std::string* data = nullptr;
+    if (holder && mimeType) {
+        if (std::strcmp(mimeType, kMimeUriList) == 0) {
+            data = &holder->uriList;
+        } else if (std::strcmp(mimeType, kMimeGnome) == 0) {
+            data = &holder->gnome;
+        }
+    }
+    if (size) *size = data ? data->size() : 0;
+    return data ? data->data() : nullptr;
+}
+
+void filesCleanupCallback(void* userdata) {
+    delete static_cast<FilesHolder*>(userdata);
+}
+
 } // namespace
 
 bool ClipboardSdl::setImage(const DecodedImage& image) {
@@ -44,6 +93,25 @@ bool ClipboardSdl::setImage(const DecodedImage& image) {
     }
     const char* mimeTypes[] = {kMimePng};
     if (!SDL_SetClipboardData(pngDataCallback, pngCleanupCallback, holder, mimeTypes, 1)) {
+        delete holder;
+        return false;
+    }
+    return true;  // holder は cleanup コールバックで解放される
+}
+
+bool ClipboardSdl::setFiles(const std::vector<std::filesystem::path>& paths) {
+    if (paths.empty()) return false;
+
+    auto holder = new FilesHolder{};
+    holder->gnome = "copy";
+    for (const auto& path : paths) {
+        const std::string uri = toFileUri(path);
+        holder->uriList += uri + "\r\n";  // text/uri-list の行区切りは CRLF
+        holder->gnome += "\n" + uri;
+    }
+
+    const char* mimeTypes[] = {kMimeUriList, kMimeGnome};
+    if (!SDL_SetClipboardData(filesDataCallback, filesCleanupCallback, holder, mimeTypes, 2)) {
         delete holder;
         return false;
     }

@@ -32,6 +32,17 @@ public:
     bool setText(const std::string& text) override;
 
     /**
+     * @brief ファイル(実体)をクリップボードへ書き込む。
+     *
+     * "text/uri-list"(標準)と "x-special/gnome-copied-files"(Nautilus 等が
+     * 貼り付けに使う)の 2 形式で file:// URI を書き込む。
+     *
+     * @param[in] paths 書き込むファイルのパス。相対パスは絶対パスへ解決される。
+     * @return 書き込めたら true。空・SDL のエラー時は false。
+     */
+    bool setFiles(const std::vector<std::filesystem::path>& paths) override;
+
+    /**
      * @brief クリップボードの "image/png" データを取得してデコードする。
      * @return 取得した画像(32bpp PBGRA)。画像がない・デコード失敗なら nullptr。
      */
