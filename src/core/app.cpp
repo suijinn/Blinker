@@ -159,8 +159,8 @@ void App::applyConfig(const Config& config) {
     statusBarEnabled_ = config.getBool("view", "statusbar", statusBarEnabled_);
     sidebarEnabled_ = config.getBool("view", "sidebar", sidebarEnabled_);
     sidebarWidth_ = static_cast<float>(
-        std::clamp(config.getInt("view", "sidebar_width", static_cast<int>(sidebarWidth_)), 120,
-                   480));
+        std::clamp(config.getInt("view", "sidebar_width", static_cast<int>(sidebarWidth_)),
+                   static_cast<int>(kMinSidebarWidth), static_cast<int>(kMaxSidebarWidth)));
     helpHintEnabled_ = config.getBool("view", "help_hint", helpHintEnabled_);
     // パンと編集の左右を入れ替える(メニューは入れ替えず常に右クリック)
     swapMouseButtons_ = config.getBool("mouse", "swap_buttons", swapMouseButtons_);
@@ -476,6 +476,14 @@ bool App::onMouseDown(MouseButton button, Point screenPos) {
     lastPointerScreen_ = screenPos;
     panning_ = false;
     menuPressed_ = false;
+    // 右端を掴んだら幅の変更。項目のクリック判定より先に見る(境界際のクリックで
+    // 画像が切り替わってしまわないように)
+    if (button == MouseButton::Left && onSidebarResizeEdge(screenPos)) {
+        sidebarResizing_ = true;
+        sidebarResizeStartX_ = screenPos.x;
+        sidebarResizeStartWidth_ = sidebarOffset();  // 見えている幅を基準に 1:1 で動かす
+        return true;
+    }
     // サイドバーは UI 部品なので左右の入れ替えの対象外。左クリックだけが項目へ移動し、
     // 右クリックは何もしない(メニューも出さない)
     if (sidebarVisible() && screenPos.x < sidebarOffset()) {
@@ -602,6 +610,10 @@ void App::onMouseUp(MouseButton button, Point screenPos, bool shift) {
     if (button == MouseButton::Right && textStyleMenuPending_) {
         textStyleMenuPending_ = false;
         showTextStyleMenu(screenPos);
+        return;
+    }
+    if (button == MouseButton::Left && sidebarResizing_) {
+        sidebarResizing_ = false;  // 掴んでいた間は他のドラッグを始めていない
         return;
     }
     // 掴んでいたオブジェクト操作を終える(掴むのは常に左ボタンなので解放も左だけ)
@@ -1880,6 +1892,11 @@ void App::onMouseMove(Point screenPos, bool shift) {
     const float panDx = screenPos.x - lastPointerScreen_.x;
     const float panDy = screenPos.y - lastPointerScreen_.y;
     lastPointerScreen_ = screenPos;
+    // 幅の変更中は掴んだ位置からの総移動量で決める(クランプで取りこぼしが出ないように)
+    if (sidebarResizing_) {
+        setSidebarWidth(sidebarResizeStartWidth_ + screenPos.x - sidebarResizeStartX_);
+        return;
+    }
     // パン役のボタンで何も掴まずにドラッグしている間は画像を動かす
     if (panning_) panBy(panDx, panDy);
     // 編集ドラッグ中は選択領域とプレビューを更新する(ホバー表示の更新も続ける)
@@ -2012,6 +2029,33 @@ float App::sidebarOffset() const {
     // 操作一覧は「操作名 + キー」が入りきらないと読めないので、狭い設定でも広げる
     return sidebarMode_ == SidebarMode::Help ? std::max(sidebarWidth_, kHelpSidebarWidth)
                                              : sidebarWidth_;
+}
+
+float App::minSidebarWidth() const {
+    // 下限は sidebarOffset() が返す幅に揃える(操作一覧はそれ以上狭くしても見た目が
+    // 変わらないので、狭められたように見えてファイル名一覧だけが縮むのを防ぐ)
+    return sidebarMode_ == SidebarMode::Help ? kHelpSidebarWidth : kMinSidebarWidth;
+}
+
+void App::setSidebarWidth(float width) {
+    const float minWidth = minSidebarWidth();
+    const float maxWidth =
+        std::max(minWidth, std::min(kMaxSidebarWidth, clientSize_.w - kMinViewportWidth));
+    const float clamped = std::clamp(width, minWidth, maxWidth);
+    if (clamped == sidebarWidth_) return;
+    sidebarWidth_ = clamped;
+    applyLayout();
+    onViewChanged();  // フィット再計算でズーム率表示が変わりうる
+}
+
+bool App::onSidebarResizeEdge(Point screenPos) const {
+    if (!sidebarVisible()) return false;
+    if (screenPos.y < 0 || screenPos.y >= sidebarViewHeight()) return false;
+    return std::abs(screenPos.x - sidebarOffset()) <= kSidebarResizeGripPx;
+}
+
+bool App::wantsSidebarResizeCursor(Point screenPos) const {
+    return sidebarResizing_ || onSidebarResizeEdge(screenPos);
 }
 
 size_t App::sidebarItemCount() const {

@@ -150,6 +150,13 @@ private:
     Point toPixels(float x, float y) const;
 
     /**
+     * @brief ポインタ位置に応じてカーソルを切り替える。
+     * @param[in] screenPos ポインタ位置(物理ピクセル)。
+     * @note サイドバーの右端(と幅の変更中)だけ左右の矢印にし、それ以外は既定へ戻す。
+     */
+    void updateCursor(Point screenPos);
+
+    /**
      * @brief SDL のキーコードを KeyCode へ変換する。
      * @param[in] key SDL のキーコード。
      * @param[in] mod 修飾キーの状態。テンキーの +/- の正規化に使う。
@@ -171,6 +178,9 @@ private:
     Uint32 eventDecoded_ = 0;  ///< SDL_RegisterEvents で確保したデコード完了イベント
     Uint32 eventTimer_ = 0;    ///< 同・タイマー満了イベント
     SDL_TimerID timerId_ = 0;
+    SDL_Cursor* arrowCursor_ = nullptr;   ///< 既定のカーソル
+    SDL_Cursor* resizeCursor_ = nullptr;  ///< サイドバーの幅変更用(左右の矢印)
+    bool resizeCursorActive_ = false;     ///< 今 resizeCursor_ を出しているか
     bool running_ = false;
     bool needsRedraw_ = false;
     bool fullscreen_ = false;

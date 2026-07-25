@@ -365,6 +365,15 @@ public:
     bool wantsTextCursor(Point screenPos) const;
 
     /**
+     * @brief 指定位置で幅変更用のカーソル(左右の矢印)を出すべきかを返す。
+     * @param[in] screenPos ポインタ位置(スクリーン座標)。
+     * @return サイドバーの右端を掴める位置か、幅の変更中なら true。
+     * @note win 層が WM_SETCURSOR で参照する。変更中も true を返すのは、下限・上限で
+     *       止まってポインタが端から離れてもカーソルが戻らないようにするため。
+     */
+    bool wantsSidebarResizeCursor(Point screenPos) const;
+
+    /**
      * @brief 指定したボタンの役割を返す。
      * @param[in] button 対象のボタン。
      * @return 役割。既定では左が MouseRole::Pan・右が MouseRole::Edit で、
@@ -474,6 +483,12 @@ private:
     static constexpr float kSidebarItemHeight = 24.0f; ///< サイドバー 1 項目の高さ
     /// 操作一覧モードでの最低幅。「操作名 + キー」が収まらないと用をなさないため広げる
     static constexpr float kHelpSidebarWidth = 300.0f;
+    static constexpr float kMinSidebarWidth = 120.0f;  ///< サイドバー幅の下限
+    static constexpr float kMaxSidebarWidth = 480.0f;  ///< サイドバー幅の上限
+    /// サイドバーの右端を掴める帯の幅(境界の左右へこの分だけ広がる)
+    static constexpr float kSidebarResizeGripPx = 4.0f;
+    /// 幅の変更で画像の表示領域をここまでは残す(狭いウィンドウでの上限)
+    static constexpr float kMinViewportWidth = 120.0f;
 
     /// @brief undo 1 段分のスナップショット(画像と注釈一覧)。
     struct UndoState {
@@ -510,6 +525,27 @@ private:
      * @return サイドバー幅(px)。非表示なら 0。操作一覧モードでは kHelpSidebarWidth 以上。
      */
     float sidebarOffset() const;
+
+    /**
+     * @brief サイドバー幅の下限を返す。
+     * @return モードに応じた下限(px)。操作一覧モードでは kHelpSidebarWidth。
+     */
+    float minSidebarWidth() const;
+
+    /**
+     * @brief サイドバー幅を変更してレイアウトを作り直す。
+     * @param[in] width 変更後の幅(px)。下限・上限へクランプされる。
+     * @note クランプ後の幅が現在と同じなら何もしない(ドラッグ中の無駄な再描画を避ける)。
+     */
+    void setSidebarWidth(float width);
+
+    /**
+     * @brief 指定位置がサイドバーの右端を掴める帯の中かを返す。
+     * @param[in] screenPos 判定する位置(スクリーン座標)。
+     * @return 掴める位置なら true。サイドバーが非表示なら常に false。
+     * @note 帯は境界をまたぐので、掴める位置はサイドバーの内側と外側の両方にある。
+     */
+    bool onSidebarResizeEdge(Point screenPos) const;
 
     /**
      * @brief サイドバーに並ぶ項目数を返す。
@@ -955,6 +991,9 @@ private:
     Point lastPointerScreen_{};  ///< 最後のポインタ位置。パンの差分と Shift 再計算に使う
     bool menuPressed_ = false;   ///< 右ボタンをメニューを開ける場所で押したか
     Point menuPressScreen_{};    ///< 上記の押下位置(ドラッグ量の閾値判定用)
+    bool sidebarResizing_ = false;      ///< サイドバーの右端を掴んで幅を変更中か
+    float sidebarResizeStartX_ = 0;     ///< 変更開始時のポインタ X(スクリーン座標)
+    float sidebarResizeStartWidth_ = 0; ///< 変更開始時のサイドバー幅(px)
 
     // 編集(トリミング・図形・テキスト)の状態
     /// これ未満の編集ドラッグは無視(画面px)。右クリックのメニュー判定にも使う

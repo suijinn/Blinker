@@ -161,6 +161,14 @@ blinker.ini の `[mouse] swap_buttons` で入れ替えられる(`App::mouseRole`
 閾値未満なら何も作らずメニューになる)。サイドバーの項目クリックは画像への操作では
 ないので、これも入れ替えず常に左ボタン。
 
+サイドバーの幅は右端(境界をまたぐ `kSidebarResizeGripPx` の帯)を左ボタンで掴んで
+変えられる。`onMouseDown` はこの判定を項目クリックより先に見る(境界際のクリックで
+画像が切り替わってしまわないように)。掴んだ位置からの総移動量で幅を決めるので、
+下限・上限に当たってポインタが端から離れても戻せば追従する。下限はモードごとに
+`sidebarOffset()` が返す幅と揃える(操作一覧は `kHelpSidebarWidth`)。上限は
+`kMaxSidebarWidth` と「窓幅 - `kMinViewportWidth`」の狭いほう。ini の
+`sidebar_width` は起動時の幅で、ドラッグでの変更は保存しない。
+
 オブジェクトを掴む操作も入れ替えない。既存の図形を選ぶのに右クリックが要るのは
 他のペイント系ソフトと食い違って戸惑うため、左ボタンのままにしてある。そのため
 `onMouseDown` は**左ボタンだけ**まず `beginObjectGrab` を通し、掴めなかったときに
@@ -218,6 +226,8 @@ Text 注釈は PowerPoint のテキストボックスと同じく**画像上で�
 - 編集中のテキストボックスの内側ではマウスカーソルを I ビームにする
   (`App::wantsTextCursor` を win 層が `WM_SETCURSOR` で参照する)。編集の開始・終了は
   マウスが動かず `WM_SETCURSOR` が届かないため、`setTextEditing` から送り直す。
+  サイドバーの右端では同じ仕組みで左右の矢印にする(`App::wantsSidebarResizeCursor`。
+  SDL 版は `WindowSdl::updateCursor` が `SDL_EVENT_MOUSE_MOTION` で切り替える)。
 
 ### 部分書式(選択文字列の色・太字・斜体・下線・フォント)
 
