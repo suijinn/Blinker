@@ -277,6 +277,7 @@ void testHelpLines() {
     CHECK(hasSwapped("スクロール  右ドラッグ"));
     CHECK(hasSwapped("現在のツールを実行  左ドラッグ"));
     CHECK(hasSwapped("正方形 / 真円で描く  Shift+左ドラッグ"));
+    CHECK(hasSwapped("直線・矢印を水平 / 垂直に  Shift+左ドラッグ"));
     CHECK(hasSwapped("図形・テキストを選択  右クリック"));
     CHECK(hasSwapped("ツール・書式メニュー  余白で右クリック"));
 
@@ -1642,6 +1643,21 @@ void testAnnotationGeometry() {
     const Point degenerate = constrainToSquare({10, 10}, {40, 10});
     CHECK(nearly(degenerate.x, 10) && nearly(degenerate.y, 10));
 
+    // Shift ドラッグの向きスナップ(直線・矢印): 一番近い 8 方向へ寄せる
+    const Point horiz = constrainToAxis({10, 10}, {50, 16});  // 8.5 度 → 水平
+    CHECK(nearly(horiz.x, 50) && nearly(horiz.y, 10));
+    const Point vert = constrainToAxis({10, 10}, {16, -30});  // 81 度 → 垂直
+    CHECK(nearly(vert.x, 10) && nearly(vert.y, -30));
+    const Point diag = constrainToAxis({10, 10}, {40, 50});  // 53 度 → 45 度
+    CHECK(nearly(diag.x, 40) && nearly(diag.y, 40));
+    const Point diagUp = constrainToAxis({10, 10}, {-30, -50});  // 左上の 45 度
+    CHECK(nearly(diagUp.x, -30) && nearly(diagUp.y, -30));
+    // ちょうど真横・真上でも壊れない(始点と同じ点なら動かない)
+    CHECK(nearly(constrainToAxis({10, 10}, {40, 10}).y, 10));
+    CHECK(nearly(constrainToAxis({10, 10}, {10, 40}).x, 10));
+    const Point same = constrainToAxis({10, 10}, {10, 10});
+    CHECK(nearly(same.x, 10) && nearly(same.y, 10));
+
     // 回転ハンドル: 無回転なら上辺中央の真上
     AnnotationSpec plain;
     plain.p1 = {0, 0};
@@ -1699,6 +1715,12 @@ void testAnnotationGeometry() {
     const auto endpoints = resizeHandlePositions(dragged);
     CHECK(nearly(endpoints[0].pos.x, 5) && nearly(endpoints[0].pos.y, -5));  // P1 は不動
     CHECK(nearly(endpoints[1].pos.x, 5) && nearly(endpoints[1].pos.y, 9));
+
+    // Shift 付きの端点ドラッグ: 回転済みでも見た目が水平・垂直・45 度へ揃う
+    const AnnotationSpec snapped = resizeAnnotation(rline, ResizeHandle::P2, {9, 20}, true);
+    const auto snappedEnds = resizeHandlePositions(snapped);
+    CHECK(nearly(snappedEnds[0].pos.x, 5, 0.01f) && nearly(snappedEnds[0].pos.y, -5, 0.01f));
+    CHECK(nearly(snappedEnds[1].pos.x, 5, 0.01f) && nearly(snappedEnds[1].pos.y, 20, 0.01f));
 }
 
 void testPenGeometry() {
@@ -2032,14 +2054,48 @@ void testAppEdit() {
         CHECK(nearly(spec.p2.x, 1) && nearly(spec.p2.y, 1));
     }
 
-    // 直線・矢印は 45 度固定になってしまうので正方形化しない
+    // 直線・矢印は正方形化(=45 度固定)ではなく、向きを水平・垂直・45 度へ寄せる。
+    // 画像 (0,0)-(7,2) は水平寄りなので (7,0) までの真横の線になる
+    app.execute(Command::SelectToolLine);
+    app.onMouseDown(MouseButton::Right, {396, 283});
+    app.onMouseUp(MouseButton::Right, {403, 285}, true);
+    {
+        const AnnotationSpec spec = app.annotations().specs->back();
+        CHECK(spec.kind == AnnotationSpec::Kind::Line);
+        CHECK(nearly(spec.p2.x, 7) && nearly(spec.p2.y, 0));
+    }
+
+    // 縦寄りなら垂直。ドラッグ中のプレビューも同じ位置に寄る
+    app.execute(Command::SelectToolArrow);
+    app.onMouseDown(MouseButton::Right, {396, 283});
+    app.onMouseMove({398, 290}, true);
+    CHECK(nearly(app.annotations().preview->p2.x, 0));
+    CHECK(nearly(app.annotations().preview->p2.y, 7));
+    // ドラッグ中に Shift を離せばプレビューは素通しへ戻る
+    CHECK(app.onShiftChanged(false));
+    CHECK(nearly(app.annotations().preview->p2.x, 2));
+    app.onMouseUp(MouseButton::Right, {398, 290}, true);
+    {
+        const AnnotationSpec spec = app.annotations().specs->back();
+        CHECK(spec.kind == AnnotationSpec::Kind::Arrow);
+        CHECK(nearly(spec.p2.x, 0) && nearly(spec.p2.y, 7));
+    }
+
+    // どちらでもない向きは 45 度。画像 (0,0)-(6,5) → 短いほう(5)に合わせて (5,5)
     app.execute(Command::SelectToolLine);
     app.onMouseDown(MouseButton::Right, {396, 283});
     app.onMouseUp(MouseButton::Right, {402, 288}, true);
     {
         const AnnotationSpec spec = app.annotations().specs->back();
-        CHECK(spec.kind == AnnotationSpec::Kind::Line);
-        CHECK(nearly(spec.p2.x, 6) && nearly(spec.p2.y, 5));
+        CHECK(nearly(spec.p2.x, 5) && nearly(spec.p2.y, 5));
+    }
+
+    // Shift なしはそのまま(スナップは Shift のときだけ)
+    app.onMouseDown(MouseButton::Right, {396, 283});
+    app.onMouseUp(MouseButton::Right, {403, 285}, false);
+    {
+        const AnnotationSpec spec = app.annotations().specs->back();
+        CHECK(nearly(spec.p2.x, 7) && nearly(spec.p2.y, 2));
     }
 
     app.execute(Command::SelectToolRect);

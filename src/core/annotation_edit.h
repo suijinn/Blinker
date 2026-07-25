@@ -48,6 +48,20 @@ Point rotateAround(Point p, Point center, float deg);
 Point constrainToSquare(Point anchor, Point p);
 
 /**
+ * @brief ドラッグ先の点を、始点から見て水平・垂直・45 度のいずれかへ寄せる。
+ *
+ * まっすぐな直線・矢印を描くための Shift ドラッグに使う。始点から見た向きが
+ * 最も近い 8 方向(0/45/90/... 度)を選び、その軸上へ落とす。斜めのときの
+ * 移動量は縦横の小さいほうに合わせるので、始点と p が画像内にあれば結果も
+ * 画像内に収まる。
+ *
+ * @param[in] anchor ドラッグの始点。
+ * @param[in] p      現在のドラッグ先。
+ * @return anchor から見て水平・垂直・45 度のいずれかになる点。
+ */
+Point constrainToAxis(Point anchor, Point p);
+
+/**
  * @brief 注釈の回転前バウンディングボックスを求める。
  * @param[in] spec 対象の注釈。
  * @return p1/p2 を正規化した矩形(画像座標)。
@@ -156,7 +170,8 @@ std::vector<ResizeHandlePos> resizeHandlePositions(const AnnotationSpec& spec);
  * @param[in] orig       ドラッグ開始時の注釈。
  * @param[in] handle     掴んでいるハンドル。
  * @param[in] mouseImage 現在のポインタ位置(画像座標)。
- * @param[in] keepAspect true なら四隅ハンドルで縦横比を維持する(Shift ドラッグ用)。
+ * @param[in] keepAspect Shift ドラッグ用。true なら四隅ハンドルで縦横比を維持し、
+ *                       端点ハンドル(P1/P2)では固定端から見て水平・垂直・45 度へ寄せる。
  * @return サイズ変更後の注釈。
  */
 AnnotationSpec resizeAnnotation(const AnnotationSpec& orig, ResizeHandle handle,

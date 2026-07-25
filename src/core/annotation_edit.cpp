@@ -37,6 +37,19 @@ Point constrainToSquare(Point anchor, Point p) {
     return {anchor.x + std::copysign(side, dx), anchor.y + std::copysign(side, dy)};
 }
 
+Point constrainToAxis(Point anchor, Point p) {
+    const float dx = p.x - anchor.x;
+    const float dy = p.y - anchor.y;
+    const float adx = std::abs(dx);
+    const float ady = std::abs(dy);
+    // 8 方向の境界は 22.5 度ごと。tan(22.5°) と tan(67.5°) で場合分けする
+    constexpr float kTan22_5 = 0.41421356f;
+    constexpr float kTan67_5 = 2.41421356f;
+    if (ady <= adx * kTan22_5) return {p.x, anchor.y};  // 水平
+    if (ady >= adx * kTan67_5) return {anchor.x, p.y};  // 垂直
+    return constrainToSquare(anchor, p);                // 45 度
+}
+
 BoundsF annotationBounds(const AnnotationSpec& spec) {
     return {std::min(spec.p1.x, spec.p2.x), std::min(spec.p1.y, spec.p2.y),
             std::max(spec.p1.x, spec.p2.x), std::max(spec.p1.y, spec.p2.y)};
@@ -206,9 +219,11 @@ AnnotationSpec resizeAnnotation(const AnnotationSpec& orig, ResizeHandle handle,
     if (handle == ResizeHandle::P1 || handle == ResizeHandle::P2) {
         const Point otherWorld = rotateAround(
             handle == ResizeHandle::P1 ? orig.p2 : orig.p1, c0, orig.angleDeg);
-        const Point c1{(mouseImage.x + otherWorld.x) * 0.5f,
-                       (mouseImage.y + otherWorld.y) * 0.5f};
-        const Point movedLocal = rotateAround(mouseImage, c1, -orig.angleDeg);
+        // Shift 中は固定端から見て水平・垂直・45 度へ寄せる(見た目どおりに
+        // 揃えたいので、回転を戻す前の world 座標で判定する)
+        const Point moved = keepAspect ? constrainToAxis(otherWorld, mouseImage) : mouseImage;
+        const Point c1{(moved.x + otherWorld.x) * 0.5f, (moved.y + otherWorld.y) * 0.5f};
+        const Point movedLocal = rotateAround(moved, c1, -orig.angleDeg);
         const Point otherLocal = rotateAround(otherWorld, c1, -orig.angleDeg);
         if (handle == ResizeHandle::P1) {
             spec.p1 = movedLocal;
