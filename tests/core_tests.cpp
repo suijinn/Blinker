@@ -1341,6 +1341,89 @@ void testAppSidebar() {
     CHECK(nearly(sb.width, 300));
 }
 
+void testAppSidebarResize() {
+    FakeDecoder decoder;
+    ImageCache cache(decoder);
+    FakeHost host;
+    FakeFileSystem fileSystem;
+    FakeClipboard clipboard;
+    FakeEncoder encoder;
+    FakeAnnotationRasterizer rasterizer;
+    App app(host, fileSystem, cache, clipboard, encoder, rasterizer);
+    app.onResize(800, 600);
+    std::mutex mutex;
+    std::condition_variable cv;
+    bool decoded = false;
+    cache.setOnDecoded([&](const std::filesystem::path&) {
+        std::lock_guard lock(mutex);
+        decoded = true;
+        cv.notify_all();
+    });
+    fileSystem.files.push_back("C:/pics/a.png");
+    fileSystem.files.push_back("C:/pics/b.png");
+    app.openPath(fileSystem.files[0]);
+    {
+        std::unique_lock lock(mutex);
+        CHECK(cv.wait_for(lock, std::chrono::seconds(5), [&] { return decoded; }));
+    }
+    app.onDecodeCompleted();
+    app.execute(Command::ToggleSidebar);
+    CHECK(nearly(app.sidebar().width, 220));
+
+    // 右端をまたぐ帯だけが掴める(境界の内側・外側の両方)。項目の上・遠くは掴めない
+    CHECK(app.wantsSidebarResizeCursor({218, 300}));
+    CHECK(app.wantsSidebarResizeCursor({223, 300}));
+    CHECK(!app.wantsSidebarResizeCursor({100, 300}));
+    CHECK(!app.wantsSidebarResizeCursor({230, 300}));
+    CHECK(!app.wantsSidebarResizeCursor({220, 590}));  // ステータスバーの高さ
+
+    // 右端を掴んでドラッグ → 幅が追従し、項目のジャンプは起きない
+    CHECK(app.onMouseDown(MouseButton::Left, {220, 300}));
+    CHECK(host.lastTitle.find("a.png") == 0);
+    app.onMouseMove({300, 300});
+    CHECK(nearly(app.sidebar().width, 300));
+    // 画像はサイドバーの右側 (500x574) の中央に描画される
+    CHECK(nearly(app.imageToScreen().apply({0.5f, 0.5f}).x, 300 + 250));
+    app.onMouseUp(MouseButton::Left, {300, 300}, false);
+    app.onMouseMove({400, 300});  // 離した後の移動は幅を変えない
+    CHECK(nearly(app.sidebar().width, 300));
+
+    // 下限・上限でクランプし、掴んだ位置からの総移動量で決まるので戻せば追従する
+    CHECK(app.onMouseDown(MouseButton::Left, {300, 300}));
+    app.onMouseMove({0, 300});
+    CHECK(nearly(app.sidebar().width, 120));  // 下限
+    app.onMouseMove({790, 300});
+    CHECK(nearly(app.sidebar().width, 480));  // 上限
+    app.onMouseMove({260, 300});
+    CHECK(nearly(app.sidebar().width, 260));  // クランプの後も総移動量に追従する
+    app.onMouseUp(MouseButton::Left, {260, 300}, false);
+
+    // 窓が狭ければ上限も狭まる(画像の表示領域を kMinViewportWidth だけ残す)
+    app.onResize(400, 600);
+    CHECK(app.onMouseDown(MouseButton::Left, {260, 300}));
+    app.onMouseMove({600, 300});
+    CHECK(nearly(app.sidebar().width, 280));  // 400 - 120
+    app.onMouseUp(MouseButton::Left, {600, 300}, false);
+    app.onResize(800, 600);
+
+    // 操作一覧モードの下限は kHelpSidebarWidth(それ以上狭めても見た目が変わらないため)
+    app.execute(Command::ToggleHelp);
+    CHECK(app.sidebarMode() == SidebarMode::Help);
+    CHECK(nearly(app.sidebar().width, 300));  // 280 の設定でも操作一覧では 300
+    CHECK(app.onMouseDown(MouseButton::Left, {300, 300}));
+    app.onMouseMove({100, 300});
+    CHECK(nearly(app.sidebar().width, 300));
+    app.onMouseMove({420, 300});
+    CHECK(nearly(app.sidebar().width, 420));
+    app.onMouseUp(MouseButton::Left, {420, 300}, false);
+
+    // 非表示なら掴めない
+    app.execute(Command::ToggleHelp);
+    CHECK(!app.sidebar().visible);
+    CHECK(!app.wantsSidebarResizeCursor({420, 300}));
+    CHECK(!app.onMouseDown(MouseButton::Left, {420, 300}));
+}
+
 void testAppHelpSidebar() {
     FakeDecoder decoder;
     ImageCache cache(decoder);
@@ -3346,6 +3429,7 @@ int main() {
     testAppStatusBar();
     testAppPasteSave();
     testAppSidebar();
+    testAppSidebarResize();
     testAppHelpSidebar();
     testAppHelpHint();
     testEditFunctions();

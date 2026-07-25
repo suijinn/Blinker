@@ -155,15 +155,20 @@ LRESULT MainWindow::handleMessage(UINT msg, WPARAM wp, LPARAM lp) {
         handleButtonUp(MouseButton::Right, {GET_X_LPARAM(lp), GET_Y_LPARAM(lp)}, wp);
         return 0;
     case WM_SETCURSOR:
-        // 編集中のテキストボックスの内側だけ I ビームにする。
+        // 編集中のテキストボックスの内側だけ I ビーム、サイドバーの右端では左右の矢印。
         // クライアント領域以外(枠・タイトルバー)は既定の処理に任せる
         if (LOWORD(lp) == HTCLIENT && app_) {
             POINT pt{};
-            if (GetCursorPos(&pt) && ScreenToClient(hwnd_, &pt) &&
-                app_->wantsTextCursor(
-                    {static_cast<float>(pt.x), static_cast<float>(pt.y)})) {
-                SetCursor(LoadCursorW(nullptr, IDC_IBEAM));
-                return TRUE;
+            if (GetCursorPos(&pt) && ScreenToClient(hwnd_, &pt)) {
+                const Point pos{static_cast<float>(pt.x), static_cast<float>(pt.y)};
+                if (app_->wantsSidebarResizeCursor(pos)) {
+                    SetCursor(LoadCursorW(nullptr, IDC_SIZEWE));
+                    return TRUE;
+                }
+                if (app_->wantsTextCursor(pos)) {
+                    SetCursor(LoadCursorW(nullptr, IDC_IBEAM));
+                    return TRUE;
+                }
             }
         }
         break;

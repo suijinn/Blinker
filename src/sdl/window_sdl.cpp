@@ -57,6 +57,9 @@ bool WindowSdl::create(FontStb& font) {
     if (base == 0) return false;
     eventDecoded_ = base;
     eventTimer_ = base + 1;
+    // カーソルは SDL_Quit がまとめて解放する(ウィンドウ・レンダラと同じ扱い)
+    arrowCursor_ = SDL_CreateSystemCursor(SDL_SYSTEM_CURSOR_DEFAULT);
+    resizeCursor_ = SDL_CreateSystemCursor(SDL_SYSTEM_CURSOR_EW_RESIZE);
     return true;
 }
 
@@ -79,6 +82,14 @@ Point WindowSdl::toPixels(float x, float y) const {
     // 高 DPI 環境ではウィンドウ座標と描画ピクセルが異なる。App は物理ピクセルで扱う
     const float scale = SDL_GetWindowPixelDensity(window_);
     return {x * scale, y * scale};
+}
+
+void WindowSdl::updateCursor(Point screenPos) {
+    if (!arrowCursor_ || !resizeCursor_) return;
+    const bool resize = app_ && app_->wantsSidebarResizeCursor(screenPos);
+    if (resize == resizeCursorActive_) return;  // 変わるときだけ差し替える
+    resizeCursorActive_ = resize;
+    SDL_SetCursor(resize ? resizeCursor_ : arrowCursor_);
 }
 
 void WindowSdl::run() {
@@ -168,9 +179,10 @@ void WindowSdl::handleEvent(const SDL_Event& event) {
     }
     case SDL_EVENT_MOUSE_MOTION: {
         if (!app_) return;
+        const Point pos = toPixels(event.motion.x, event.motion.y);
         // パン(押したままの移動)も App 側で処理される
-        app_->onMouseMove(toPixels(event.motion.x, event.motion.y),
-                          (SDL_GetModState() & SDL_KMOD_SHIFT) != 0);
+        app_->onMouseMove(pos, (SDL_GetModState() & SDL_KMOD_SHIFT) != 0);
+        updateCursor(pos);
         return;
     }
     case SDL_EVENT_DROP_FILE:
