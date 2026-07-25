@@ -8,7 +8,8 @@ background = 202020
 theme = auto
 # ステータスバー(画像情報・カーソル位置の座標と色・コピー通知)を表示するか
 statusbar = true
-# サイドバー(ファイル名一覧、Ctrl+Bでトグル)を起動時に表示するか
+# サイドバー(ファイル名一覧、Ctrl+Bでトグル。テキスト注釈の選択中は太字トグルが優先)
+# を起動時に表示するか
 sidebar = false
 # サイドバーの幅 (px, 120-480)
 # 操作一覧 (F1) を出している間だけは、狭くても 300px まで広げて表示する
@@ -31,15 +32,17 @@ prefetch_radius = 2
 # 以下は新規作成時の初期値で、同じメニュー(線の太さ・文字サイズ・色の変更)から
 # その場で変更できる。追加済みオブジェクトは左クリックで選択して移動・回転・
 # 右クリックメニューで個別に変更できる
-# 起動時のツール: crop / rect / ellipse / arrow / line / text
+# 起動時のツール: crop / rect / ellipse / arrow / line / pen / marker / number / text
+# (pen = 手書き、marker = 半透明の太い手書き、number = 連番の数字入りマーカー)
 tool = rect
 # 図形・テキストの色 (RRGGBB)
 color = FF3B30
 # 線の太さ (画面px基準, 1-100。表示ズームに合わせて画像へ換算される)
+# マーカーはこの 4 倍の太さで、不透明度 40% で描かれる
 stroke_width = 3
 # テキストの文字サイズ (画面px基準, 6-200)
 font_size = 18
-# テキストのフォント (フォントファミリ名。未指定なら Yu Gothic UI)
+# テキストのフォント (フォントファミリ名。未指定なら Yu Gothic)
 # メニューの候補にない名前も書ける。入っていない場合は代替フォントで描かれる
 # font_family = Meiryo
 # 矩形・楕円・テキストの塗りつぶし色 (RRGGBB)
@@ -60,9 +63,10 @@ border_width = 0
 # 使えるコマンド:
 #   next prev first last zoom_in zoom_out fit actual_size
 #   pan_left pan_right pan_up pan_down rotate_cw rotate_ccw
-#   fullscreen open copy_image copy_path copy_file paste save_as undo delete_annotation
+#   fullscreen open copy_image copy_path copy_file paste save_as undo redo delete_annotation
 #   sidebar statusbar help escape quit
-#   tool_crop tool_rect tool_ellipse tool_arrow tool_line tool_text
+#   tool_crop tool_rect tool_ellipse tool_arrow tool_line tool_pen tool_marker
+#   tool_number tool_text
 #     (右ドラッグで実行するツールの切り替え。既定のキーは割り当てていない)
 #
 # 例: Vim風の移動にする場合
@@ -73,4 +77,5 @@ border_width = 0
 # 他コマンドが使っているキーを書くと、そちらのバインドが奪われる)
 #tool_rect = X
 #tool_arrow = A
+#tool_pen = P
 #tool_text = T

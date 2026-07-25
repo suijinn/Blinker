@@ -42,6 +42,30 @@ BoundsF annotationBounds(const AnnotationSpec& spec) {
             std::max(spec.p1.x, spec.p2.x), std::max(spec.p1.y, spec.p2.y)};
 }
 
+bool appendPenPoint(std::vector<Point>& points, Point p, float minDistance) {
+    if (!points.empty() && minDistance > 0) {
+        const float dx = p.x - points.back().x;
+        const float dy = p.y - points.back().y;
+        if (dx * dx + dy * dy < minDistance * minDistance) return false;
+    }
+    points.push_back(p);
+    return true;
+}
+
+void updatePenBounds(AnnotationSpec& spec) {
+    if (spec.points.empty()) return;
+    BoundsF b{spec.points.front().x, spec.points.front().y, spec.points.front().x,
+              spec.points.front().y};
+    for (const Point& p : spec.points) {
+        b.minX = std::min(b.minX, p.x);
+        b.minY = std::min(b.minY, p.y);
+        b.maxX = std::max(b.maxX, p.x);
+        b.maxY = std::max(b.maxY, p.y);
+    }
+    spec.p1 = {b.minX, b.minY};
+    spec.p2 = {b.maxX, b.maxY};
+}
+
 Point annotationCenter(const AnnotationSpec& spec) {
     const BoundsF b = annotationBounds(spec);
     return {(b.minX + b.maxX) * 0.5f, (b.minY + b.maxY) * 0.5f};
@@ -89,6 +113,31 @@ bool hitTestAnnotation(const AnnotationSpec& spec, Point imagePos, float toleran
     case AnnotationSpec::Kind::Line:
     case AnnotationSpec::Kind::Arrow:
         return pointSegmentDistance(q, spec.p1, spec.p2) <= reach;
+    case AnnotationSpec::Kind::Pen: {
+        // 手書きは線の上だけ当たり(bbox 内部で判定すると、囲むように描いた線の
+        // 内側が丸ごと掴めてしまい、下の図形を選べなくなる)
+        if (spec.points.empty()) return false;
+        if (spec.points.size() == 1) {
+            const float dx = q.x - spec.points.front().x;
+            const float dy = q.y - spec.points.front().y;
+            return dx * dx + dy * dy <= reach * reach;
+        }
+        for (size_t i = 1; i < spec.points.size(); ++i) {
+            if (pointSegmentDistance(q, spec.points[i - 1], spec.points[i]) <= reach) {
+                return true;
+            }
+        }
+        return false;
+    }
+    case AnnotationSpec::Kind::Number: {
+        // 連番マーカーは中身の詰まった円なので内部も当たりにする
+        const float rx = (b.maxX - b.minX) * 0.5f + reach;
+        const float ry = (b.maxY - b.minY) * 0.5f + reach;
+        if (rx <= 0 || ry <= 0) return false;
+        const float nx = (q.x - c.x) / rx;
+        const float ny = (q.y - c.y) / ry;
+        return nx * nx + ny * ny <= 1.0f;
+    }
     case AnnotationSpec::Kind::Text:
         return q.x >= b.minX - tolerance && q.x <= b.maxX + tolerance &&
                q.y >= b.minY - tolerance && q.y <= b.maxY + tolerance;
@@ -109,6 +158,10 @@ void translateAnnotation(AnnotationSpec& spec, float dx, float dy) {
     spec.p1.y += dy;
     spec.p2.x += dx;
     spec.p2.y += dy;
+    for (Point& p : spec.points) {  // 手書きの点列も一緒に動かす(bbox との同期を保つ)
+        p.x += dx;
+        p.y += dy;
+    }
 }
 
 std::vector<ResizeHandlePos> resizeHandlePositions(const AnnotationSpec& spec) {
@@ -121,6 +174,13 @@ std::vector<ResizeHandlePos> resizeHandlePositions(const AnnotationSpec& spec) {
     const auto mid = [](Point a, Point b) {
         return Point{(a.x + b.x) * 0.5f, (a.y + b.y) * 0.5f};
     };
+    // 連番マーカーは円を保つため四隅だけ(辺ハンドルを出すと楕円にできてしまう)
+    if (spec.kind == AnnotationSpec::Kind::Number) {
+        return {{ResizeHandle::TopLeft, corners[0]},
+                {ResizeHandle::TopRight, corners[1]},
+                {ResizeHandle::BottomRight, corners[2]},
+                {ResizeHandle::BottomLeft, corners[3]}};
+    }
     std::vector<ResizeHandlePos> handles{
         {ResizeHandle::TopLeft, corners[0]},     {ResizeHandle::TopRight, corners[1]},
         {ResizeHandle::BottomRight, corners[2]}, {ResizeHandle::BottomLeft, corners[3]},
@@ -179,7 +239,9 @@ AnnotationSpec resizeAnnotation(const AnnotationSpec& orig, ResizeHandle handle,
     if (top) nb.minY = std::min(m.y, b.maxY - kMinSize);
     if (bottom) nb.maxY = std::max(m.y, b.minY + kMinSize);
 
-    if (keepAspect && (left || right) && (top || bottom)) {
+    // 連番マーカーは常に円のままにする(縦横比を崩さない)
+    if ((keepAspect || orig.kind == AnnotationSpec::Kind::Number) && (left || right) &&
+        (top || bottom)) {
         const float w0 = b.maxX - b.minX;
         const float h0 = b.maxY - b.minY;
         if (w0 > 0 && h0 > 0) {
@@ -206,6 +268,15 @@ AnnotationSpec resizeAnnotation(const AnnotationSpec& orig, ResizeHandle handle,
     const float dy = anchor0.y - anchor1.y;
     spec.p1 = {nb.minX + dx, nb.minY + dy};
     spec.p2 = {nb.maxX + dx, nb.maxY + dy};
+    // 手書きは点列が実体なので、bbox の変化と同じ比率で写す(線幅は変えない)
+    if (!spec.points.empty()) {
+        const float sx = b.maxX > b.minX ? (spec.p2.x - spec.p1.x) / (b.maxX - b.minX) : 1.0f;
+        const float sy = b.maxY > b.minY ? (spec.p2.y - spec.p1.y) / (b.maxY - b.minY) : 1.0f;
+        for (Point& p : spec.points) {
+            p.x = spec.p1.x + (p.x - b.minX) * sx;
+            p.y = spec.p1.y + (p.y - b.minY) * sy;
+        }
+    }
     return spec;
 }
 

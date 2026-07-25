@@ -49,7 +49,8 @@ std::string borderWidthLabel(int width) {
 
 // フォントの選択肢。{表示ラベル, 描画側へ渡すファミリ名}。和文ゴシック・明朝・
 // UD・欧文・等幅を一通り並べてある。入っていないものはメニューに出さない
-constexpr std::array<std::pair<const char*, const char*>, 8> kFontFamilyChoices{{
+constexpr std::array<std::pair<const char*, const char*>, 9> kFontFamilyChoices{{
+    {"游ゴシック", "Yu Gothic"},
     {"游ゴシック UI", "Yu Gothic UI"},
     {"游明朝", "Yu Mincho"},
     {"メイリオ", "Meiryo"},
@@ -83,6 +84,9 @@ std::string_view toolLabel(EditTool tool) {
     case EditTool::Ellipse: return "楕円";
     case EditTool::Arrow:   return "矢印";
     case EditTool::Line:    return "直線";
+    case EditTool::Pen:     return "ペン (手書き)";
+    case EditTool::Marker:  return "マーカー";
+    case EditTool::Number:  return "連番マーカー";
     case EditTool::Text:    return "テキスト";
     }
     return "";
@@ -96,6 +100,9 @@ std::optional<EditTool> toolFromName(std::string_view name) {
     if (lower == "ellipse") return EditTool::Ellipse;
     if (lower == "arrow") return EditTool::Arrow;
     if (lower == "line") return EditTool::Line;
+    if (lower == "pen") return EditTool::Pen;
+    if (lower == "marker") return EditTool::Marker;
+    if (lower == "number") return EditTool::Number;
     if (lower == "text") return EditTool::Text;
     return std::nullopt;
 }
@@ -108,17 +115,24 @@ Command commandOfTool(EditTool tool) {
     case EditTool::Ellipse: return Command::SelectToolEllipse;
     case EditTool::Arrow:   return Command::SelectToolArrow;
     case EditTool::Line:    return Command::SelectToolLine;
+    case EditTool::Pen:     return Command::SelectToolPen;
+    case EditTool::Marker:  return Command::SelectToolMarker;
+    case EditTool::Number:  return Command::SelectToolNumber;
     case EditTool::Text:    return Command::SelectToolText;
     }
     return Command::None;
 }
 
-// 図形ツールが作る注釈の種別。Crop は注釈ではないので Rect を返す(呼ばれない)
+// 図形ツールが作る注釈の種別。Crop は注釈ではないので Rect を返す(呼ばれない)。
+// ペンとマーカーは同じ Pen 注釈で、違いは線幅と不透明度だけ(makeAnnotationSpec が付ける)
 AnnotationSpec::Kind kindOfTool(EditTool tool) {
     switch (tool) {
     case EditTool::Ellipse: return AnnotationSpec::Kind::Ellipse;
     case EditTool::Arrow:   return AnnotationSpec::Kind::Arrow;
     case EditTool::Line:    return AnnotationSpec::Kind::Line;
+    case EditTool::Pen:
+    case EditTool::Marker:  return AnnotationSpec::Kind::Pen;
+    case EditTool::Number:  return AnnotationSpec::Kind::Number;
     case EditTool::Text:    return AnnotationSpec::Kind::Text;
     case EditTool::Crop:
     case EditTool::Rect:    break;
@@ -321,6 +335,9 @@ void App::execute(Command command) {
     case Command::Undo:
         executeUndo();
         break;
+    case Command::Redo:
+        executeRedo();
+        break;
     case Command::DeleteAnnotation:
         deleteSelectedAnnotation();
         break;
@@ -338,6 +355,15 @@ void App::execute(Command command) {
         break;
     case Command::SelectToolLine:
         setTool(EditTool::Line);
+        break;
+    case Command::SelectToolPen:
+        setTool(EditTool::Pen);
+        break;
+    case Command::SelectToolMarker:
+        setTool(EditTool::Marker);
+        break;
+    case Command::SelectToolNumber:
+        setTool(EditTool::Number);
         break;
     case Command::SelectToolText:
         setTool(EditTool::Text);
@@ -394,6 +420,13 @@ void App::execute(Command command) {
 bool App::onKey(const KeyChord& chord) {
     // 編集中はキー入力を文字編集へ回し、コマンドの暴発を防ぐ
     if (textEditing_) return handleTextEditKey(chord);
+    // Ctrl+B は、テキスト注釈を選択している間だけ太字トグルとして横取りする
+    // (目の前で選んでいるオブジェクトへの操作を、サイドバー開閉より優先する)。
+    // 編集中の Ctrl+B と同じ意味になり、選択 → 編集の行き来で挙動が変わらない
+    if (chord.ctrl && !chord.shift && !chord.alt && chord.key == KeyCode{'B'} &&
+        toggleSelectedTextBold()) {
+        return true;
+    }
     const Command command = keymap_.find(chord);
     if (command == Command::None) {
         // 効くはずのキーを押して何も起きなかった = ヘルプが要る瞬間。
@@ -573,6 +606,8 @@ void App::onRightDragStart(Point screenPos) {
     selStartScreen_ = screenPos;
     selStartImage_ = clampToImage(imageToScreen().inverted().apply(screenPos));
     selEndImage_ = selStartImage_;
+    penPoints_.clear();
+    if (penToolActive()) penPoints_.push_back(selStartImage_);
     updatePreview();
     host_.requestRedraw();
 }
@@ -580,6 +615,12 @@ void App::onRightDragStart(Point screenPos) {
 void App::onRightDragMove(Point screenPos, bool shift) {
     if (!selecting_) return;
     selEndImage_ = dragEndImage(screenPos, shift);
+    // 手書きは通過点を溜める(bbox ではなく軌跡そのものが図形になる)。
+    // 間引きは画面上の見た目基準なので、ズームに応じて画像座標へ換算する
+    if (penToolActive()) {
+        appendPenPoint(penPoints_, selEndImage_,
+                       kPenMinDistancePx / std::max(viewport_.zoom(), 0.001f));
+    }
     updatePreview();
     host_.requestRedraw();
 }
@@ -612,6 +653,8 @@ void App::onRightDragEnd(Point screenPos, bool shift) {
     }
     // 事前に選んであるツールをそのまま適用する(メニューは出さない)。
     // ドラッグ中のプレビューはここで実物の注釈へ置き換わる
+    // 終点まで線を届かせる(同じ点なら足さない)
+    if (penToolActive()) appendPenPoint(penPoints_, selEndImage_, 0.01f);
     applyCurrentTool();
     host_.requestRedraw();
 }
@@ -642,6 +685,18 @@ void App::applyCurrentTool() {
         return;
     }
     applyAnnotation(kindOfTool(tool_));
+}
+
+bool App::penToolActive() const {
+    return tool_ == EditTool::Pen || tool_ == EditTool::Marker;
+}
+
+int App::nextMarkerNumber() const {
+    int maxNumber = 0;
+    for (const AnnotationSpec& spec : annotations_) {
+        if (spec.kind == AnnotationSpec::Kind::Number) maxNumber = std::max(maxNumber, spec.number);
+    }
+    return maxNumber + 1;
 }
 
 std::vector<std::pair<std::string, std::string>> App::fontFamilyChoices(
@@ -688,6 +743,9 @@ std::vector<MenuItem> App::buildEditMenu(std::vector<EditMenuEntry>& entries) co
     items.push_back(tool(EditTool::Ellipse));
     items.push_back(tool(EditTool::Arrow));
     items.push_back(tool(EditTool::Line));
+    items.push_back(tool(EditTool::Pen));
+    items.push_back(tool(EditTool::Marker));
+    items.push_back(tool(EditTool::Number));
     items.push_back(tool(EditTool::Text));
     items.push_back(menuSeparator());
 
@@ -810,18 +868,45 @@ std::vector<MenuItem> App::buildObjectMenu(const AnnotationSpec& spec,
         MenuItem stroke;
         stroke.text =
             std::format("線の太さ ({}px)", static_cast<int>(std::lround(spec.strokeWidth)));
-        for (const int w : {1, 2, 3, 5, 8, 12, 20}) {
+        // 手書き(特にマーカー)は太い側も要るので、選択肢を広げる
+        const std::vector<int> widths = spec.kind == AnnotationSpec::Kind::Pen
+                                            ? std::vector<int>{1, 2, 3, 5, 8, 12, 20, 32, 48}
+                                            : std::vector<int>{1, 2, 3, 5, 8, 12, 20};
+        for (const int w : widths) {
             stroke.children.push_back(leaf(std::format("{}px", w),
                                            {Action::StrokeWidth, static_cast<float>(w)},
                                            static_cast<float>(w) == spec.strokeWidth));
         }
         items.push_back(std::move(stroke));
     }
+    // 線の不透明度は手書きだけ(マーカーとペンの違いはここと太さだけ)
+    if (spec.kind == AnnotationSpec::Kind::Pen) {
+        MenuItem alpha;
+        alpha.text = std::format("線の不透明度 ({})", fillAlphaLabel(spec.strokeAlpha));
+        for (const int a : {255, 178, 102, 64}) {
+            alpha.children.push_back(leaf(fillAlphaLabel(a),
+                                          {Action::StrokeAlpha, static_cast<float>(a)},
+                                          a == spec.strokeAlpha));
+        }
+        items.push_back(std::move(alpha));
+    }
+    // 連番は後から振り直せるようにする(順序を入れ替えたくなることがある)
+    if (spec.kind == AnnotationSpec::Kind::Number) {
+        MenuItem number;
+        number.text = std::format("番号 ({})", spec.number);
+        for (int n = 1; n <= 10; ++n) {
+            number.children.push_back(leaf(std::format("{}", n),
+                                           {Action::Number, static_cast<float>(n)},
+                                           n == spec.number));
+        }
+        items.push_back(std::move(number));
+    }
     items.push_back(
         leaf(std::format("色の変更... (#{:06X})", spec.colorRGB), {Action::PickColor}));
 
-    // 塗りつぶしは面を持つ種別だけ(直線・矢印には出さない)
-    if (spec.kind != AnnotationSpec::Kind::Line && spec.kind != AnnotationSpec::Kind::Arrow) {
+    // 塗りつぶしは面を持つ種別だけ(直線・矢印・手書きには出さない)
+    if (spec.kind != AnnotationSpec::Kind::Line && spec.kind != AnnotationSpec::Kind::Arrow &&
+        spec.kind != AnnotationSpec::Kind::Pen) {
         MenuItem fill;
         fill.text = std::format("塗りつぶし ({})", fillAlphaLabel(spec.fillAlpha));
         for (const int a : kFillAlphaChoices) {
@@ -878,6 +963,16 @@ void App::showObjectMenu(Point screenPos) {
         if (spec.strokeWidth == entry.value) return;
         pushUndo();
         spec.strokeWidth = entry.value;
+        break;
+    case ObjectMenuEntry::Action::StrokeAlpha:
+        if (spec.strokeAlpha == static_cast<int>(entry.value)) return;
+        pushUndo();
+        spec.strokeAlpha = static_cast<int>(entry.value);
+        break;
+    case ObjectMenuEntry::Action::Number:
+        if (spec.number == static_cast<int>(entry.value)) return;
+        pushUndo();
+        spec.number = static_cast<int>(entry.value);
         break;
     case ObjectMenuEntry::Action::FontSize: {
         if (spec.fontSize == entry.value) return;
@@ -1110,6 +1205,28 @@ AnnotationSpec App::makeAnnotationSpec(AnnotationSpec::Kind kind) const {
     spec.strokeWidth = std::max(1.0f, editStrokeWidth_ / zoom);
     spec.fontSize = std::max(4.0f, editFontSize_ / zoom);
     spec.borderWidth = editBorderWidth_ > 0 ? std::max(1.0f, editBorderWidth_ / zoom) : 0.0f;
+    if (kind == AnnotationSpec::Kind::Pen) {
+        // 軌跡そのものが図形。p1/p2 は選択領域ではなく点列の bbox に合わせる
+        spec.points = penPoints_;
+        updatePenBounds(spec);
+        if (tool_ == EditTool::Marker) {
+            spec.strokeWidth = std::max(1.0f, editStrokeWidth_ * kMarkerWidthScale / zoom);
+            spec.strokeAlpha = kMarkerAlpha;
+        }
+    } else if (kind == AnnotationSpec::Kind::Number) {
+        // 円の中の数字は自動で色が決まるため、色設定は円の塗りとして使う
+        spec.number = nextMarkerNumber();
+        spec.fillRGB = editColorRGB_;
+        spec.fillAlpha = 255;
+        // 小さすぎる円は数字が潰れるだけなので、始点側を固定して最小の大きさまで広げる
+        const float minSize = std::max(8.0f, editFontSize_ * 1.8f / zoom);
+        if (std::abs(spec.p2.x - spec.p1.x) < minSize) {
+            spec.p2.x = spec.p1.x + (spec.p2.x < spec.p1.x ? -minSize : minSize);
+        }
+        if (std::abs(spec.p2.y - spec.p1.y) < minSize) {
+            spec.p2.y = spec.p1.y + (spec.p2.y < spec.p1.y ? -minSize : minSize);
+        }
+    }
     return spec;
 }
 
@@ -1454,6 +1571,26 @@ void App::onCaretBlink() {
     host_.requestRedraw();
 }
 
+bool App::toggleSelectedTextBold() {
+    if (!selected_ || *selected_ >= annotations_.size()) return false;
+    AnnotationSpec& spec = annotations_[*selected_];
+    if (spec.kind != AnnotationSpec::Kind::Text || spec.text.empty()) return false;
+    // 全体が太字なら解除、そうでなければ全体を太字に(編集中の Ctrl+B と同じ規則)
+    const bool bold = isTextStyleFlagSet(spec.styles, 0, spec.text.size(), TextStyleFlag::Bold);
+    AnnotationSpec updated = spec;
+    setTextStyleFlag(updated.styles, 0, updated.text.size(), TextStyleFlag::Bold, !bold);
+    // 太さで字幅・行の高さが変わるため、フォント変更と同じく実測し直す
+    if (!measureTextExtent(updated)) {
+        showMessage("描画に失敗しました");
+        return true;  // 横取りはした(サイドバーが開いてしまわないように)
+    }
+    pushUndo();
+    spec = std::move(updated);
+    markEdited();
+    host_.requestRedraw();
+    return true;
+}
+
 void App::deleteSelectedAnnotation() {
     if (textEditing_) commitTextEdit();  // 編集を確定してから対象を確定させる
     if (!selected_ || *selected_ >= annotations_.size()) {
@@ -1491,6 +1628,8 @@ void App::pushUndo() {
 void App::pushUndoState(UndoState state) {
     undoStack_.push_back(std::move(state));
     if (undoStack_.size() > kUndoLimit) undoStack_.erase(undoStack_.begin());
+    // 新しい編集をした時点で、やり直せる先(分岐した未来)は無くなる
+    redoStack_.clear();
 }
 
 void App::pushDragUndoOnce() {
@@ -1501,17 +1640,38 @@ void App::pushDragUndoOnce() {
 
 void App::executeUndo() {
     if (textEditing_) commitTextEdit();  // 編集中の内容を確定してから履歴を戻す
-    if (undoStack_.empty()) {
+    if (!restoreFrom(undoStack_, redoStack_)) {
         showMessage("取り消す編集はありません");
         return;
     }
-    UndoState& state = undoStack_.back();
+    // 履歴を使い切った = 開いた直後の状態に戻った
+    edited_ = !undoStack_.empty();
+    updateTitle();
+    host_.requestRedraw();
+}
+
+void App::executeRedo() {
+    if (textEditing_) commitTextEdit();
+    if (!restoreFrom(redoStack_, undoStack_)) {
+        showMessage("やり直す編集はありません");
+        return;
+    }
+    edited_ = true;  // やり直した先は必ず何らかの編集が入った状態
+    updateTitle();
+    host_.requestRedraw();
+}
+
+bool App::restoreFrom(std::vector<UndoState>& from, std::vector<UndoState>& to) {
+    if (from.empty()) return false;
+    to.push_back({current_, annotations_});  // 戻る前の状態を反対側へ積む
+    if (to.size() > kUndoLimit) to.erase(to.begin());
+    UndoState& state = from.back();
     const bool sizeChanged =
         current_ && state.image &&
         (current_->width != state.image->width || current_->height != state.image->height);
     current_ = std::move(state.image);
     annotations_ = std::move(state.annotations);
-    undoStack_.pop_back();
+    from.pop_back();
     selected_.reset();  // index が指す対象が変わりうるため選択は解除する
     objectDrag_ = ObjectDrag::None;
     // トリミングの取り消しでサイズが戻るときだけビューを再設定する(回転等を保つ)
@@ -1519,9 +1679,7 @@ void App::executeUndo() {
         viewport_.setImage(
             {static_cast<float>(current_->width), static_cast<float>(current_->height)});
     }
-    edited_ = !undoStack_.empty();
-    updateTitle();
-    host_.requestRedraw();
+    return true;
 }
 
 void App::discardEdits() {
@@ -1535,8 +1693,10 @@ void App::discardEdits() {
     selected_.reset();
     objectDrag_ = ObjectDrag::None;
     annotations_.clear();
-    if (undoStack_.empty() && !edited_) return;
+    penPoints_.clear();
+    if (undoStack_.empty() && redoStack_.empty() && !edited_) return;
     undoStack_.clear();
+    redoStack_.clear();
     if (edited_) {
         edited_ = false;
         showMessage("編集を破棄しました");
@@ -1551,8 +1711,13 @@ Point App::clampToImage(Point imagePos) const {
 
 Point App::dragEndImage(Point screenPos, bool shift) const {
     const Point p = clampToImage(imageToScreen().inverted().apply(screenPos));
-    // 直線・矢印は正方形の bbox = 45 度固定になってしまうので対象外
-    if (!shift || tool_ == EditTool::Line || tool_ == EditTool::Arrow) return p;
+    // 連番マーカーは常に円にしたいので、Shift の有無によらず正方形へ寄せる
+    if (tool_ == EditTool::Number) return constrainToSquare(selStartImage_, p);
+    // 直線・矢印は正方形の bbox = 45 度固定になってしまうので対象外。
+    // 手書きは軌跡そのものが図形なので、そもそも選択領域の形に意味がない
+    if (!shift || tool_ == EditTool::Line || tool_ == EditTool::Arrow || penToolActive()) {
+        return p;
+    }
     return constrainToSquare(selStartImage_, p);
 }
 
@@ -1649,6 +1814,12 @@ void App::onMouseMove(Point screenPos, bool shift) {
             pushDragUndoOnce();
             spec.p1 = {dragOrigSpec_.p1.x + dx, dragOrigSpec_.p1.y + dy};
             spec.p2 = {dragOrigSpec_.p2.x + dx, dragOrigSpec_.p2.y + dy};
+            // 手書きは点列が実体なので bbox と一緒に動かす
+            spec.points = dragOrigSpec_.points;
+            for (Point& p : spec.points) {
+                p.x += dx;
+                p.y += dy;
+            }
         } else if (objectDrag_ == ObjectDrag::Rotate) {
             const Point center = imageToScreen().apply(annotationCenter(spec));
             float angle = dragOrigSpec_.angleDeg + angleDegFrom(center, screenPos) -
@@ -1659,10 +1830,11 @@ void App::onMouseMove(Point screenPos, bool shift) {
         } else {
             const Point imagePos = imageToScreen().inverted().apply(screenPos);
             pushDragUndoOnce();
-            const AnnotationSpec resized =
+            AnnotationSpec resized =
                 resizeAnnotation(dragOrigSpec_, dragResizeHandle_, imagePos, shift);
             spec.p1 = resized.p1;
             spec.p2 = resized.p2;
+            spec.points = std::move(resized.points);  // 手書きは点列も拡縮されている
         }
         markEdited();
         host_.requestRedraw();

@@ -24,26 +24,30 @@ namespace blinker {
  * 和欧文を 1 書体で賄えるものを選んでいる。入っていない環境では描画側
  * (DirectWrite)のフォールバックに任せる。
  */
-inline constexpr const char* kDefaultFontFamily = "Yu Gothic UI";
+inline constexpr const char* kDefaultFontFamily = "Yu Gothic";
 
 /**
- * @brief 画像へ描き込む注釈(図形・テキスト)1 件の指定。
+ * @brief 画像へ描き込む注釈(図形・テキスト・手書き)1 件の指定。
  *
  * 座標・太さはすべて画像座標。
  */
 struct AnnotationSpec {
     /// @brief 注釈の種別。
-    enum class Kind { Rect, Ellipse, Arrow, Line, Text };
+    enum class Kind { Rect, Ellipse, Arrow, Line, Text, Pen, Number };
     Kind kind = Kind::Rect;  ///< 注釈の種別
-    Point p1;                ///< Rect/Ellipse/Text は対角の一方、Arrow/Line は始点
-    Point p2;                ///< Rect/Ellipse/Text は対角の他方、Arrow/Line は終点
-    uint32_t colorRGB = 0;   ///< 描画色(0xRRGGBB)。Text では文字色
+    /// Rect/Ellipse/Text/Number は対角の一方、Arrow/Line は始点、Pen は points の bbox の左上
+    Point p1;
+    /// Rect/Ellipse/Text/Number は対角の他方、Arrow/Line は終点、Pen は points の bbox の右下
+    Point p2;
+    uint32_t colorRGB = 0;   ///< 描画色(0xRRGGBB)。Text では文字色、Number では円の枠線色
     float strokeWidth = 1;   ///< 線幅(画像座標)。Text では使わない(borderWidth を見る)
+    /// 線の不透明度(0-255)。255 で不透明。マーカー(半透明の手書き)で使う
+    int strokeAlpha = 255;
     float angleDeg = 0;      ///< バウンディングボックス中心周りの回転(時計回り、度)
-    float fontSize = 16;     ///< Text 用のフォントサイズ(画像座標)
-    /// Text 用のフォントファミリ名(UTF-8)。空なら kDefaultFontFamily
+    float fontSize = 16;     ///< Text 用のフォントサイズ(画像座標)。Number では円の大きさから決まる
+    /// Text/Number 用のフォントファミリ名(UTF-8)。空なら kDefaultFontFamily
     std::string fontFamily;
-    /// 塗りつぶし色(0xRRGGBB)。Rect/Ellipse/Text で使う
+    /// 塗りつぶし色(0xRRGGBB)。Rect/Ellipse/Text/Number で使う
     uint32_t fillRGB = 0xFFFFFF;
     /// 塗りつぶしの不透明度(0-255)。0 は塗らない(完全な透過)、255 で不透明
     int fillAlpha = 0;
@@ -53,6 +57,10 @@ struct AnnotationSpec {
     /// Text 用の部分書式(色・太字・斜体・下線・フォント)。位置は text 内の UTF-8 バイト位置。
     /// 覆われていない部分は colorRGB・fontFamily と標準の字形(太字・斜体・下線なし)で描かれる
     std::vector<TextStyleRun> styles;
+    /// Pen 用の点列(回転前の画像座標)。p1/p2 はこの bbox に同期している
+    /// (updatePenBounds が保つ)。1 点だけなら点(円)として描かれる
+    std::vector<Point> points;
+    int number = 1;          ///< Number 用の連番(円の中に描く数字)
 };
 
 /**
@@ -67,6 +75,21 @@ struct AnnotationSpec {
  */
 inline float textOverlayMargin(const AnnotationSpec& spec) {
     return 2.0f + spec.borderWidth * 0.5f;
+}
+
+/**
+ * @brief Number 注釈の数字の大きさを円の大きさから求める。
+ *
+ * 円をリサイズすれば数字も一緒に拡縮するよう、保存せず毎回計算する
+ * (spec.fontSize は Number では使わない)。2 桁でも円からはみ出さない比率にしてある。
+ *
+ * @param[in] spec 対象の Number 注釈。p1/p2 だけを見る。
+ * @return フォントサイズ(画像座標)。
+ */
+inline float numberFontSize(const AnnotationSpec& spec) {
+    const float w = spec.p2.x > spec.p1.x ? spec.p2.x - spec.p1.x : spec.p1.x - spec.p2.x;
+    const float h = spec.p2.y > spec.p1.y ? spec.p2.y - spec.p1.y : spec.p1.y - spec.p2.y;
+    return (w < h ? w : h) * 0.6f;
 }
 
 /**

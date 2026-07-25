@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <string>
 
 #include "core/unicode.h"
 
@@ -42,6 +43,55 @@ ComPtr<ID2D1SolidColorBrush> createFillBrush(ID2D1RenderTarget* target,
         return nullptr;
     }
     return brush;
+}
+
+/// 手書きの軌跡を滑らかな 1 本のパスにする。
+///
+/// 通過点をそのまま線で結ぶとマウスの取りこぼしが折れ線として目立つため、
+/// 隣り合う点の中点どうしを、間の点を制御点にした 2 次ベジエで結ぶ
+/// (点列が線の芯を通り、曲がり角だけが丸くなる)。
+ComPtr<ID2D1PathGeometry> createPenGeometry(ID2D1Factory* factory,
+                                            const std::vector<Point>& points) {
+    ComPtr<ID2D1PathGeometry> geometry;
+    ComPtr<ID2D1GeometrySink> sink;
+    if (points.size() < 2 || FAILED(factory->CreatePathGeometry(&geometry)) ||
+        FAILED(geometry->Open(&sink))) {
+        return nullptr;
+    }
+    const auto mid = [](const Point& a, const Point& b) {
+        return D2D1::Point2F((a.x + b.x) * 0.5f, (a.y + b.y) * 0.5f);
+    };
+    sink->BeginFigure(D2D1::Point2F(points.front().x, points.front().y),
+                      D2D1_FIGURE_BEGIN_HOLLOW);
+    for (size_t i = 1; i + 1 < points.size(); ++i) {
+        sink->AddQuadraticBezier(
+            {D2D1::Point2F(points[i].x, points[i].y), mid(points[i], points[i + 1])});
+    }
+    sink->AddLine(D2D1::Point2F(points.back().x, points.back().y));
+    sink->EndFigure(D2D1_FIGURE_END_OPEN);
+    if (FAILED(sink->Close())) return nullptr;
+    return geometry;
+}
+
+/// 手書き用のストロークスタイル(端も角も丸め、筆跡らしくする)
+ComPtr<ID2D1StrokeStyle> createPenStrokeStyle(ID2D1Factory* factory) {
+    ComPtr<ID2D1StrokeStyle> style;
+    const auto props = D2D1::StrokeStyleProperties(
+        D2D1_CAP_STYLE_ROUND, D2D1_CAP_STYLE_ROUND, D2D1_CAP_STYLE_ROUND,
+        D2D1_LINE_JOIN_ROUND, 10.0f, D2D1_DASH_STYLE_SOLID, 0.0f);
+    if (FAILED(factory->CreateStrokeStyle(props, nullptr, 0, &style))) return nullptr;
+    return style;
+}
+
+/// 連番マーカーの数字の色。円が濃ければ白、淡ければ黒にして必ず読めるようにする
+D2D1_COLOR_F numberTextColor(const AnnotationSpec& spec) {
+    // 円が透けているときは数字だけが頼りなので、円の枠線と同じ色で描く
+    if (spec.fillAlpha < 128) return colorFrom(spec.colorRGB, 1.0f);
+    const float r = ((spec.fillRGB >> 16) & 0xFF) / 255.0f;
+    const float g = ((spec.fillRGB >> 8) & 0xFF) / 255.0f;
+    const float b = (spec.fillRGB & 0xFF) / 255.0f;
+    const float luminance = 0.299f * r + 0.587f * g + 0.114f * b;
+    return luminance > 0.6f ? D2D1::ColorF(0, 0, 0, 1.0f) : D2D1::ColorF(1.0f, 1.0f, 1.0f, 1.0f);
 }
 
 } // namespace
@@ -173,6 +223,59 @@ void drawAnnotationShape(ID2D1RenderTarget* target, ID2D1Factory* factory,
             sink->Close();
             target->FillGeometry(geometry.Get(), brush);
         }
+        break;
+    }
+    case AnnotationSpec::Kind::Pen: {
+        // 手書きは線だけ(面を持たないので背景は無い)
+        if (!foreground || spec.points.empty()) break;
+        // マーカー(半透明)は色に不透明度を掛けたブラシで描く。ストローク全体を
+        // 1 つのジオメトリとして描くので、自分と重なった部分が濃くならない
+        ComPtr<ID2D1SolidColorBrush> alphaBrush;
+        ID2D1Brush* pen = brush;
+        if (spec.strokeAlpha < 255) {
+            const float alpha = std::clamp(spec.strokeAlpha, 0, 255) / 255.0f;
+            if (FAILED(target->CreateSolidColorBrush(colorFrom(spec.colorRGB, alpha),
+                                                     &alphaBrush))) {
+                break;
+            }
+            pen = alphaBrush.Get();
+        }
+        if (spec.points.size() == 1) {
+            // 点を打っただけのストロークは線幅の丸として置く
+            const D2D1_POINT_2F c{spec.points.front().x, spec.points.front().y};
+            const float r = std::max(spec.strokeWidth * 0.5f, 0.5f);
+            target->FillEllipse(D2D1::Ellipse(c, r, r), pen);
+            break;
+        }
+        const ComPtr<ID2D1PathGeometry> geometry = createPenGeometry(factory, spec.points);
+        if (!geometry) break;
+        // スタイルの生成に失敗しても既定(角ばった端)で描く。線が消えるよりはよい
+        const ComPtr<ID2D1StrokeStyle> style = createPenStrokeStyle(factory);
+        target->DrawGeometry(geometry.Get(), pen, spec.strokeWidth, style.Get());
+        break;
+    }
+    case AnnotationSpec::Kind::Number: {
+        const D2D1_ELLIPSE circle =
+            D2D1::Ellipse(D2D1::Point2F((left + right) / 2, (top + bottom) / 2),
+                          (right - left) / 2, (bottom - top) / 2);
+        if (fill) target->FillEllipse(circle, fill.Get());
+        if (!foreground) break;
+        if (spec.strokeWidth > 0) target->DrawEllipse(circle, brush, spec.strokeWidth);
+        ComPtr<IDWriteTextFormat> format;
+        if (FAILED(dwrite->CreateTextFormat(fontFamilyOf(spec).c_str(), nullptr,
+                                            DWRITE_FONT_WEIGHT_BOLD, DWRITE_FONT_STYLE_NORMAL,
+                                            DWRITE_FONT_STRETCH_NORMAL, numberFontSize(spec),
+                                            L"ja-jp", &format))) {
+            break;
+        }
+        // 円の bbox をレイアウト枠にして縦横とも中央へ寄せる
+        format->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+        format->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+        ComPtr<ID2D1SolidColorBrush> textBrush;
+        if (FAILED(target->CreateSolidColorBrush(numberTextColor(spec), &textBrush))) break;
+        const std::wstring number = std::to_wstring(spec.number);
+        target->DrawText(number.c_str(), static_cast<UINT32>(number.size()), format.Get(),
+                         D2D1::RectF(left, top, right, bottom), textBrush.Get());
         break;
     }
     case AnnotationSpec::Kind::Text: {

@@ -97,6 +97,19 @@ EXIF 回転が効かない、対応形式が stb_image の範囲(WebP/HEIC/AVIF/
 ドラッグ中は `App::makeAnnotationSpec` が確定後と同じ `AnnotationSpec` を組み立て、
 `AnnotationsView::preview` として実物をプレビュー描画する。形の定まらない
 トリミング・テキストだけは従来どおりラバーバンド (`SelectionView`) を出す。
+
+手書き(ペン・マーカー = `Kind::Pen`)だけは選択領域ではなく**軌跡**が図形になる。
+`onRightDragMove` が通過点を `App::penPoints_` へ溜め(`appendPenPoint` が画面 2px
+未満の動きを間引く)、`AnnotationSpec::points`(回転前の画像座標)として持つ。
+`p1`/`p2` は点列の bbox に同期させ(`updatePenBounds`)、選択枠・ヒットテスト・回転中心・
+ラスタライズ領域は他の種別と同じ経路を通す。移動・リサイズでは bbox と同じだけ点列も
+動かす/拡縮する(`translateAnnotation` / `resizeAnnotation`)。ヒットテストは
+**線の近傍だけ**で、bbox 内部は当たりにしない(囲むように描いた線の内側が丸ごと
+掴めると、下の図形を選べなくなるため)。マーカーはペンと同じ種別で、線幅 4 倍・
+不透明度 40%(`strokeAlpha`)という既定値の違いしかない。
+連番マーカー (`Kind::Number`) は数字入りの円で、番号は `App::nextMarkerNumber` が
+既存の注釈から数え直す(状態を持たないので undo・削除のあとも番号が詰まる)。
+円を保つためドラッグは常に正方形へ寄せ、ハンドルも四隅だけにしてある。
 現在のツールはステータスバー左側に表示する(モードが見えないと誤操作になるため)。
 
 追加済みの注釈は左クリックで選択して編集できる(ヒットテスト・回転・リサイズの幾何は
@@ -105,8 +118,16 @@ core の `annotation_edit.cpp`、純粋関数、単体テスト対象):
 反対側のアンカーを固定。Line/Arrow は端点ドラッグ、Text は幅のみで高さは
 ドラッグ確定時に実測へ正規化)、選択枠上の回転ハンドルで自由回転(Shift で 15° スナップ)、
 右クリックでオブジェクトメニュー(回転角度プリセット・太さ・文字サイズ・フォント・
-色・削除)。
-Ctrl+Z で1段階ずつ取り消せる(履歴は画像 + 注釈一覧のスナップショット、上限10)。
+色・削除、手書きは線の不透明度、連番マーカーは番号)。
+Text 注釈を選択中の `Ctrl+B` だけは `App::onKey` が Keymap より先に横取りし、
+テキスト全体の太字を切り替える(`toggleSelectedTextBold`)。既定では
+`Command::ToggleSidebar` と同じキーだが、選んでいるオブジェクトへの操作を優先する。
+インプレース編集中の Ctrl+B/I/U が Keymap を通らないのと同じ扱いで、
+選択 → 編集を行き来しても Ctrl+B の意味が変わらない。
+Ctrl+Z で1段階ずつ取り消し、Ctrl+Y(Shift+Ctrl+Z も可)でやり直せる(履歴は画像 +
+注釈一覧のスナップショット、undo・redo とも上限10)。undo は現在の状態を redo 側へ、
+redo は undo 側へ積み替えるだけの対称な操作 (`App::restoreFrom`) で、
+新しい編集を積む (`pushUndoState`) と redo 履歴は捨てる(分岐した未来は残さない)。
 保存は Ctrl+S のみで元ファイルは自動では書き換えない。
 
 ### テキストのインプレース編集
@@ -189,7 +210,7 @@ Text 注釈は PowerPoint のテキストボックスと同じく**画像上で�
 | `exif.h` | EXIF Orientation の適用(`applyExifOrientation`、32bpp バッファの回転・反転。純粋関数で単体テスト対象)。**`IWICBitmapFlipRotator` は使わない**: コーデックへ直結すると 90/270 度回転で出力行ごとにソースを引き直し、iPhone の 12〜24MP 写真で事実上停止するため。デコード完了後の連続バッファ上で回せば画素数に比例した時間で済む |
 | `EncoderWic` | WIC で PNG/JPEG/BMP 保存 (Ctrl+S)。PNG は逆乗算してアルファ保持、JPEG/BMP は白背景に合成 |
 | `ClipboardWin` | クリップボード読み書き。書き込みは CF_DIBV5(アルファ)+ CF_DIB(白合成24bpp)の2形式。読み取り (Ctrl+V) は CF_DIBV5 優先で、DIB → PBGRA 変換は core の `imageFromDib`(純粋関数、単体テスト対象) |
-| `AnnotationD2D` | 図形(矩形・楕円・矢印・直線)とテキスト(複数行可)を D2D/DirectWrite で WIC ビットマップへ AA 描画し、PBGRA overlay として返す(`IAnnotationRasterizer` 実装)。描画コードはライブ表示と共通の `win/annotation_draw` を使い、`AnnotationSpec::angleDeg` によるバウンディングボックス中心周りの回転にも対応。テキスト注釈の実測サイズ取得(`App::measureTextExtent`)にも使われる。トリミング・合成は core の `edit.cpp`(`cropImage` / `blendOverlay`)、注釈のヒットテスト・回転幾何は core の `annotation_edit.cpp`(いずれも純粋関数、単体テスト対象) |
+| `AnnotationD2D` | 図形(矩形・楕円・矢印・直線・手書き・連番マーカー)とテキスト(複数行可)を D2D/DirectWrite で WIC ビットマップへ AA 描画し、PBGRA overlay として返す(`IAnnotationRasterizer` 実装)。描画コードはライブ表示と共通の `win/annotation_draw` を使い、`AnnotationSpec::angleDeg` によるバウンディングボックス中心周りの回転にも対応。テキスト注釈の実測サイズ取得(`App::measureTextExtent`)にも使われる。トリミング・合成は core の `edit.cpp`(`cropImage` / `blendOverlay`)、注釈のヒットテスト・回転幾何は core の `annotation_edit.cpp`(いずれも純粋関数、単体テスト対象) |
 
 ## スレッドモデル
 
