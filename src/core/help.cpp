@@ -110,6 +110,7 @@ std::vector<HelpLine> buildHelpLines(const Keymap& keymap, const bool swapMouseB
     text("スクロール", panDrag);
     text("現在のツールを実行", editDrag);
     text("正方形 / 真円で描く", editDragShift);
+    text("直線・矢印を水平 / 垂直に", editDragShift);
     text("ツール・書式メニュー", "余白で右クリック");
     text("図形・テキストを選択", panClick);
     text("選択中のオブジェクトを移動", panDrag);

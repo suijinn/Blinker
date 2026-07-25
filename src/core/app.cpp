@@ -1773,10 +1773,12 @@ Point App::dragEndImage(Point screenPos, bool shift) const {
     const Point p = clampToImage(imageToScreen().inverted().apply(screenPos));
     // 連番マーカーは常に円にしたいので、Shift の有無によらず正方形へ寄せる
     if (tool_ == EditTool::Number) return constrainToSquare(selStartImage_, p);
-    // 直線・矢印は正方形の bbox = 45 度固定になってしまうので対象外。
     // 手書きは軌跡そのものが図形なので、そもそも選択領域の形に意味がない
-    if (!shift || tool_ == EditTool::Line || tool_ == EditTool::Arrow || penToolActive()) {
-        return p;
+    if (!shift || penToolActive()) return p;
+    // 直線・矢印は bbox ではなく線の向きを揃えたいので、正方形化(=45 度固定)
+    // ではなく水平・垂直・45 度へのスナップにする
+    if (tool_ == EditTool::Line || tool_ == EditTool::Arrow) {
+        return constrainToAxis(selStartImage_, p);
     }
     return constrainToSquare(selStartImage_, p);
 }
@@ -1856,9 +1858,17 @@ void App::panBy(float dx, float dy) {
 }
 
 bool App::onShiftChanged(bool shift) {
-    if (!selecting_) return false;
-    updateEditDrag(lastPointerScreen_, shift);
-    return true;
+    if (selecting_) {
+        updateEditDrag(lastPointerScreen_, shift);
+        return true;
+    }
+    // オブジェクトのハンドルを掴んでいる間も同じ(端点スナップ・回転スナップが追従する)。
+    // 位置は変わらないので、移動量 0 の onMouseMove として処理すればよい
+    if (objectDrag_ != ObjectDrag::None) {
+        onMouseMove(lastPointerScreen_, shift);
+        return true;
+    }
+    return false;
 }
 
 void App::onMouseMove(Point screenPos, bool shift) {
