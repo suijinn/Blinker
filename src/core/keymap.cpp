@@ -39,6 +39,7 @@ constexpr std::array kCommandNames = {
     CommandName{"paste", Command::PasteImage},
     CommandName{"save_as", Command::SaveImageAs},
     CommandName{"undo", Command::Undo},
+    CommandName{"redo", Command::Redo},
     CommandName{"delete_annotation", Command::DeleteAnnotation},
     // ツール切り替えは既定のキーを持たない(blinker.ini の [keys] で割り当てる)
     CommandName{"tool_crop", Command::SelectToolCrop},
@@ -46,6 +47,9 @@ constexpr std::array kCommandNames = {
     CommandName{"tool_ellipse", Command::SelectToolEllipse},
     CommandName{"tool_arrow", Command::SelectToolArrow},
     CommandName{"tool_line", Command::SelectToolLine},
+    CommandName{"tool_pen", Command::SelectToolPen},
+    CommandName{"tool_marker", Command::SelectToolMarker},
+    CommandName{"tool_number", Command::SelectToolNumber},
     CommandName{"tool_text", Command::SelectToolText},
     CommandName{"sidebar", Command::ToggleSidebar},
     CommandName{"statusbar", Command::ToggleStatusBar},
@@ -155,6 +159,8 @@ Keymap Keymap::defaults() {
     b(KeyCode{'V'}, Command::PasteImage, true);
     b(KeyCode{'S'}, Command::SaveImageAs, true);
     b(KeyCode{'Z'}, Command::Undo, true);
+    b(KeyCode{'Y'}, Command::Redo, true);              // Ctrl+Y
+    b(KeyCode{'Z'}, Command::Redo, true, true);        // Shift+Ctrl+Z
     b(KeyCode::Delete, Command::DeleteAnnotation);
     b(KeyCode{'B'}, Command::ToggleSidebar, true);  // Ctrl+B
     b(KeyCode{'B'}, Command::ToggleStatusBar);

@@ -126,8 +126,12 @@ AnnotationOverlay AnnotationD2D::rasterize(const AnnotationSpec& spec) {
         bounds.maxX = box.right;
         bounds.maxY = box.bottom;
     }
-    const float margin = spec.kind == AnnotationSpec::Kind::Text
-                             ? textOverlayMargin(spec)
+    // 手書き・連番マーカーは bbox が線の芯を通るため、線幅と AA の染み出しぶんで足りる
+    // (矢印ヘッドのようなはみ出しが無い)。テキストは枠線と AA、それ以外は矢印ヘッドまで見込む
+    const float margin = spec.kind == AnnotationSpec::Kind::Text ? textOverlayMargin(spec)
+                         : spec.kind == AnnotationSpec::Kind::Pen ||
+                                 spec.kind == AnnotationSpec::Kind::Number
+                             ? spec.strokeWidth + 2.0f
                              : spec.strokeWidth + arrowHeadLength(spec.strokeWidth);
     // 回転はバウンディングボックス中心周り。マージン込みの矩形の四隅を回して
     // 回転後の AABB をオーバーレイの領域にする(回転は等長変換なのでマージンは保たれる)

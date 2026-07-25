@@ -55,6 +55,30 @@ Point constrainToSquare(Point anchor, Point p);
 BoundsF annotationBounds(const AnnotationSpec& spec);
 
 /**
+ * @brief 手書き(Pen)の点列へ 1 点足す。
+ *
+ * 直前の点から minDistance 未満の位置は捨てる。マウスの WM_MOUSEMOVE は
+ * 数ピクセル刻みで飛んでくるため、そのまま溜めると点数が無駄に増えるのを防ぐ。
+ *
+ * @param[in,out] points      追加先の点列。
+ * @param[in]     p           追加する点(画像座標)。
+ * @param[in]     minDistance 直前の点との最小距離(画像座標)。0 以下なら常に追加する。
+ * @return 追加したら true、近すぎて捨てたら false。
+ */
+bool appendPenPoint(std::vector<Point>& points, Point p, float minDistance);
+
+/**
+ * @brief Pen 注釈の p1/p2 を points のバウンディングボックスへ合わせる。
+ *
+ * 選択枠・ヒットテスト・回転中心・ラスタライズ領域はすべて p1/p2 を見るため、
+ * points を触ったら必ずこれを呼んで同期を保つこと。
+ *
+ * @param[in,out] spec 対象の注釈。points が空なら p1/p2 は変えない。
+ * @note kind は見ない(Pen 以外に呼んでも points が空なら無害)。
+ */
+void updatePenBounds(AnnotationSpec& spec);
+
+/**
  * @brief 注釈のバウンディングボックス中心を求める。
  * @param[in] spec 対象の注釈。
  * @return 中心点(画像座標)。回転の中心でもある。

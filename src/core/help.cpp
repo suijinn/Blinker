@@ -74,13 +74,19 @@ std::vector<HelpLine> buildHelpLines(const Keymap& keymap) {
 
     header("編集");
     row(Command::Undo, "元に戻す");
+    row(Command::Redo, "やり直す");
     row(Command::DeleteAnnotation, "選択中の図形・テキストを削除");
     row(Command::SelectToolCrop, "トリミングツール");
     row(Command::SelectToolRect, "矩形ツール");
     row(Command::SelectToolEllipse, "楕円ツール");
     row(Command::SelectToolArrow, "矢印ツール");
     row(Command::SelectToolLine, "直線ツール");
+    row(Command::SelectToolPen, "ペン (手書き) ツール");
+    row(Command::SelectToolMarker, "マーカーツール");
+    row(Command::SelectToolNumber, "連番マーカーツール");
     row(Command::SelectToolText, "テキストツール");
+    // Ctrl+B は App が横取りするため Command を持たない(キー変更もできない)
+    text("選択中のテキストを太字", "Ctrl+B");
 
     header("画面");
     row(Command::ToggleSidebar, "ファイル名一覧");

@@ -789,11 +789,12 @@ const MenuItem* findMenuItem(const std::vector<MenuItem>& items, std::string_vie
 }
 
 // 注釈のない場所での右クリック(ドラッグなし)= ツール切り替えメニュー。
-// leafIndex はメニューの末端項目: 0 トリミング, 1 矩形, 2 楕円, 3 矢印, 4 直線, 5 テキスト,
-// 6-12 太さ {1,2,3,5,8,12,20}, 13-19 文字サイズ {12,14,18,24,36,48,72},
-// 20-27 フォント(候補8種。FakeAnnotationRasterizer は全て入っていることにする), 28 色,
-// 29-33 塗りつぶし {0,64,128,191,255}, 34 塗りつぶしの色,
-// 35-40 テキストの枠線 {0,1,2,3,5,8}, 41 枠線の色
+// leafIndex はメニューの末端項目: 0 トリミング, 1 矩形, 2 楕円, 3 矢印, 4 直線,
+// 5 ペン, 6 マーカー, 7 連番マーカー, 8 テキスト,
+// 9-15 太さ {1,2,3,5,8,12,20}, 16-22 文字サイズ {12,14,18,24,36,48,72},
+// 23-31 フォント(候補9種。FakeAnnotationRasterizer は全て入っていることにする), 32 色,
+// 33-37 塗りつぶし {0,64,128,191,255}, 38 塗りつぶしの色,
+// 39-44 テキストの枠線 {0,1,2,3,5,8}, 45 枠線の色
 constexpr Point kEmptySpot{600, 450};  // 画像・注釈の外(ツールメニューが開く位置)
 
 // ツールメニューで末端項目を順に選ぶ。設定系(太さ・色など)を選ぶとメニューは
@@ -1685,6 +1686,75 @@ void testAnnotationGeometry() {
     CHECK(nearly(endpoints[1].pos.x, 5) && nearly(endpoints[1].pos.y, 9));
 }
 
+void testPenGeometry() {
+    // 点の間引き: 直前の点から minDistance 未満なら捨てる(最初の1点は必ず入る)
+    std::vector<Point> points;
+    CHECK(appendPenPoint(points, {0, 0}, 2));
+    CHECK(!appendPenPoint(points, {1, 0}, 2));  // 近すぎる
+    CHECK(appendPenPoint(points, {2, 0}, 2));   // ちょうど 2 は通す
+    CHECK(appendPenPoint(points, {2, 0}, 0));   // minDistance 0 なら重複でも通す
+    CHECK(points.size() == 3);
+
+    AnnotationSpec pen;
+    pen.kind = AnnotationSpec::Kind::Pen;
+    pen.strokeWidth = 2;
+    pen.points = {{0, 0}, {20, 0}, {20, 20}};  // 右へ引いてから下へ曲げた L 字
+    pen.p1 = {99, 99};                         // updatePenBounds が上書きする
+    pen.p2 = {99, 99};
+    updatePenBounds(pen);
+    CHECK(nearly(pen.p1.x, 0) && nearly(pen.p1.y, 0));
+    CHECK(nearly(pen.p2.x, 20) && nearly(pen.p2.y, 20));
+
+    // 当たるのは線の上だけ。bbox の内側でも線から離れていれば外れる
+    CHECK(hitTestAnnotation(pen, {10, 1}, 1));    // 横棒の上
+    CHECK(hitTestAnnotation(pen, {20, 15}, 1));   // 縦棒の上
+    CHECK(!hitTestAnnotation(pen, {10, 10}, 1));  // L の内側(bbox 内)
+    CHECK(!hitTestAnnotation(pen, {25, 25}, 1));  // bbox の外
+
+    // 1 点だけのストローク(点を打っただけ)は点への距離で判定する
+    AnnotationSpec dot = pen;
+    dot.points = {{5, 5}};
+    updatePenBounds(dot);
+    CHECK(hitTestAnnotation(dot, {5, 6}, 1));
+    CHECK(!hitTestAnnotation(dot, {5, 9}, 1));
+
+    // 平行移動は点列も一緒に動く(bbox との同期が崩れない)
+    AnnotationSpec movedPen = pen;
+    translateAnnotation(movedPen, 5, -3);
+    CHECK(nearly(movedPen.points[1].x, 25) && nearly(movedPen.points[1].y, -3));
+    CHECK(nearly(movedPen.p1.x, 5) && nearly(movedPen.p1.y, -3));
+    CHECK(hitTestAnnotation(movedPen, {15, -2}, 1));
+
+    // リサイズは点列を bbox と同じ比率で写す(線幅は変えない)
+    const AnnotationSpec scaled =
+        resizeAnnotation(pen, ResizeHandle::BottomRight, {40, 10}, false);
+    CHECK(nearly(scaled.p2.x, 40) && nearly(scaled.p2.y, 10));
+    CHECK(scaled.points.size() == 3);
+    CHECK(nearly(scaled.points[1].x, 40) && nearly(scaled.points[1].y, 0));
+    CHECK(nearly(scaled.points[2].x, 40) && nearly(scaled.points[2].y, 10));
+    CHECK(nearly(scaled.strokeWidth, 2));
+
+    // 連番マーカー: 中身の詰まった円なので内部も当たり、円の外は外れる
+    AnnotationSpec number;
+    number.kind = AnnotationSpec::Kind::Number;
+    number.p1 = {0, 0};
+    number.p2 = {20, 20};
+    number.number = 3;
+    CHECK(hitTestAnnotation(number, {10, 10}, 1));  // 中心
+    CHECK(hitTestAnnotation(number, {10, 0}, 1));   // 上端
+    CHECK(!hitTestAnnotation(number, {1, 1}, 1));   // bbox の角(円の外)
+    CHECK(nearly(numberFontSize(number), 12));      // 直径の 60%
+
+    // 円を保つため、ハンドルは四隅だけで、辺を掴めない(= 楕円にできない)
+    CHECK(resizeHandlePositions(number).size() == 4);
+    // Shift なしでも縦横比が維持される
+    const AnnotationSpec resizedNumber =
+        resizeAnnotation(number, ResizeHandle::BottomRight, {40, 25}, false);
+    CHECK(nearly(resizedNumber.p2.x - resizedNumber.p1.x,
+                 resizedNumber.p2.y - resizedNumber.p1.y));
+    CHECK(nearly(resizedNumber.p2.x, 40));
+}
+
 void testAppAnnotationObjects() {
     FakeDecoder decoder;
     ImageCache cache(decoder);
@@ -1789,7 +1859,7 @@ void testAppAnnotationObjects() {
     CHECK(app.annotations().specs->front().colorRGB == 0x123456);
 
     // テキスト注釈はその場で入力して追加し、ダブルクリックで再編集する
-    chooseInToolMenu(app, host, {5});  // テキスト
+    chooseInToolMenu(app, host, {8});  // テキスト
     CHECK(app.currentTool() == EditTool::Text);
     rasterizer.overlayWidth = 24;
     rasterizer.overlayHeight = 44;  // 実測境界 20x40(リサイズテストでハンドルを離すため縦長)
@@ -1962,13 +2032,13 @@ void testAppEdit() {
     CHECK(app.annotations().specs->empty());
 
     // 閾値未満の右ドラッグ(ただの右クリック)はツール切り替えメニューを開く。
-    // 末端項目: ツール6種 + 太さ7 + 文字サイズ7 + フォント8 + 色1 + 塗りつぶし(5+色1)
-    // + 枠線(6+色1) = 42(回転角度はオブジェクト側にある)
+    // 末端項目: ツール9種 + 太さ7 + 文字サイズ7 + フォント9 + 色1 + 塗りつぶし(5+色1)
+    // + 枠線(6+色1) = 46(回転角度はオブジェクト側にある)
     host.menuChoice = std::nullopt;  // キャンセルするので何も起きない
     app.onRightDragStart({400, 300});
     app.onRightDragEnd({402, 301});
     CHECK(host.menuCount == 1);
-    CHECK(countMenuLeaves(host.lastMenuItems) == 42);
+    CHECK(countMenuLeaves(host.lastMenuItems) == 46);
     CHECK(app.currentTool() == EditTool::Rect);
     CHECK(app.annotations().specs->empty());
     CHECK(app.currentImage()->width == 8);
@@ -2036,7 +2106,7 @@ void testAppEdit() {
     CHECK(source->pixels[(1 * 8 + 1) * 4 + 2] == 0);
 
     // テキスト: 空のまま確定すると追加されない。入力があれば実測して追加される
-    chooseInToolMenu(app, host, {5});
+    chooseInToolMenu(app, host, {8});
     app.onRightDragStart({396, 283});
     app.onRightDragEnd({400, 287});
     CHECK(app.isTextEditing());
@@ -2064,14 +2134,14 @@ void testAppEdit() {
     // 設定変更を選ぶとメニューが再表示され、続けてツールを選べる。
     // 末端 index: 0-5 ツール, 6-12 太さ {1,2,3,5,8,12,20}, 13-19 文字サイズ
     // {12,14,18,24,36,48,72}, 20-27 フォント, 28 色
-    chooseInToolMenu(app, host, {10 /*太さ8px*/, 1 /*矩形*/});
+    chooseInToolMenu(app, host, {13 /*太さ8px*/, 1 /*矩形*/});
     CHECK(host.menuQueue.empty());
     app.onRightDragStart({396, 283});
     app.onRightDragEnd({400, 287});
     CHECK(nearly(app.annotations().specs->back().strokeWidth, 8));
 
     // 文字サイズ 24px + 複数行テキスト。変更済みの設定も引き継がれる
-    chooseInToolMenu(app, host, {16 /*文字24px*/, 5 /*テキスト*/});
+    chooseInToolMenu(app, host, {19 /*文字24px*/, 8 /*テキスト*/});
     app.onRightDragStart({396, 283});
     app.onRightDragEnd({400, 287});
     app.insertText("1行目");
@@ -2083,14 +2153,14 @@ void testAppEdit() {
 
     // 色の変更: ダイアログの結果が以降の編集に使われる。キャンセルなら元のまま
     host.colorChoice = 0x00CC66;
-    chooseInToolMenu(app, host, {28 /*色*/, 4 /*直線*/});
+    chooseInToolMenu(app, host, {32 /*色*/, 4 /*直線*/});
     app.onRightDragStart({396, 283});
     app.onRightDragEnd({400, 287});
     CHECK(host.colorPickerCount == 1);
     CHECK(host.lastColorPickerInitial == 0xFF3B30);
     CHECK(app.annotations().specs->back().colorRGB == 0x00CC66);
     host.colorChoice = std::nullopt;
-    chooseInToolMenu(app, host, {28 /*色 (キャンセル)*/, 4 /*直線*/});
+    chooseInToolMenu(app, host, {32 /*色 (キャンセル)*/, 4 /*直線*/});
     app.onRightDragStart({396, 283});
     app.onRightDragEnd({400, 287});
     CHECK(host.colorPickerCount == 2);
@@ -2098,7 +2168,7 @@ void testAppEdit() {
 
     // 設定変更だけしてメニューを閉じる → 何も追加されず設定だけ残る
     const size_t annotationCountBefore = app.annotations().specs->size();
-    chooseInToolMenu(app, host, {8 /*太さ3px*/});  // ツールは選ばずに閉じる
+    chooseInToolMenu(app, host, {11 /*太さ3px*/});  // ツールは選ばずに閉じる
     CHECK(app.annotations().specs->size() == annotationCountBefore);
     CHECK(!app.selection().visible);
     CHECK(app.currentTool() == EditTool::Line);  // 直前のツールのまま
@@ -2107,15 +2177,15 @@ void testAppEdit() {
     app.onRightDragEnd({400, 287});
     CHECK(nearly(app.annotations().specs->back().strokeWidth, 3));  // 3px に戻っている
 
-    // 塗りつぶし: 末端 index 29-33 が不透明度 {0,64,128,191,255}、34 が塗りつぶしの色。
+    // 塗りつぶし: 末端 index 33-37 が不透明度 {0,64,128,191,255}、38 が塗りつぶしの色。
     // 色を選ぶと塗りなしのままにならないよう不透明で塗り始める
-    chooseInToolMenu(app, host, {31 /*不透明度 128*/, 1 /*矩形*/});
+    chooseInToolMenu(app, host, {35 /*不透明度 128*/, 1 /*矩形*/});
     app.onRightDragStart({396, 283});
     app.onRightDragEnd({400, 287});
     CHECK(app.annotations().specs->back().fillAlpha == 128);
     CHECK(app.annotations().specs->back().fillRGB == 0xFFFFFF);  // 既定は白
     host.colorChoice = 0x3366FF;
-    chooseInToolMenu(app, host, {29 /*塗りなしへ戻す*/, 34 /*塗りつぶしの色*/, 2 /*楕円*/});
+    chooseInToolMenu(app, host, {33 /*塗りなしへ戻す*/, 38 /*塗りつぶしの色*/, 2 /*楕円*/});
     app.onRightDragStart({396, 283});
     app.onRightDragEnd({400, 287});
     {
@@ -2137,9 +2207,9 @@ void testAppEdit() {
     CHECK(app.annotations().specs->back().fillAlpha == 255);
     host.menuChoice = std::nullopt;  // 以降は menuQueue を使う(設定系は再表示されるため)
 
-    // テキストの枠線: 末端 index 35-40 が太さ {0,1,2,3,5,8}、41 が枠線の色。
+    // テキストの枠線: 末端 index 39-44 が太さ {0,1,2,3,5,8}、45 が枠線の色。
     // 枠線ぶん余白が広がるので実測境界も縮む (24x12 の overlay - 余白 (2+太さ/2)*2)
-    chooseInToolMenu(app, host, {37 /*枠線 2px*/, 5 /*テキスト*/});
+    chooseInToolMenu(app, host, {41 /*枠線 2px*/, 8 /*テキスト*/});
     rasterizer.overlayWidth = 24;
     rasterizer.overlayHeight = 12;
     app.onRightDragStart({396, 283});
@@ -2151,11 +2221,11 @@ void testAppEdit() {
         CHECK(nearly(spec.borderWidth, 2));
         CHECK(nearly(spec.p2.x - spec.p1.x, 18) && nearly(spec.p2.y - spec.p1.y, 6));
     }
-    chooseInToolMenu(app, host, {35 /*枠線なしへ戻す*/});
+    chooseInToolMenu(app, host, {39 /*枠線なしへ戻す*/});
 
     // 確定時の実測(ラスタライズ)失敗はメッセージを出す。入力済みの内容は残す
     rasterizer.ok = false;
-    chooseInToolMenu(app, host, {5 /*テキスト*/});
+    chooseInToolMenu(app, host, {8 /*テキスト*/});
     const size_t countBeforeFail = app.annotations().specs->size();
     app.onRightDragStart({396, 283});
     app.onRightDragEnd({400, 287});
@@ -2525,7 +2595,7 @@ void testAppTextEditing() {
     const auto screenOf = [&toScreen](float x, float y) { return toScreen.apply({x, y}); };
 
     // テキストボックスを作って入力する
-    chooseInToolMenu(app, host, {5});  // テキストツールへ切り替える
+    chooseInToolMenu(app, host, {8});  // テキストツールへ切り替える
     app.onRightDragStart(screenOf(10, 10));
     app.onRightDragEnd(screenOf(50, 30));
     CHECK(app.isTextEditing());
@@ -2701,7 +2771,7 @@ void testAppTextStyles() {
         return KeyChord{static_cast<KeyCode>(c), true, false, false};
     };
 
-    chooseInToolMenu(app, host, {5});  // テキストツールへ切り替える
+    chooseInToolMenu(app, host, {8});  // テキストツールへ切り替える
     app.onRightDragStart(screenOf(10, 10));
     app.onRightDragEnd(screenOf(50, 30));
     app.insertText("abcdef");
@@ -2737,8 +2807,8 @@ void testAppTextStyles() {
     app.onRightDragEnd(screenOf(20, 15));
     CHECK(app.isTextEditing());  // 右クリックで編集が終わらない
     CHECK(host.menuCount == menusBefore + 1);
-    // 末端 index: 0-2 太字・斜体・下線, 3-10 フォント(候補8種), 11 文字色
-    CHECK(countMenuLeaves(host.lastMenuItems) == 12);
+    // 末端 index: 0-2 太字・斜体・下線, 3-11 フォント(候補9種), 12 文字色
+    CHECK(countMenuLeaves(host.lastMenuItems) == 13);
     CHECK(!host.lastMenuItems[0].checked);            // 太字は付いていない
     CHECK(!host.lastMenuItems[1].checked);            // 斜体も付いていない
     CHECK(host.lastMenuItems[2].checked);             // 下線は付いている
@@ -2752,7 +2822,7 @@ void testAppTextStyles() {
     app.onKey(ctrl('I'));  // 斜体を戻して以降のテストを素直にする
 
     // メニューから文字色を選ぶと、選択部分だけ色が付く(下線はそのまま)
-    host.menuChoice = 11;  // 文字色...
+    host.menuChoice = 12;  // 文字色...
     host.colorChoice = 0x00FF00;
     app.onRightDragStart(screenOf(20, 15));
     app.onRightDragEnd(screenOf(20, 15));
@@ -2763,7 +2833,7 @@ void testAppTextStyles() {
     CHECK(host.lastColorPickerInitial == app.annotations().specs->back().colorRGB);
 
     // メニューからフォントを選ぶと選択部分だけ書体が変わる(他の書式・全体のフォントは不変)
-    host.menuChoice = 5;  // フォント: 3 游ゴシック UI, 4 游明朝, 5 メイリオ
+    host.menuChoice = 6;  // フォント: 3 游ゴシック, 4 游ゴシック UI, 5 游明朝, 6 メイリオ
     app.onRightDragStart(screenOf(20, 15));
     app.onRightDragEnd(screenOf(20, 15));
     CHECK(app.annotations().specs->back().styles.size() == 1);
@@ -2780,13 +2850,13 @@ void testAppTextStyles() {
         CHECK(family != nullptr);
         if (family) {
             CHECK(family->text == "フォント (メイリオ)");
-            CHECK(family->children[2].checked);   // メイリオ
-            CHECK(!family->children[0].checked);  // 游ゴシック UI
+            CHECK(family->children[3].checked);   // メイリオ
+            CHECK(!family->children[0].checked);  // 游ゴシック
         }
     }
 
     // 注釈全体と同じフォントを選ぶと指定が外れる(他の書式は残る)
-    host.menuChoice = 3;  // 游ゴシック UI = 注釈全体のフォント
+    host.menuChoice = 3;  // 游ゴシック = 注釈全体のフォント
     app.onRightDragStart(screenOf(20, 15));
     app.onRightDragEnd(screenOf(20, 15));
     CHECK((app.annotations().specs->back().styles[0] ==
@@ -2806,6 +2876,39 @@ void testAppTextStyles() {
     app.onRightDragStart(screenOf(90, 90));
     app.onRightDragEnd(screenOf(90, 90));
     CHECK(!app.isTextEditing());
+
+    // テキスト注釈を「選択中」の Ctrl+B は、サイドバー開閉ではなく全体の太字トグル
+    CHECK(!app.sidebar().visible);
+    CHECK(app.onMouseDown(screenOf(20, 15)));  // 編集はせず選択だけ
+    app.onMouseUp();
+    CHECK(!app.isTextEditing());
+    CHECK(app.annotations().selected.has_value());
+    const size_t textBytes = app.annotations().specs->back().text.size();
+    CHECK(app.onKey(ctrl('B')));
+    CHECK(!app.sidebar().visible);  // サイドバーは開かない
+    {
+        // 全体が太字になり、元からあった部分書式(前半3文字の下線・色)は保たれる
+        const std::vector<TextStyleRun>& styles = app.annotations().specs->back().styles;
+        CHECK(isTextStyleFlagSet(styles, 0, textBytes, TextStyleFlag::Bold));
+        CHECK(textStyleAt(styles, 0).underline);
+        CHECK(textStyleAt(styles, 0).colorRGB == 0x00FF00);
+        CHECK(!textStyleAt(styles, textBytes - 1).underline);  // 後半は太字だけ
+    }
+    app.onKey(ctrl('B'));  // もう一度で解除(全体が太字なら外す)
+    CHECK(!app.sidebar().visible);
+    CHECK(!isTextStyleFlagSet(app.annotations().specs->back().styles, 0, textBytes,
+                              TextStyleFlag::Bold));
+    app.execute(Command::Undo);  // 太字の付け外しは undo できる
+    CHECK(isTextStyleFlagSet(app.annotations().specs->back().styles, 0, textBytes,
+                             TextStyleFlag::Bold));
+
+    // 図形を選んでいるとき・何も選んでいないときは従来どおりサイドバーが開く
+    app.execute(Command::Escape);
+    CHECK(!app.annotations().selected.has_value());
+    app.onKey(ctrl('B'));
+    CHECK(app.sidebar().visible);
+    app.onKey(ctrl('B'));
+    CHECK(!app.sidebar().visible);
 }
 
 void testAppFontFamily() {
@@ -2843,26 +2946,26 @@ void testAppFontFamily() {
     CHECK(rasterizer.hasFontFamilyCount == 0);
 
     // 既定のフォントは新規テキストへそのまま載る
-    chooseInToolMenu(app, host, {5 /*テキスト*/});
+    chooseInToolMenu(app, host, {8 /*テキスト*/});
     CHECK(rasterizer.hasFontFamilyCount > 0);
     addText("あ");
     CHECK(app.annotations().specs->back().fontFamily == kDefaultFontFamily);
 
-    // ツールメニューのフォント(末端 index 20-27)から選ぶと以降の新規テキストへ効く
-    chooseInToolMenu(app, host, {22 /*メイリオ*/});
+    // ツールメニューのフォント(末端 index 23-31)から選ぶと以降の新規テキストへ効く
+    chooseInToolMenu(app, host, {26 /*メイリオ*/});
     addText("い");
     CHECK(app.annotations().specs->back().fontFamily == "Meiryo");
     CHECK(app.annotations().specs->front().fontFamily == kDefaultFontFamily);  // 既存は不変
 
     // オブジェクトメニュー(テキスト)の末端 index:
-    // 0 編集, 1 削除, 2-9 回転, 10-16 文字サイズ, 17-24 フォント, 25 色,
-    // 26-30 塗りつぶし, 31 塗りつぶしの色, 32-37 枠線, 38 枠線の色
+    // 0 編集, 1 削除, 2-9 回転, 10-16 文字サイズ, 17-25 フォント, 26 色,
+    // 27-31 塗りつぶし, 32 塗りつぶしの色, 33-38 枠線, 39 枠線の色
     CHECK(app.onMouseDown(screenOf(20, 15)));  // 直近のテキストを選択
     app.onMouseUp();
-    host.menuChoice = 17;  // 游ゴシック UI
+    host.menuChoice = 18;  // 游ゴシック UI
     app.onRightDragStart(screenOf(20, 15));
     app.onRightDragEnd(screenOf(20, 15));
-    CHECK(countMenuLeaves(host.lastMenuItems) == 39);
+    CHECK(countMenuLeaves(host.lastMenuItems) == 40);
     CHECK(app.annotations().specs->back().fontFamily == "Yu Gothic UI");
     app.execute(Command::Undo);
     CHECK(app.annotations().specs->back().fontFamily == "Meiryo");
@@ -2882,12 +2985,143 @@ void testAppFontFamily() {
     CHECK(family != nullptr);
     if (family) {
         CHECK(family->text == "フォント (BIZ UDPMincho)");
-        CHECK(family->children.size() == 7);  // 候補 8 - 欠け 2 + 現在のフォント 1
+        CHECK(family->children.size() == 8);  // 候補 9 - 欠け 2 + 現在のフォント 1
         CHECK(family->children.back().text == "BIZ UDPMincho");
         CHECK(family->children.back().checked);
         CHECK(findMenuItem(family->children, "游明朝") == nullptr);
         CHECK(findMenuItem(family->children, "メイリオ") != nullptr);
     }
+}
+
+void testAppPenTools() {
+    FakeDecoder decoder;
+    ImageCache cache(decoder);
+    FakeHost host;
+    FakeFileSystem fileSystem;
+    FakeClipboard clipboard;
+    FakeEncoder encoder;
+    FakeAnnotationRasterizer rasterizer;
+    App app(host, fileSystem, cache, clipboard, encoder, rasterizer);
+    app.onResize(800, 600);
+
+    auto source = std::make_shared<DecodedImage>();
+    source->width = 40;
+    source->height = 40;
+    source->pixels.resize(40 * 40 * 4);
+    clipboard.pasteImage = source;
+    app.execute(Command::PasteImage);
+    // 40x40 は等倍で中央に置かれる(画像 (0,0) はスクリーン (380,267))
+    const auto screenOf = [](float x, float y) { return Point{380 + x, 267 + y}; };
+
+    // ペン: 右ドラッグの軌跡がそのまま注釈になる。近すぎる通過点は間引かれる
+    app.execute(Command::SelectToolPen);
+    CHECK(app.currentTool() == EditTool::Pen);
+    app.onRightDragStart(screenOf(0, 0));
+    app.onRightDragMove(screenOf(1, 0));  // 直前から 1px = 間引かれる
+    app.onRightDragMove(screenOf(20, 0));
+    app.onRightDragMove(screenOf(20, 20));
+    CHECK(app.annotations().preview != nullptr);  // ドラッグ中も実物が見える
+    CHECK(app.annotations().preview->points.size() == 3);
+    CHECK(!app.selection().visible);  // ラバーバンドとは排他
+    app.onRightDragEnd(screenOf(20, 20));
+    CHECK(app.annotations().specs->size() == 1);
+    {
+        const AnnotationSpec& spec = app.annotations().specs->back();
+        CHECK(spec.kind == AnnotationSpec::Kind::Pen);
+        CHECK(spec.points.size() == 3);  // 終点は既に入っているので重複しない
+        CHECK(nearly(spec.points.back().x, 20) && nearly(spec.points.back().y, 20));
+        CHECK(nearly(spec.p1.x, 0) && nearly(spec.p1.y, 0));
+        CHECK(nearly(spec.p2.x, 20) && nearly(spec.p2.y, 20));
+        CHECK(nearly(spec.strokeWidth, 3));  // 既定の太さ(等倍なので画面px = 画像px)
+        CHECK(spec.strokeAlpha == 255);
+    }
+
+    // 線の上だけ掴める(bbox の内側でも線から離れていればパンに回る)。
+    // 選択中はハンドルが優先されるので、いったん選択を外してから掴む
+    app.execute(Command::Escape);
+    CHECK(app.onMouseDown(screenOf(10, 0)));
+    CHECK(app.annotations().selected == std::optional<size_t>(0));
+    app.onMouseMove(screenOf(12, 3));  // +2,+3 の移動は点列ごと動く
+    {
+        const AnnotationSpec& spec = app.annotations().specs->back();
+        CHECK(nearly(spec.points.front().x, 2) && nearly(spec.points.front().y, 3));
+        CHECK(nearly(spec.p1.x, 2) && nearly(spec.p1.y, 3));
+    }
+    app.onMouseUp();
+    app.execute(Command::Undo);
+    CHECK(nearly(app.annotations().specs->back().points.front().x, 0));
+    CHECK(!app.onMouseDown(screenOf(10, 10)));  // L の内側は掴めない
+    app.onMouseUp();
+
+    // やり直し: 取り消した移動を復元する。新しい編集をすると redo は捨てられる
+    app.execute(Command::Redo);
+    CHECK(nearly(app.annotations().specs->back().points.front().x, 2));
+    app.execute(Command::Undo);
+    CHECK(nearly(app.annotations().specs->back().points.front().x, 0));
+
+    // マーカー: 同じ Pen 注釈だが太く半透明になる
+    app.execute(Command::SelectToolMarker);
+    app.onRightDragStart(screenOf(0, 30));
+    app.onRightDragMove(screenOf(30, 30));
+    app.onRightDragEnd(screenOf(30, 30));
+    CHECK(app.annotations().specs->size() == 2);
+    {
+        const AnnotationSpec& spec = app.annotations().specs->back();
+        CHECK(spec.kind == AnnotationSpec::Kind::Pen);
+        CHECK(nearly(spec.strokeWidth, 12));  // 既定 3px の 4 倍
+        CHECK(spec.strokeAlpha == 102);
+    }
+    // 新しい編集をしたので、さっきの取り消しはもうやり直せない
+    app.execute(Command::Redo);
+    CHECK(app.statusBar().leftText == "やり直す編集はありません");
+    app.onTimer();
+
+    // 連番マーカー: 番号は自動で増え、小さすぎるドラッグでも最小の大きさになる
+    app.execute(Command::SelectToolNumber);
+    app.onRightDragStart(screenOf(0, 0));
+    app.onRightDragEnd(screenOf(5, 5));
+    {
+        const AnnotationSpec& spec = app.annotations().specs->back();
+        CHECK(spec.kind == AnnotationSpec::Kind::Number);
+        CHECK(spec.number == 1);
+        CHECK(spec.fillAlpha == 255);
+        CHECK(spec.fillRGB == 0xFF3B30);  // 既定の色が円の塗りになる
+        CHECK(nearly(spec.p2.x - spec.p1.x, spec.p2.y - spec.p1.y));  // 必ず円
+        CHECK(spec.p2.x - spec.p1.x > 30);  // 文字サイズ 18px から決まる最小の直径
+    }
+    app.onRightDragStart(screenOf(0, 20));
+    app.onRightDragEnd(screenOf(6, 26));
+    CHECK(app.annotations().specs->back().number == 2);
+    // 取り消して置き直しても番号は詰まる(状態ではなく既存の注釈から数えている)
+    app.execute(Command::Undo);
+    app.onRightDragStart(screenOf(0, 20));
+    app.onRightDragEnd(screenOf(6, 26));
+    CHECK(app.annotations().specs->back().number == 2);
+    // Shift なしでもドラッグが正方形に寄せられる(円をつぶせない)
+    app.onRightDragStart(screenOf(0, 0));
+    app.onRightDragMove(screenOf(39, 35));  // 縦横の小さいほう = 35 の正方形になる
+    CHECK(app.annotations().preview != nullptr);
+    CHECK(nearly(app.annotations().preview->p2.x, 35));
+    CHECK(nearly(app.annotations().preview->p2.y, 35));
+    app.onRightDragEnd(screenOf(39, 35));
+
+    // オブジェクトメニューから番号を振り直せる(末端 index: 0 削除, 1-8 回転,
+    // 9-15 太さ, 16-25 番号, 26 色, 27-31 塗りつぶし, 32 塗りつぶしの色)
+    CHECK(app.onMouseDown(screenOf(5, 5)));
+    app.onMouseUp();
+    host.menuChoice = 22;  // 番号 7
+    app.onRightDragStart(screenOf(5, 5));
+    app.onRightDragEnd(screenOf(5, 5));
+    CHECK(countMenuLeaves(host.lastMenuItems) == 33);
+    CHECK(app.annotations().specs->back().number == 7);
+
+    // ini からもツールを選べる
+    app.applyConfig(Config::parse("[edit]\ntool = marker\n"));
+    CHECK(app.currentTool() == EditTool::Marker);
+    app.applyConfig(Config::parse("[edit]\ntool = number\n"));
+    CHECK(app.currentTool() == EditTool::Number);
+    app.applyConfig(Config::parse("[edit]\ntool = pen\n"));
+    CHECK(app.currentTool() == EditTool::Pen);
 }
 
 void testNaturalCompare() {
@@ -2940,11 +3174,13 @@ int main() {
     testAppHelpHint();
     testEditFunctions();
     testAnnotationGeometry();
+    testPenGeometry();
     testAppAnnotationObjects();
     testAppEdit();
     testAppTextEditing();
     testAppTextStyles();
     testAppFontFamily();
+    testAppPenTools();
 
     if (g_failures == 0) {
         std::cout << "all tests passed\n";

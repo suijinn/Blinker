@@ -69,6 +69,9 @@ enum class EditTool {
     Ellipse,  ///< 楕円を描く
     Arrow,    ///< 矢印を描く
     Line,     ///< 直線を描く
+    Pen,      ///< ドラッグの軌跡をそのまま線にする(手書き)
+    Marker,   ///< 手書きの半透明・太線版(蛍光ペン)
+    Number,   ///< 連番の数字入りマーカーを置く(番号は自動で増える)
     Text,     ///< テキストボックスを作り、その場で入力を始める
 };
 
@@ -551,11 +554,12 @@ private:
     struct ObjectMenuEntry {
         /// @brief 末端項目が表す操作の種類。
         enum class Action {
-            EditText, Delete, Angle, StrokeWidth, FontSize, FontFamily, PickColor,
-            FillAlpha, PickFillColor, BorderWidth, PickBorderColor
+            EditText, Delete, Angle, StrokeWidth, StrokeAlpha, FontSize, FontFamily, PickColor,
+            FillAlpha, PickFillColor, BorderWidth, PickBorderColor, Number
         };
         Action action;       ///< 操作の種類
-        float value = 0;     ///< Angle/StrokeWidth/FontSize/FillAlpha/BorderWidth の値
+        /// Angle/StrokeWidth/StrokeAlpha/FontSize/FillAlpha/BorderWidth/Number の値
+        float value = 0;
         std::string family;  ///< FontFamily で選ばれたフォント名(UTF-8)
     };
 
@@ -602,6 +606,19 @@ private:
 
     /// @brief 現在のツールを選択領域へ適用する(右ドラッグの確定時)。
     void applyCurrentTool();
+
+    /**
+     * @brief 現在のツールが手書き(ペン・マーカー)かを返す。
+     * @return 手書きなら true。右ドラッグ中に軌跡を溜めるかの判定に使う。
+     */
+    bool penToolActive() const;
+
+    /**
+     * @brief 次に置く連番マーカーの番号を求める。
+     * @return 既にある連番マーカーの最大値 + 1(無ければ 1)。
+     * @note 状態として持たず毎回数えることで、undo・削除のあとも番号が詰まる。
+     */
+    int nextMarkerNumber() const;
 
     /**
      * @brief 選択領域と現在の設定から新しい注釈を組み立てる。
@@ -744,6 +761,17 @@ private:
      */
     void moveCaretVertical(bool down, bool extendSelection);
 
+    /**
+     * @brief 選択中の Text 注釈全体の太字を切り替える(Ctrl+B)。
+     *
+     * 全体が太字なら解除、そうでなければ全体を太字にする(編集中の Ctrl+B と同じ規則)。
+     * 字幅が変わるため実測境界も測り直す。
+     *
+     * @return 切り替えた(= キーを消費した)なら true。Text 注釈を選択していない、
+     *         または内容が空なら false(呼び出し側は通常のコマンドとして処理する)。
+     */
+    bool toggleSelectedTextBold();
+
     /// @brief 選択中の注釈オブジェクトを削除する。
     void deleteSelectedAnnotation();
 
@@ -768,8 +796,19 @@ private:
     /// @brief ドラッグ(移動・回転)の最初の変更時に 1 回だけ undo 履歴へ積む。
     void pushDragUndoOnce();
 
-    /// @brief undo 履歴から 1 つ戻す。
+    /// @brief undo 履歴から 1 つ戻す(戻す前の状態は redo 履歴へ積む)。
     void executeUndo();
+
+    /// @brief redo 履歴から 1 つやり直す(やり直す前の状態は undo 履歴へ積む)。
+    void executeRedo();
+
+    /**
+     * @brief 現在の状態を履歴の一方から取り出して復元する(undo/redo の共通処理)。
+     * @param[in,out] from 取り出す側の履歴(末尾を取り出す)。
+     * @param[in,out] to   現在の状態を積む側の履歴。
+     * @return 復元したら true。from が空なら false(何もしない)。
+     */
+    bool restoreFrom(std::vector<UndoState>& from, std::vector<UndoState>& to);
 
     /// @brief 画像切替時に編集を破棄する(編集があれば通知を出す)。
     void discardEdits();
@@ -823,6 +862,13 @@ private:
     EditTool toolAfterCrop_ = EditTool::Rect;
     /// 右ドラッグ中のプレビュー。図形ツールのときだけ有効(Crop/Text はラバーバンドを出す)
     AnnotationSpec previewSpec_;
+    /// 手書きツールで右ドラッグ中に溜めている軌跡(画像座標)。確定時に注釈へ移す
+    std::vector<Point> penPoints_;
+    /// 軌跡へ点を足す最小間隔(画面px)。これ未満の動きは無視して点数を抑える
+    static constexpr float kPenMinDistancePx = 2.0f;
+    /// マーカーの線幅の倍率(「線の太さ」設定に掛ける)。蛍光ペンらしい太さにする
+    static constexpr float kMarkerWidthScale = 4.0f;
+    static constexpr int kMarkerAlpha = 102;  ///< マーカーの線の不透明度(0-255。約 40%)
 
     /// 注釈オブジェクト。current_ には焼き込まず、描画時に重ね、保存/コピー時に合成する
     std::vector<AnnotationSpec> annotations_;
@@ -854,6 +900,8 @@ private:
     size_t compositionTargetEnd_ = 0;    ///< 変換対象の節の終了(同上)
 
     std::vector<UndoState> undoStack_;
+    /// やり直し履歴。undo で積み、新しい編集(pushUndoState)で捨てる
+    std::vector<UndoState> redoStack_;
     uint32_t editColorRGB_ = 0xFF3B30;  ///< 新規注釈の色(0xRRGGBB)
     float editStrokeWidth_ = 3.0f;  ///< 線幅。画面px基準(適用時に 1/zoom で画像座標へ換算)
     float editFontSize_ = 18.0f;    ///< フォントサイズ。画面px基準(同上)
