@@ -499,13 +499,17 @@ bool App::onMouseDown(MouseButton button, Point screenPos) {
             }
         }
     }
+    // オブジェクトを掴む操作(選択・移動・回転・サイズ変更、テキストのキャレット移動)は
+    // 入れ替えの対象外で、常に左ボタン。入れ替えると左が編集役になるが、既存の図形を
+    // 選ぶのに右クリックが要るのは他のペイント系ソフトと食い違って戸惑うため
+    if (button == MouseButton::Left && beginObjectGrab(screenPos)) return true;
     if (mouseRole(button) == MouseRole::Edit) {
+        // 掴めなかった左ボタン(入れ替え時)と、既定の右ボタンはここへ来る
         beginEditDrag(screenPos);
         return true;
     }
-    const bool grabbed = beginPanOrSelect(screenPos);
-    panning_ = !grabbed;  // 何も掴まなかったらこのボタンのドラッグはパンになる
-    return grabbed;
+    panning_ = true;  // パン役のボタンで何も掴まなかったのでドラッグはパンになる
+    return false;
 }
 
 void App::clickSidebarItem(Point screenPos) {
@@ -522,7 +526,7 @@ void App::clickSidebarItem(Point screenPos) {
     }
 }
 
-bool App::beginPanOrSelect(Point screenPos) {
+bool App::beginObjectGrab(Point screenPos) {
     if (!current_) return false;
     const float barHeight = statusBarVisible() ? kStatusBarHeight : 0.0f;
     if (screenPos.y >= clientSize_.h - barHeight) return false;
@@ -600,11 +604,12 @@ void App::onMouseUp(MouseButton button, Point screenPos, bool shift) {
         showTextStyleMenu(screenPos);
         return;
     }
+    // 掴んでいたオブジェクト操作を終える(掴むのは常に左ボタンなので解放も左だけ)
+    if (button == MouseButton::Left) endObjectGrab();
     if (mouseRole(button) == MouseRole::Edit) {
-        endEditDrag(screenPos, shift);
+        endEditDrag(screenPos, shift);  // 掴んでいたなら selecting_ が false で素通りする
     } else {
         panning_ = false;
-        endPanOrSelect();
     }
     // メニューは入れ替えの対象外。右ボタンをドラッグせずに離したときだけ開く
     if (button != MouseButton::Right || !menuPressed_) return;
@@ -614,7 +619,7 @@ void App::onMouseUp(MouseButton button, Point screenPos, bool shift) {
     if (dx * dx + dy * dy < kDragThresholdPx * kDragThresholdPx) showPointerMenu(screenPos);
 }
 
-void App::endPanOrSelect() {
+void App::endObjectGrab() {
     textEditMouseSelect_ = false;
     // テキストの高さは内容で決まるため、リサイズ確定時に折り返し後の実寸へ揃える。
     // 編集中は利用者が決めた枠幅を保ちたいので高さだけ合わせる

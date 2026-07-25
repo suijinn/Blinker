@@ -100,9 +100,9 @@ std::vector<HelpLine> buildHelpLines(const Keymap& keymap, const bool swapMouseB
     // マウス操作は Command を経由しないため固定文言。編集ドラッグの中身は
     // 現在のツール(ステータスバーに出る)で決まる。パンと編集のボタンは
     // [mouse] swap_buttons で入れ替わるので、実際に効くほうを出す
-    // (メニューは入れ替えの対象外で常に右クリック)
+    // (メニューは常に右クリック、オブジェクトを掴む操作は常に左で、どちらも
+    //  入れ替えの対象外なので固定文言のまま)
     const std::string_view panDrag = swapMouseButtons ? "右ドラッグ" : "左ドラッグ";
-    const std::string_view panClick = swapMouseButtons ? "右クリック" : "左クリック";
     const std::string_view editDrag = swapMouseButtons ? "左ドラッグ" : "右ドラッグ";
     const std::string_view editDragShift = swapMouseButtons ? "Shift+左ドラッグ" : "Shift+右ドラッグ";
     header("マウス");
@@ -112,8 +112,8 @@ std::vector<HelpLine> buildHelpLines(const Keymap& keymap, const bool swapMouseB
     text("正方形 / 真円で描く", editDragShift);
     text("直線・矢印を水平 / 垂直に", editDragShift);
     text("ツール・書式メニュー", "余白で右クリック");
-    text("図形・テキストを選択", panClick);
-    text("選択中のオブジェクトを移動", panDrag);
+    text("図形・テキストを選択", "左クリック");
+    text("選択中のオブジェクトを移動", "左ドラッグ");
     text("オブジェクトのメニュー", "図形の上で右クリック");
     text("テキストを再編集", "ダブルクリック");
 
