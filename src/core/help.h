@@ -24,11 +24,14 @@ struct HelpLine {
 
 /**
  * @brief 操作一覧の全行を組み立てる。
- * @param[in] keymap 表示対象のキーバインド。
+ * @param[in] keymap            表示対象のキーバインド。
+ * @param[in] swapMouseButtons  マウスの左右の役割を入れ替えているか
+ *                              (`[mouse] swap_buttons`)。マウス操作の行の
+ *                              「左ドラッグ」「右ドラッグ」の表記に反映する。
  * @return 見出しと「操作名 キー」の行。キーが 1 つも割り当てられていない操作は含まれない。
  * @note キー表記は Keymap::chordToString と同じ(そのまま blinker.ini に書ける)。
  */
-std::vector<HelpLine> buildHelpLines(const Keymap& keymap);
+std::vector<HelpLine> buildHelpLines(const Keymap& keymap, bool swapMouseButtons);
 
 /**
  * @brief 指定コマンドに割り当てられたキーを 1 つの文字列にまとめる。

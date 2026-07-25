@@ -88,17 +88,11 @@ LRESULT MainWindow::handleMessage(UINT msg, WPARAM wp, LPARAM lp) {
     case WM_KEYDOWN:
     case WM_SYSKEYDOWN:
         // マウスを止めたまま Shift を押し引きしてもプレビューが追従するようにする
-        if (rightDragging_ && wp == VK_SHIFT) {
-            updateRightDragShift(true);
-            return 0;
-        }
+        if (wp == VK_SHIFT && app_ && app_->onShiftChanged(true)) return 0;
         if (handleKey(wp)) return 0;
         break;  // 未割り当てキーは既定処理へ(Alt+F4 等を殺さない)
     case WM_KEYUP:
-        if (rightDragging_ && wp == VK_SHIFT) {
-            updateRightDragShift(false);
-            return 0;
-        }
+        if (wp == VK_SHIFT && app_ && app_->onShiftChanged(false)) return 0;
         break;
     case WM_CHAR:
         handleChar(static_cast<wchar_t>(wp));
@@ -129,7 +123,7 @@ LRESULT MainWindow::handleMessage(UINT msg, WPARAM wp, LPARAM lp) {
         return 0;
     }
     case WM_LBUTTONDOWN:
-        handleLeftDown({GET_X_LPARAM(lp), GET_Y_LPARAM(lp)});
+        handleButtonDown(MouseButton::Left, {GET_X_LPARAM(lp), GET_Y_LPARAM(lp)});
         return 0;
     case WM_LBUTTONDBLCLK: {
         const POINT pt{GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
@@ -137,7 +131,8 @@ LRESULT MainWindow::handleMessage(UINT msg, WPARAM wp, LPARAM lp) {
             app_->onDoubleClick({static_cast<float>(pt.x), static_cast<float>(pt.y)})) {
             return 0;
         }
-        handleLeftDown(pt);  // テキスト注釈以外の上では通常のクリックとして扱う
+        // テキスト注釈以外の上では通常のクリックとして扱う
+        handleButtonDown(MouseButton::Left, pt);
         return 0;
     }
     case WM_MOUSEMOVE: {
@@ -146,41 +141,19 @@ LRESULT MainWindow::handleMessage(UINT msg, WPARAM wp, LPARAM lp) {
             TRACKMOUSEEVENT tme{sizeof(tme), TME_LEAVE, hwnd_, 0};
             trackingMouseLeave_ = TrackMouseEvent(&tme) != FALSE;
         }
+        // パン・編集ドラッグ・注釈のドラッグはどれも App 側で振り分けられる
         if (app_) {
-            if (dragging_) {
-                app_->onDragPan(static_cast<float>(pt.x - lastDragPos_.x),
-                                static_cast<float>(pt.y - lastDragPos_.y));
-                lastDragPos_ = pt;
-            }
-            if (rightDragging_) {
-                lastRightDragPos_ = pt;
-                app_->onRightDragMove({static_cast<float>(pt.x), static_cast<float>(pt.y)},
-                                      (wp & MK_SHIFT) != 0);
-            }
             app_->onMouseMove({static_cast<float>(pt.x), static_cast<float>(pt.y)},
-                              (GetKeyState(VK_SHIFT) & 0x8000) != 0);
+                              (wp & MK_SHIFT) != 0);
         }
         return 0;
     }
-    case WM_RBUTTONDOWN: {
-        const POINT pt{GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
-        rightDragging_ = true;
-        lastRightDragPos_ = pt;
-        SetCapture(hwnd_);
-        if (app_) app_->onRightDragStart({static_cast<float>(pt.x), static_cast<float>(pt.y)});
+    case WM_RBUTTONDOWN:
+        handleButtonDown(MouseButton::Right, {GET_X_LPARAM(lp), GET_Y_LPARAM(lp)});
         return 0;
-    }
-    case WM_RBUTTONUP: {
-        if (!rightDragging_) break;
-        rightDragging_ = false;
-        ReleaseCapture();  // メニュー表示より先にキャプチャを解放する
-        const POINT pt{GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
-        if (app_) {
-            app_->onRightDragEnd({static_cast<float>(pt.x), static_cast<float>(pt.y)},
-                                 (wp & MK_SHIFT) != 0);
-        }
+    case WM_RBUTTONUP:
+        handleButtonUp(MouseButton::Right, {GET_X_LPARAM(lp), GET_Y_LPARAM(lp)}, wp);
         return 0;
-    }
     case WM_SETCURSOR:
         // 編集中のテキストボックスの内側だけ I ビームにする。
         // クライアント領域以外(枠・タイトルバー)は既定の処理に任せる
@@ -207,9 +180,7 @@ LRESULT MainWindow::handleMessage(UINT msg, WPARAM wp, LPARAM lp) {
         }
         return 0;
     case WM_LBUTTONUP:
-        dragging_ = false;
-        if (GetCapture() == hwnd_) ReleaseCapture();
-        if (app_) app_->onMouseUp();  // 注釈の移動・回転ドラッグを終了する
+        handleButtonUp(MouseButton::Left, {GET_X_LPARAM(lp), GET_Y_LPARAM(lp)}, wp);
         return 0;
     case WM_DROPFILES:
         onDropFiles(wp);
@@ -234,22 +205,19 @@ LRESULT MainWindow::handleMessage(UINT msg, WPARAM wp, LPARAM lp) {
     return DefWindowProcW(hwnd_, msg, wp, lp);
 }
 
-void MainWindow::handleLeftDown(POINT pt) {
-    // サイドバー上のクリック(項目ジャンプ)や注釈のドラッグ開始ならパンを開始しない。
-    // 注釈ドラッグ中の移動・ボタン解放を受けるため、消費されてもキャプチャは取る
+void MainWindow::handleButtonDown(MouseButton button, POINT pt) {
+    // ドラッグがウィンドウ外へ出ても移動・ボタン解放を受け取れるようキャプチャを取る
+    // (パンでも編集ドラッグでも、掴んだものが無い単なるクリックでも同じ)
     SetCapture(hwnd_);
-    if (app_ && app_->onMouseDown({static_cast<float>(pt.x), static_cast<float>(pt.y)})) {
-        return;
-    }
-    dragging_ = true;
-    lastDragPos_ = pt;
+    if (app_) app_->onMouseDown(button, {static_cast<float>(pt.x), static_cast<float>(pt.y)});
 }
 
-void MainWindow::updateRightDragShift(bool shift) {
-    if (!app_) return;
-    app_->onRightDragMove({static_cast<float>(lastRightDragPos_.x),
-                           static_cast<float>(lastRightDragPos_.y)},
-                          shift);
+void MainWindow::handleButtonUp(MouseButton button, POINT pt, WPARAM wp) {
+    if (GetCapture() == hwnd_) ReleaseCapture();  // メニュー表示より先に解放する
+    if (app_) {
+        app_->onMouseUp(button, {static_cast<float>(pt.x), static_cast<float>(pt.y)},
+                        (wp & MK_SHIFT) != 0);
+    }
 }
 
 void MainWindow::onPaint() {

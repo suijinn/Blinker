@@ -174,9 +174,6 @@ private:
     bool running_ = false;
     bool needsRedraw_ = false;
     bool fullscreen_ = false;
-    bool dragging_ = false;  ///< 左ドラッグ(パン)中か
-    float lastDragX_ = 0;  ///< 直前のドラッグ位置の X(物理ピクセル)
-    float lastDragY_ = 0;  ///< 直前のドラッグ位置の Y(物理ピクセル)
 };
 
 } // namespace blinker

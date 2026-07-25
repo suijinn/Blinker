@@ -57,9 +57,32 @@ enum class SidebarMode {
 };
 
 /**
- * @brief 右ドラッグで実行する編集ツール。
+ * @brief 物理マウスボタン。
  *
- * 事前に選んだツールが右ドラッグで即座に適用される(ドラッグ中はプレビューが出る)。
+ * どちらのボタンが何をするかは blinker.ini の `[mouse] swap_buttons` で
+ * 入れ替えられる(App::mouseRole)。メニューだけは入れ替えの対象外で、
+ * 常に右ボタンのクリックで開く。
+ */
+enum class MouseButton {
+    Left,   ///< 左ボタン
+    Right,  ///< 右ボタン
+};
+
+/**
+ * @brief マウスボタンに割り当てられた役割。
+ *
+ * 既定は左が Pan・右が Edit。`[mouse] swap_buttons = true` で入れ替わる。
+ */
+enum class MouseRole {
+    Pan,   ///< 画像のパンと、注釈オブジェクトの選択・移動・回転・サイズ変更
+    Edit,  ///< ドラッグで現在のツール (EditTool) を実行する
+};
+
+/**
+ * @brief 編集ドラッグで実行する編集ツール。
+ *
+ * 事前に選んだツールが編集ドラッグ(既定では右ドラッグ。MouseRole::Edit の
+ * ボタン)で即座に適用される(ドラッグ中はプレビューが出る)。
  * 切り替えは注釈のない場所での右クリック(ドラッグなし)で開くメニュー、または
  * Command::SelectToolCrop 以降のコマンドで行う。
  */
@@ -239,18 +262,36 @@ public:
     void onWheel(float wheelNotches, Point screenPos);
 
     /**
-     * @brief 左ボタン押下を処理する。
+     * @brief マウスボタン押下を処理する。
+     *
+     * ボタンの役割は mouseRole に従って振り分ける(パン / 編集ドラッグ)。
+     * サイドバーの項目クリックは UI 部品の操作なので入れ替えの対象外で、
+     * 常に左ボタンだけが反応する。
+     *
+     * @param[in] button    押されたボタン。
      * @param[in] screenPos 押下位置(スクリーン座標)。
-     * @return サイドバーのクリックや注釈の選択・ドラッグ開始を消費したら true
-     *         (呼び出し側はパンを開始しないこと)。
+     * @return サイドバーのクリック・注釈の選択・編集ドラッグの開始を消費したら true。
+     *         false ならパンを開始した(何も掴んでいない)。
+     * @note 右ボタンは押下位置も覚える。ドラッグにならずに離されたら onMouseUp が
+     *       メニューを開く(メニューは常に右クリック)。
      */
-    bool onMouseDown(Point screenPos);
-
-    /// @brief 左ボタン解放を処理し、注釈の移動・回転ドラッグを終了する。
-    void onMouseUp();
+    bool onMouseDown(MouseButton button, Point screenPos);
 
     /**
-     * @brief ダブルクリックを処理する。
+     * @brief マウスボタン解放を処理する。
+     *
+     * 編集ドラッグなら現在のツールを適用し、パンなら注釈の移動・回転ドラッグを終了する。
+     * 右ボタンをドラッグせずに離した場合はメニューを開く。
+     *
+     * @param[in] button    離されたボタン。
+     * @param[in] screenPos 解放位置(スクリーン座標)。メニューの表示位置にもなる。
+     * @param[in] shift     Shift が押されているか。押されていれば選択領域を正方形にする
+     *                      (直線・矢印ツールを除く)。
+     */
+    void onMouseUp(MouseButton button, Point screenPos = {}, bool shift = false);
+
+    /**
+     * @brief ダブルクリックを処理する(左ボタン)。
      * @param[in] screenPos クリック位置(スクリーン座標)。
      * @return Text 注釈上で編集を開始した、または編集中に語を選択したら true。
      */
@@ -320,47 +361,37 @@ public:
     bool wantsTextCursor(Point screenPos) const;
 
     /**
-     * @brief 右ドラッグによる編集領域の選択を開始する。
-     * @param[in] screenPos 開始位置(スクリーン座標)。画像外・サイドバー上は無視する。
+     * @brief 指定したボタンの役割を返す。
+     * @param[in] button 対象のボタン。
+     * @return 役割。既定では左が MouseRole::Pan・右が MouseRole::Edit で、
+     *         `[mouse] swap_buttons = true` なら入れ替わる。
+     * @note メニュー(ツール切り替え・オブジェクト・書式)は入れ替えの対象外で、
+     *       常に右ボタンのクリックで開く。
      */
-    void onRightDragStart(Point screenPos);
+    MouseRole mouseRole(MouseButton button) const;
 
     /**
-     * @brief 右ドラッグ中の選択領域(とプレビュー)を更新する。
-     * @param[in] screenPos 現在位置(スクリーン座標)。
-     * @param[in] shift     Shift が押されているか。押されていれば選択領域を正方形にする
-     *                      (直線・矢印ツールを除く)。
-     */
-    void onRightDragMove(Point screenPos, bool shift = false);
-
-    /**
-     * @brief 右ドラッグを終了し、現在のツールを選択領域へ適用する。
-     * @param[in] screenPos 終了位置(スクリーン座標)。メニューの表示位置にもなる。
-     * @param[in] shift     Shift が押されているか。押されていれば選択領域を正方形にする
-     *                      (直線・矢印ツールを除く)。
-     * @note 移動量が閾値未満(= 単なる右クリック)なら適用せず、注釈の上なら
-     *       オブジェクトメニュー、そうでなければツール切り替えメニューを表示する。
-     */
-    void onRightDragEnd(Point screenPos, bool shift = false);
-
-    /**
-     * @brief 右ドラッグで実行される現在のツールを返す。
+     * @brief 編集ドラッグで実行される現在のツールを返す。
      * @return 現在のツール。
      */
     EditTool currentTool() const { return tool_; }
 
     /**
-     * @brief 左ドラッグによるパンを処理する。
-     * @param[in] dx X 方向の移動量(スクリーン px)。
-     * @param[in] dy Y 方向の移動量(スクリーン px)。
+     * @brief Shift の押し引きを処理する。
+     * @param[in] shift 押されているか。
+     * @return 編集ドラッグ中でプレビューを作り直したら true(呼び出し側はキーを
+     *         コマンドとして処理しないこと)。ドラッグ中でなければ false。
+     * @note マウスを止めたまま Shift を押し引きしても、正方形・真円のプレビューが
+     *       追従するようにするためのもの。
      */
-    void onDragPan(float dx, float dy);
+    bool onShiftChanged(bool shift);
 
     /**
      * @brief ポインタ移動を処理する。
      * @param[in] screenPos 現在位置(スクリーン座標)。
-     * @param[in] shift     Shift が押されているか。回転・リサイズのスナップに使う。
-     * @note 注釈ドラッグ中は移動・回転を適用する。それ以外はステータスバーの
+     * @param[in] shift     Shift が押されているか。回転・リサイズ・正方形のスナップに使う。
+     * @note ボタンを押したままの移動もここで処理する(パン、編集ドラッグの選択領域と
+     *       プレビュー、注釈の移動・回転・サイズ変更)。それ以外はステータスバーの
      *       座標・色表示を更新する。
      */
     void onMouseMove(Point screenPos, bool shift = false);
@@ -526,7 +557,73 @@ private:
     Point clampToImage(Point imagePos) const;
 
     /**
-     * @brief 右ドラッグ中のポインタ位置を選択領域の終点(画像座標)へ変換する。
+     * @brief 画像を平行移動して再描画を要求する。
+     * @param[in] dx X 方向の移動量(スクリーン px)。
+     * @param[in] dy Y 方向の移動量(スクリーン px)。
+     * @note パンのドラッグと Command::PanLeft 等のキー操作の共通処理。
+     */
+    void panBy(float dx, float dy);
+
+    /**
+     * @brief 押下位置がビューポート(画像の表示領域)の中かを返す。
+     * @param[in] screenPos 判定する位置(スクリーン座標)。
+     * @return 画像を表示中で、サイドバーもステータスバーも含まない領域なら true。
+     * @note 編集ドラッグとメニューの開始判定に使う(どちらも画像に対する操作なので、
+     *       UI 部品の上からは始めない)。
+     */
+    bool inViewportArea(Point screenPos) const;
+
+    /**
+     * @brief サイドバーのファイル名一覧のクリックを処理する。
+     * @param[in] screenPos クリック位置(スクリーン座標)。サイドバーの内側であること。
+     * @note 操作一覧の表示中は何もしない(クリックできる項目がない)。
+     */
+    void clickSidebarItem(Point screenPos);
+
+    /**
+     * @brief パン役のボタンの押下を処理する。
+     * @param[in] screenPos 押下位置(スクリーン座標)。
+     * @return 注釈のハンドル・本体、または編集中テキストの内側を掴んだら true。
+     *         false なら呼び出し元がパンを開始する。
+     */
+    bool beginPanOrSelect(Point screenPos);
+
+    /// @brief パン役のボタンの解放を処理する(注釈の移動・回転・サイズ変更を終了する)。
+    void endPanOrSelect();
+
+    /**
+     * @brief 編集役のボタンの押下を処理する(選択領域の開始)。
+     * @param[in] screenPos 開始位置(スクリーン座標)。画像外・サイドバー上は無視する。
+     */
+    void beginEditDrag(Point screenPos);
+
+    /**
+     * @brief 編集ドラッグ中の選択領域(とプレビュー)を更新する。
+     * @param[in] screenPos 現在位置(スクリーン座標)。
+     * @param[in] shift     Shift が押されているか。押されていれば選択領域を正方形にする
+     *                      (直線・矢印ツールを除く)。
+     */
+    void updateEditDrag(Point screenPos, bool shift);
+
+    /**
+     * @brief 編集ドラッグを終了し、現在のツールを選択領域へ適用する。
+     * @param[in] screenPos 終了位置(スクリーン座標)。
+     * @param[in] shift     Shift が押されているか(updateEditDrag と同じ)。
+     * @note 移動量が閾値未満(= 単なるクリック)なら何も作らない。メニューを出すかは
+     *       onMouseUp が決める(メニューは常に右クリック)。
+     */
+    void endEditDrag(Point screenPos, bool shift);
+
+    /**
+     * @brief 右クリック(ドラッグなし)のメニューを開く。
+     * @param[in] screenPos クリック位置(スクリーン座標)。メニューの表示位置になる。
+     * @note 注釈の上ならその注釈を選択してオブジェクトメニュー、そうでなければ
+     *       ツール切り替えメニューを出す。
+     */
+    void showPointerMenu(Point screenPos);
+
+    /**
+     * @brief 編集ドラッグ中のポインタ位置を選択領域の終点(画像座標)へ変換する。
      * @param[in] screenPos ポインタ位置(スクリーン座標)。
      * @param[in] shift     Shift が押されているか。
      * @return 画像内へクランプした終点。shift かつ正方形にできるツールなら、
@@ -604,12 +701,12 @@ private:
      */
     void setTool(EditTool tool);
 
-    /// @brief 現在のツールを選択領域へ適用する(右ドラッグの確定時)。
+    /// @brief 現在のツールを選択領域へ適用する(編集ドラッグの確定時)。
     void applyCurrentTool();
 
     /**
      * @brief 現在のツールが手書き(ペン・マーカー)かを返す。
-     * @return 手書きなら true。右ドラッグ中に軌跡を溜めるかの判定に使う。
+     * @return 手書きなら true。編集ドラッグ中に軌跡を溜めるかの判定に使う。
      */
     bool penToolActive() const;
 
@@ -628,11 +725,11 @@ private:
      */
     AnnotationSpec makeAnnotationSpec(AnnotationSpec::Kind kind) const;
 
-    /// @brief 右ドラッグ中のプレビュー注釈を選択領域から作り直す。
+    /// @brief 編集ドラッグ中のプレビュー注釈を選択領域から作り直す。
     void updatePreview();
 
     /**
-     * @brief 右ドラッグ中に実物の図形をプレビューとして描くかを返す。
+     * @brief 編集ドラッグ中に実物の図形をプレビューとして描くかを返す。
      * @return 描くなら true。トリミングとテキストは形が定まらないため false
      *         (代わりにラバーバンドを出す)。
      */
@@ -842,8 +939,18 @@ private:
     std::string message_;    ///< ステータスバー左側の通知(タイマーで消える。UTF-8)
     std::string hoverText_;  ///< ステータスバー右側(カーソル位置の座標・色。UTF-8)
 
+    // マウス操作の状態
+    /// 左右ボタンの役割(パンと編集)を入れ替える([mouse] swap_buttons)。
+    /// メニューは入れ替えの対象外で常に右クリック
+    bool swapMouseButtons_ = false;
+    bool panning_ = false;       ///< パン役のボタンでパン中か(何も掴まなかったとき)
+    Point lastPointerScreen_{};  ///< 最後のポインタ位置。パンの差分と Shift 再計算に使う
+    bool menuPressed_ = false;   ///< 右ボタンをメニューを開ける場所で押したか
+    Point menuPressScreen_{};    ///< 上記の押下位置(ドラッグ量の閾値判定用)
+
     // 編集(トリミング・図形・テキスト)の状態
-    static constexpr float kDragThresholdPx = 4.0f;  ///< これ未満の右ドラッグは無視(画面px)
+    /// これ未満の編集ドラッグは無視(画面px)。右クリックのメニュー判定にも使う
+    static constexpr float kDragThresholdPx = 4.0f;
     static constexpr size_t kUndoLimit = 10;         ///< undo 履歴の上限
     static constexpr float kHitTolerancePx = 4.0f;   ///< 注釈ヒットテストの許容(画面px)
     static constexpr float kRotationHandleOffsetPx = 20.0f;  ///< 選択枠上辺からハンドルまで
@@ -852,17 +959,17 @@ private:
     static constexpr float kResizeHandleSizePx = 7.0f;  ///< サイズ変更ハンドル(正方形)の一辺
     static constexpr float kResizeHandleHitPx = 8.0f;   ///< 同・ヒット判定の半径
     static constexpr float kAngleSnapDeg = 15.0f;       ///< Shift ドラッグ時のスナップ
-    bool selecting_ = false;  ///< 右ドラッグで領域選択中
+    bool selecting_ = false;  ///< 編集ドラッグで領域選択中
     Point selStartImage_{};   ///< 選択の始点(画像座標。ズーム中も不変)
     Point selEndImage_{};     ///< 選択の現在点(画像座標。ズーム中も不変)
     Point selStartScreen_{};  ///< ドラッグ量の閾値判定用
     bool edited_ = false;     ///< current_ に未保存の編集(トリミング・注釈)がある
-    EditTool tool_ = EditTool::Rect;  ///< 右ドラッグで実行するツール
+    EditTool tool_ = EditTool::Rect;  ///< 編集ドラッグで実行するツール
     /// トリミングは一度きりの操作なので、実行したらこのツールへ戻す(直前の図形ツール)
     EditTool toolAfterCrop_ = EditTool::Rect;
-    /// 右ドラッグ中のプレビュー。図形ツールのときだけ有効(Crop/Text はラバーバンドを出す)
+    /// 編集ドラッグ中のプレビュー。図形ツールのときだけ有効(Crop/Text はラバーバンドを出す)
     AnnotationSpec previewSpec_;
-    /// 手書きツールで右ドラッグ中に溜めている軌跡(画像座標)。確定時に注釈へ移す
+    /// 手書きツールで編集ドラッグ中に溜めている軌跡(画像座標)。確定時に注釈へ移す
     std::vector<Point> penPoints_;
     /// 軌跡へ点を足す最小間隔(画面px)。これ未満の動きは無視して点数を抑える
     static constexpr float kPenMinDistancePx = 2.0f;
@@ -888,7 +995,7 @@ private:
     TextEditBuffer textBuffer_;     ///< 編集中の文字列・キャレット・選択範囲
     bool textEditCreated_ = false;  ///< 新規作成中(空のまま終了したら注釈を消す)
     bool textEditCaretOn_ = true;   ///< キャレット点滅の表示相
-    bool textEditMouseSelect_ = false;  ///< 左ドラッグで選択範囲を広げている最中
+    bool textEditMouseSelect_ = false;  ///< ドラッグで選択範囲を広げている最中
     /// 右ボタンを選択範囲の上で押した。離した位置で書式メニューを出す(編集は確定しない)
     bool textStyleMenuPending_ = false;
     bool textUndoPushed_ = false;   ///< 編集中の undo 記録は最初の変更時の1回だけ

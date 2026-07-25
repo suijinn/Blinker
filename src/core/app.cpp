@@ -162,6 +162,8 @@ void App::applyConfig(const Config& config) {
         std::clamp(config.getInt("view", "sidebar_width", static_cast<int>(sidebarWidth_)), 120,
                    480));
     helpHintEnabled_ = config.getBool("view", "help_hint", helpHintEnabled_);
+    // パンと編集の左右を入れ替える(メニューは入れ替えず常に右クリック)
+    swapMouseButtons_ = config.getBool("mouse", "swap_buttons", swapMouseButtons_);
     editColorRGB_ = config.getColorRGB("edit", "color", editColorRGB_);
     editStrokeWidth_ = static_cast<float>(std::clamp(
         config.getInt("edit", "stroke_width", static_cast<int>(editStrokeWidth_)), 1, 100));
@@ -177,7 +179,7 @@ void App::applyConfig(const Config& config) {
     editBorderRGB_ = config.getColorRGB("edit", "border_color", editBorderRGB_);
     editBorderWidth_ = static_cast<float>(std::clamp(
         config.getInt("edit", "border_width", static_cast<int>(editBorderWidth_)), 0, 100));
-    // 起動時の(右ドラッグで実行される)ツール。未指定・未知の名前なら既定のまま
+    // 起動時の(編集ドラッグで実行される)ツール。未指定・未知の名前なら既定のまま
     if (const auto tool = toolFromName(config.get("edit", "tool"))) setTool(*tool);
     applyLayout();
 }
@@ -246,16 +248,16 @@ void App::execute(Command command) {
         onViewChanged();
         break;
     case Command::PanLeft:
-        onDragPan(kPanStepPx, 0);
+        panBy(kPanStepPx, 0);
         break;
     case Command::PanRight:
-        onDragPan(-kPanStepPx, 0);
+        panBy(-kPanStepPx, 0);
         break;
     case Command::PanUp:
-        onDragPan(0, kPanStepPx);
+        panBy(0, kPanStepPx);
         break;
     case Command::PanDown:
-        onDragPan(0, -kPanStepPx);
+        panBy(0, -kPanStepPx);
         break;
     case Command::RotateCW:
         viewport_.rotate(1);
@@ -381,7 +383,7 @@ void App::execute(Command command) {
         if (sidebarEnabled_) {
             sidebarMode_ = SidebarMode::Help;
             // ini 適用後のキーバインドから作る。開くたびに作り直すので設定変更にも追従する
-            helpLines_ = buildHelpLines(keymap_);
+            helpLines_ = buildHelpLines(keymap_, swapMouseButtons_);
             sidebarScroll_ = 0;
         }
         applyLayout();
@@ -458,20 +460,69 @@ void App::onWheel(float wheelNotches, Point screenPos) {
     onViewChanged();
 }
 
-bool App::onMouseDown(Point screenPos) {
+MouseRole App::mouseRole(MouseButton button) const {
+    // 既定は左がパン・右が編集。swap_buttons でこの 2 つの役割だけを入れ替える
+    const bool left = button == MouseButton::Left;
+    return left != swapMouseButtons_ ? MouseRole::Pan : MouseRole::Edit;
+}
+
+bool App::inViewportArea(Point screenPos) const {
+    if (!current_) return false;
+    const float barHeight = statusBarVisible() ? kStatusBarHeight : 0.0f;
+    return screenPos.x >= sidebarOffset() && screenPos.y < clientSize_.h - barHeight;
+}
+
+bool App::onMouseDown(MouseButton button, Point screenPos) {
+    lastPointerScreen_ = screenPos;
+    panning_ = false;
+    menuPressed_ = false;
+    // サイドバーは UI 部品なので左右の入れ替えの対象外。左クリックだけが項目へ移動し、
+    // 右クリックは何もしない(メニューも出さない)
     if (sidebarVisible() && screenPos.x < sidebarOffset()) {
-        // ステータスバー上(サイドバー領域外)はどちらの操作でもないため消費だけする
-        if (textEditing_) commitTextEdit();  // 画像切替の前に編集を確定する
-        if (sidebarMode_ == SidebarMode::Files && screenPos.y >= 0 &&
-            screenPos.y < sidebarViewHeight()) {
-            const size_t index =
-                static_cast<size_t>((screenPos.y + sidebarScroll_) / kSidebarItemHeight);
-            if (index < list_.size() && (list_.jumpTo(index) || clipboardImage_)) {
-                refreshCurrent();
-            }
-        }
+        if (button == MouseButton::Left) clickSidebarItem(screenPos);
         return true;  // サイドバー上のクリックはパン開始にしない
     }
+    if (button == MouseButton::Right) {
+        // メニューは入れ替えの対象外なので、役割にかかわらず右ボタンで開く。
+        // ここでは位置だけ覚え、ドラッグにならずに離されたら onMouseUp が開く
+        menuPressed_ = inViewportArea(screenPos);
+        menuPressScreen_ = screenPos;
+        // 編集中の選択範囲の上での右クリックは、確定せずに書式メニューを出す
+        if (textEditing_ && textEditIndex_ < annotations_.size() && !isComposing() &&
+            textBuffer_.hasSelection()) {
+            const Point imagePos = imageToScreen().inverted().apply(screenPos);
+            const float tolerance = kHitTolerancePx / std::max(viewport_.zoom(), 0.001f);
+            if (hitTestAnnotation(annotations_[textEditIndex_], imagePos, tolerance)) {
+                textStyleMenuPending_ = true;  // メニューはボタンを離した位置で出す
+                menuPressed_ = false;          // 通常のメニューは出さない
+                return true;
+            }
+        }
+    }
+    if (mouseRole(button) == MouseRole::Edit) {
+        beginEditDrag(screenPos);
+        return true;
+    }
+    const bool grabbed = beginPanOrSelect(screenPos);
+    panning_ = !grabbed;  // 何も掴まなかったらこのボタンのドラッグはパンになる
+    return grabbed;
+}
+
+void App::clickSidebarItem(Point screenPos) {
+    // ステータスバー上(サイドバー領域外)はどちらの操作でもないため何もしない
+    if (textEditing_) commitTextEdit();  // 画像切替の前に編集を確定する
+    if (sidebarMode_ != SidebarMode::Files || screenPos.y < 0 ||
+        screenPos.y >= sidebarViewHeight()) {
+        return;
+    }
+    const size_t index =
+        static_cast<size_t>((screenPos.y + sidebarScroll_) / kSidebarItemHeight);
+    if (index < list_.size() && (list_.jumpTo(index) || clipboardImage_)) {
+        refreshCurrent();
+    }
+}
+
+bool App::beginPanOrSelect(Point screenPos) {
     if (!current_) return false;
     const float barHeight = statusBarVisible() ? kStatusBarHeight : 0.0f;
     if (screenPos.y >= clientSize_.h - barHeight) return false;
@@ -541,7 +592,29 @@ bool App::onMouseDown(Point screenPos) {
     return false;
 }
 
-void App::onMouseUp() {
+void App::onMouseUp(MouseButton button, Point screenPos, bool shift) {
+    lastPointerScreen_ = screenPos;
+    // 書式メニューは押した時点で決まっている(編集を確定させずに出す)
+    if (button == MouseButton::Right && textStyleMenuPending_) {
+        textStyleMenuPending_ = false;
+        showTextStyleMenu(screenPos);
+        return;
+    }
+    if (mouseRole(button) == MouseRole::Edit) {
+        endEditDrag(screenPos, shift);
+    } else {
+        panning_ = false;
+        endPanOrSelect();
+    }
+    // メニューは入れ替えの対象外。右ボタンをドラッグせずに離したときだけ開く
+    if (button != MouseButton::Right || !menuPressed_) return;
+    menuPressed_ = false;
+    const float dx = screenPos.x - menuPressScreen_.x;
+    const float dy = screenPos.y - menuPressScreen_.y;
+    if (dx * dx + dy * dy < kDragThresholdPx * kDragThresholdPx) showPointerMenu(screenPos);
+}
+
+void App::endPanOrSelect() {
     textEditMouseSelect_ = false;
     // テキストの高さは内容で決まるため、リサイズ確定時に折り返し後の実寸へ揃える。
     // 編集中は利用者が決めた枠幅を保ちたいので高さだけ合わせる
@@ -586,22 +659,10 @@ bool App::onDoubleClick(Point screenPos) {
     return true;
 }
 
-void App::onRightDragStart(Point screenPos) {
-    if (!current_) return;
-    // 編集中の選択範囲の上での右クリックは、確定せずに書式メニューを出す
-    if (textEditing_ && textEditIndex_ < annotations_.size() && !isComposing() &&
-        textBuffer_.hasSelection()) {
-        const Point imagePos = imageToScreen().inverted().apply(screenPos);
-        const float tolerance = kHitTolerancePx / std::max(viewport_.zoom(), 0.001f);
-        if (hitTestAnnotation(annotations_[textEditIndex_], imagePos, tolerance)) {
-            textStyleMenuPending_ = true;  // メニューはボタンを離した位置で出す
-            return;
-        }
-    }
-    if (textEditing_) commitTextEdit();  // 右操作は編集の外側なので先に確定する
-    // サイドバー・ステータスバー上からは開始しない
-    const float barHeight = statusBarVisible() ? kStatusBarHeight : 0.0f;
-    if (screenPos.x < sidebarOffset() || screenPos.y >= clientSize_.h - barHeight) return;
+void App::beginEditDrag(Point screenPos) {
+    // サイドバー・ステータスバー上、画像がないときは開始しない
+    if (!inViewportArea(screenPos)) return;
+    if (textEditing_) commitTextEdit();  // 編集ドラッグは編集の外側なので先に確定する
     selecting_ = true;
     selStartScreen_ = screenPos;
     selStartImage_ = clampToImage(imageToScreen().inverted().apply(screenPos));
@@ -612,8 +673,7 @@ void App::onRightDragStart(Point screenPos) {
     host_.requestRedraw();
 }
 
-void App::onRightDragMove(Point screenPos, bool shift) {
-    if (!selecting_) return;
+void App::updateEditDrag(Point screenPos, bool shift) {
     selEndImage_ = dragEndImage(screenPos, shift);
     // 手書きは通過点を溜める(bbox ではなく軌跡そのものが図形になる)。
     // 間引きは画面上の見た目基準なので、ズームに応じて画像座標へ換算する
@@ -625,30 +685,16 @@ void App::onRightDragMove(Point screenPos, bool shift) {
     host_.requestRedraw();
 }
 
-void App::onRightDragEnd(Point screenPos, bool shift) {
-    if (textStyleMenuPending_) {
-        textStyleMenuPending_ = false;
-        showTextStyleMenu(screenPos);
-        return;
-    }
+void App::endEditDrag(Point screenPos, bool shift) {
     if (!selecting_) return;
     selecting_ = false;
     selEndImage_ = dragEndImage(screenPos, shift);
     const float dx = screenPos.x - selStartScreen_.x;
     const float dy = screenPos.y - selStartScreen_.y;
     if (dx * dx + dy * dy < kDragThresholdPx * kDragThresholdPx) {
-        // 単なる右クリック(移動量が小さい): 注釈の上ならオブジェクトメニュー、
-        // そうでなければツール切り替えメニューを出す
-        const Point imagePos = imageToScreen().inverted().apply(screenPos);
-        const float tolerance = kHitTolerancePx / std::max(viewport_.zoom(), 0.001f);
-        if (const auto hit = hitTestAnnotations(annotations_, imagePos, tolerance)) {
-            selected_ = hit;
-            host_.requestRedraw();
-            showObjectMenu(screenPos);
-        } else {
-            host_.requestRedraw();
-            showToolMenu(screenPos);
-        }
+        // 単なるクリック(移動量が小さい)なので何も作らない。プレビューを消すだけで、
+        // メニューを出すかは onMouseUp が決める(メニューは常に右クリック)
+        host_.requestRedraw();
         return;
     }
     // 事前に選んであるツールをそのまま適用する(メニューは出さない)。
@@ -657,6 +703,20 @@ void App::onRightDragEnd(Point screenPos, bool shift) {
     if (penToolActive()) appendPenPoint(penPoints_, selEndImage_, 0.01f);
     applyCurrentTool();
     host_.requestRedraw();
+}
+
+void App::showPointerMenu(Point screenPos) {
+    // 注釈の上ならオブジェクトメニュー、そうでなければツール切り替えメニューを出す
+    const Point imagePos = imageToScreen().inverted().apply(screenPos);
+    const float tolerance = kHitTolerancePx / std::max(viewport_.zoom(), 0.001f);
+    const auto hit = hitTestAnnotations(annotations_, imagePos, tolerance);
+    if (hit) selected_ = hit;
+    host_.requestRedraw();
+    if (hit) {
+        showObjectMenu(screenPos);
+    } else {
+        showToolMenu(screenPos);
+    }
 }
 
 void App::showToolMenu(Point screenPos) {
@@ -724,7 +784,7 @@ std::vector<MenuItem> App::buildEditMenu(std::vector<EditMenuEntry>& entries) co
         item.checked = checked;
         return item;
     };
-    // ツールは選ぶだけで、実際の適用は次の右ドラッグで行う。現在のツールにチェックが付く。
+    // ツールは選ぶだけで、実際の適用は次の編集ドラッグで行う。現在のツールにチェックが付く。
     // ini でキーを割り当てていれば、'\t' 区切りで右寄せのアクセラレータ表記として出る
     const auto tool = [&leaf, this](EditTool t) {
         std::string text(toolLabel(t));
@@ -1790,13 +1850,26 @@ AnnotationsView App::annotations() const {
     return view;
 }
 
-void App::onDragPan(float dx, float dy) {
+void App::panBy(float dx, float dy) {
     viewport_.panBy(dx, dy);
     host_.requestRedraw();
 }
 
+bool App::onShiftChanged(bool shift) {
+    if (!selecting_) return false;
+    updateEditDrag(lastPointerScreen_, shift);
+    return true;
+}
+
 void App::onMouseMove(Point screenPos, bool shift) {
-    // テキスト編集中の左ドラッグは範囲選択(キャレット側だけを動かす)
+    const float panDx = screenPos.x - lastPointerScreen_.x;
+    const float panDy = screenPos.y - lastPointerScreen_.y;
+    lastPointerScreen_ = screenPos;
+    // パン役のボタンで何も掴まずにドラッグしている間は画像を動かす
+    if (panning_) panBy(panDx, panDy);
+    // 編集ドラッグ中は選択領域とプレビューを更新する(ホバー表示の更新も続ける)
+    if (selecting_) updateEditDrag(screenPos, shift);
+    // テキスト編集中のドラッグは範囲選択(キャレット側だけを動かす)
     if (textEditMouseSelect_) {
         const Point imagePos = imageToScreen().inverted().apply(screenPos);
         textBuffer_.setCaret(textOffsetAt(imagePos), true);
@@ -2013,7 +2086,7 @@ StatusBarView App::statusBar() const {
     if (!message_.empty()) {
         bar.leftText = message_;
     } else if (current_) {
-        // 右ドラッグが何をするかは見た目に出ないので、現在のツールをここに出す
+        // 編集ドラッグが何をするかは見た目に出ないので、現在のツールをここに出す
         bar.leftText = std::format("{} x {} px  |  ツール: {}", current_->width,
                                    current_->height, toolLabel(tool_));
     } else if (loadFailed_) {

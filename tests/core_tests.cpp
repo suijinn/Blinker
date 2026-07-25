@@ -241,7 +241,7 @@ void testHelpLines() {
     CHECK(keysLabel(km, Command::ToggleHelp) == "F1");
     CHECK(keysLabel(km, Command::SelectToolArrow).empty());  // 既定では未割り当て
 
-    const std::vector<HelpLine> lines = buildHelpLines(km);
+    const std::vector<HelpLine> lines = buildHelpLines(km, false);
     const auto has = [&lines](std::string_view text) {
         return std::any_of(lines.begin(), lines.end(),
                            [text](const HelpLine& line) { return line.text == text; });
@@ -265,10 +265,25 @@ void testHelpLines() {
         return line.text.starts_with("矢印ツール");
     }));
 
+    // マウス操作の行は実際に効くボタンを出す(メニューは入れ替えないので右のまま)
+    CHECK(has("スクロール  左ドラッグ"));
+    CHECK(has("現在のツールを実行  右ドラッグ"));
+    CHECK(has("ツール・書式メニュー  余白で右クリック"));
+    const std::vector<HelpLine> swapped = buildHelpLines(km, true);
+    const auto hasSwapped = [&swapped](std::string_view text) {
+        return std::any_of(swapped.begin(), swapped.end(),
+                           [text](const HelpLine& line) { return line.text == text; });
+    };
+    CHECK(hasSwapped("スクロール  右ドラッグ"));
+    CHECK(hasSwapped("現在のツールを実行  左ドラッグ"));
+    CHECK(hasSwapped("正方形 / 真円で描く  Shift+左ドラッグ"));
+    CHECK(hasSwapped("図形・テキストを選択  右クリック"));
+    CHECK(hasSwapped("ツール・書式メニュー  余白で右クリック"));
+
     // ini でキーを変えたら一覧もそれに追従する(README のような固定テキストではない)
     Keymap custom = Keymap::defaults();
     custom.applyConfig({{"next", "N"}, {"tool_arrow", "A"}});
-    const std::vector<HelpLine> customLines = buildHelpLines(custom);
+    const std::vector<HelpLine> customLines = buildHelpLines(custom, false);
     const auto hasCustom = [&customLines](std::string_view text) {
         return std::any_of(customLines.begin(), customLines.end(),
                            [text](const HelpLine& line) { return line.text == text; });
@@ -284,7 +299,7 @@ void testHelpLines() {
     stripped.unbindCommand(Command::CopyPath);
     stripped.unbindCommand(Command::CopyFile);
     stripped.unbindCommand(Command::PasteImage);
-    const std::vector<HelpLine> strippedLines = buildHelpLines(stripped);
+    const std::vector<HelpLine> strippedLines = buildHelpLines(stripped, false);
     CHECK(std::none_of(strippedLines.begin(), strippedLines.end(),
                        [](const HelpLine& line) { return line.text == "ファイル"; }));
 }
@@ -802,8 +817,8 @@ constexpr Point kEmptySpot{600, 450};  // 画像・注釈の外(ツールメニ�
 void chooseInToolMenu(App& app, FakeHost& host, std::initializer_list<size_t> choices) {
     host.menuChoice = std::nullopt;  // menuQueue が尽きたらキャンセル扱いで閉じる
     host.menuQueue.assign(choices);
-    app.onRightDragStart(kEmptySpot);
-    app.onRightDragEnd(kEmptySpot);  // ドラッグなし = メニュー
+    app.onMouseDown(MouseButton::Right, kEmptySpot);
+    app.onMouseUp(MouseButton::Right, kEmptySpot);  // ドラッグなし = メニュー
 }
 
 class FakeFileSystem final : public IFileSystem {
@@ -1282,12 +1297,12 @@ void testAppSidebar() {
     app.execute(Command::ZoomFit);
 
     // クリックでジャンプ: scroll=0 で y=100 → index 4 (f05.png)
-    CHECK(app.onMouseDown({100, 100}));
+    CHECK(app.onMouseDown(MouseButton::Left, {100, 100}));
     CHECK(host.lastTitle.find("f05.png") == 0);
     // ビューポート上のクリックは消費しない(パン開始に回す)
-    CHECK(!app.onMouseDown({500, 300}));
+    CHECK(!app.onMouseDown(MouseButton::Left, {500, 300}));
     // サイドバー幅内でもステータスバーの高さでは消費のみ(ジャンプしない)
-    CHECK(app.onMouseDown({100, 590}));
+    CHECK(app.onMouseDown(MouseButton::Left, {100, 590}));
     CHECK(host.lastTitle.find("f05.png") == 0);
 
     // f05 のデコード完了を待って表示を確定させる(以降のチェックを決定的にする)
@@ -1307,7 +1322,7 @@ void testAppSidebar() {
     clipboard.pasteImage = pasted;
     app.execute(Command::PasteImage);
     CHECK(host.lastTitle.find("(クリップボード)") == 0);
-    CHECK(app.onMouseDown({100, 100}));  // index 4 = 現在項目
+    CHECK(app.onMouseDown(MouseButton::Left, {100, 100}));  // index 4 = 現在項目
     CHECK(host.lastTitle.find("f05.png") == 0);
     CHECK(app.currentImage() && app.currentImage()->width == 1);
 
@@ -1372,7 +1387,7 @@ void testAppHelpSidebar() {
 
     // 一覧上のクリックは画像を切り替えない(消費だけする)
     const std::string titleBefore = host.lastTitle;
-    CHECK(app.onMouseDown({100, 100}));
+    CHECK(app.onMouseDown(MouseButton::Left, {100, 100}));
     CHECK(host.lastTitle == titleBefore);
 
     // ホイールでスクロールでき、末尾・先頭でクランプされる
@@ -1774,8 +1789,8 @@ void testAppAnnotationObjects() {
     clipboard.pasteImage = source;
     app.execute(Command::PasteImage);
     CHECK(app.currentTool() == EditTool::Rect);  // 既定のツールは矩形
-    app.onRightDragStart({396, 283});
-    app.onRightDragEnd({400, 287});
+    app.onMouseDown(MouseButton::Right, {396, 283});
+    app.onMouseUp(MouseButton::Right, {400, 287});
     CHECK(host.menuCount == 0);  // ツールは決まっているのでメニューは出ない
     CHECK(app.annotations().specs->size() == 1);
     CHECK(app.annotations().selected.has_value());
@@ -1785,7 +1800,7 @@ void testAppAnnotationObjects() {
     CHECK(!app.annotations().selected.has_value());
 
     // 注釈の輪郭をクリックすると選択して移動ドラッグが始まる(クリックを消費しパンしない)
-    CHECK(app.onMouseDown({396, 283}));  // 画像 (0,0) = 矩形の角
+    CHECK(app.onMouseDown(MouseButton::Left, {396, 283}));  // 画像 (0,0) = 矩形の角
     CHECK(app.annotations().selected == std::optional<size_t>(0));
     app.onMouseMove({398, 285});  // +2px 移動
     {
@@ -1796,7 +1811,7 @@ void testAppAnnotationObjects() {
     }
     app.onMouseMove({397, 284});  // ドラッグ継続(+1px に戻す)
     CHECK(nearly(app.annotations().specs->front().p1.x, 1));
-    app.onMouseUp();
+    app.onMouseUp(MouseButton::Left);
 
     // ドラッグ1回の undo は1段。取り消しで元の位置に戻り選択は解除される
     app.execute(Command::Undo);
@@ -1804,16 +1819,16 @@ void testAppAnnotationObjects() {
     CHECK(!app.annotations().selected.has_value());
 
     // 何もない場所のクリックは消費しない(選択解除してパンに回る)
-    CHECK(app.onMouseDown({396, 283}));
-    app.onMouseUp();
-    CHECK(!app.onMouseDown({600, 450}));
+    CHECK(app.onMouseDown(MouseButton::Left, {396, 283}));
+    app.onMouseUp(MouseButton::Left);
+    CHECK(!app.onMouseDown(MouseButton::Left, {600, 450}));
     CHECK(!app.annotations().selected.has_value());
-    app.onMouseUp();
+    app.onMouseUp(MouseButton::Left);
 
     // サイズ変更: 選択中の右下ハンドル(画像 (4,4) = スクリーン (400,287))をドラッグ
-    CHECK(app.onMouseDown({396, 283}));  // まず本体クリックで選択
-    app.onMouseUp();
-    CHECK(app.onMouseDown({400, 287}));  // 右下ハンドルを掴む
+    CHECK(app.onMouseDown(MouseButton::Left, {396, 283}));  // まず本体クリックで選択
+    app.onMouseUp(MouseButton::Left);
+    CHECK(app.onMouseDown(MouseButton::Left, {400, 287}));  // 右下ハンドルを掴む
     app.onMouseMove({402, 289});
     {
         const AnnotationsView view = app.annotations();
@@ -1821,20 +1836,20 @@ void testAppAnnotationObjects() {
         CHECK(nearly(spec.p1.x, 0) && nearly(spec.p1.y, 0));
         CHECK(nearly(spec.p2.x, 6) && nearly(spec.p2.y, 6));
     }
-    app.onMouseUp();
+    app.onMouseUp(MouseButton::Left);
     app.execute(Command::Undo);  // リサイズ1回で undo 1段
     CHECK(nearly(app.annotations().specs->front().p2.x, 4));
     CHECK(!app.annotations().selected.has_value());
 
     // 回転ハンドル(枠上辺中央の 20px 上)のドラッグで回転する
-    CHECK(app.onMouseDown({396, 283}));  // 選択し直す
-    app.onMouseUp();
-    CHECK(app.onMouseDown({398, 263}));  // 中心 (398,285)、ハンドル (398,263)
+    CHECK(app.onMouseDown(MouseButton::Left, {396, 283}));  // 選択し直す
+    app.onMouseUp(MouseButton::Left);
+    CHECK(app.onMouseDown(MouseButton::Left, {398, 263}));  // 中心 (398,285)、ハンドル (398,263)
     app.onMouseMove({420, 285});         // 中心の真右 → 90°
     CHECK(nearly(app.annotations().specs->front().angleDeg, 90));
     app.onMouseMove({421, 287}, true);   // Shift で 15° 単位にスナップ
     CHECK(nearly(std::fmod(app.annotations().specs->front().angleDeg, 15.0f), 0));
-    app.onMouseUp();
+    app.onMouseUp(MouseButton::Left);
     app.execute(Command::Undo);
     CHECK(nearly(app.annotations().specs->front().angleDeg, 0));
 
@@ -1842,20 +1857,20 @@ void testAppAnnotationObjects() {
     // 0 削除, 1-8 回転 {0,15,30,45,90,135,180,270}, 9-15 太さ {1,2,3,5,8,12,20}, 16 色,
     // 17-21 塗りつぶし {0,64,128,191,255}, 22 塗りつぶしの色
     host.menuChoice = 5;  // 90°
-    app.onRightDragStart({396, 283});
-    app.onRightDragEnd({397, 283});
+    app.onMouseDown(MouseButton::Right, {396, 283});
+    app.onMouseUp(MouseButton::Right, {397, 283});
     CHECK(countMenuLeaves(host.lastMenuItems) == 23);
     CHECK(nearly(app.annotations().specs->front().angleDeg, 90));
 
     host.menuChoice = 13;  // 太さ 8px
-    app.onRightDragStart({396, 283});
-    app.onRightDragEnd({396, 283});
+    app.onMouseDown(MouseButton::Right, {396, 283});
+    app.onMouseUp(MouseButton::Right, {396, 283});
     CHECK(nearly(app.annotations().specs->front().strokeWidth, 8));
 
     host.colorChoice = 0x123456;
     host.menuChoice = 16;  // 色の変更
-    app.onRightDragStart({396, 283});
-    app.onRightDragEnd({396, 283});
+    app.onMouseDown(MouseButton::Right, {396, 283});
+    app.onMouseUp(MouseButton::Right, {396, 283});
     CHECK(app.annotations().specs->front().colorRGB == 0x123456);
 
     // テキスト注釈はその場で入力して追加し、ダブルクリックで再編集する
@@ -1864,8 +1879,8 @@ void testAppAnnotationObjects() {
     rasterizer.overlayWidth = 24;
     rasterizer.overlayHeight = 44;  // 実測境界 20x40(リサイズテストでハンドルを離すため縦長)
     const int measureCount = rasterizer.rasterizeCount;
-    app.onRightDragStart({401, 286});  // 画像 (5,3)
-    app.onRightDragEnd({404, 290});    // 閾値以上のドラッグでテキストボックスができる
+    app.onMouseDown(MouseButton::Right, {401, 286});  // 画像 (5,3)
+    app.onMouseUp(MouseButton::Right, {404, 290});    // 閾値以上のドラッグでテキストボックスができる
     CHECK(app.isTextEditing());        // 空のテキストボックスができ、その場で入力できる
     CHECK(host.textEditing);           // host には編集開始が伝わる (IME 有効化)
     CHECK(rasterizer.rasterizeCount == measureCount);  // 内容が空の間は実測しない
@@ -1897,8 +1912,8 @@ void testAppAnnotationObjects() {
     // トリミング後も注釈はオブジェクトのまま維持され、座標が平行移動する
     chooseInToolMenu(app, host, {0});  // トリミング
     CHECK(app.currentTool() == EditTool::Crop);
-    app.onRightDragStart({398, 285});  // 画像 (2,2)
-    app.onRightDragEnd({402, 289});    // 画像 (6,6) → 4x4 に切り出し
+    app.onMouseDown(MouseButton::Right, {398, 285});  // 画像 (2,2)
+    app.onMouseUp(MouseButton::Right, {402, 289});    // 画像 (6,6) → 4x4 に切り出し
     CHECK(app.currentImage()->width == 4);
     CHECK(app.annotations().specs->size() == 2);
     CHECK(nearly(app.annotations().specs->front().p1.x, -2));  // (0,0) → (-2,-2)
@@ -1917,15 +1932,15 @@ void testAppAnnotationObjects() {
 
     // テキストのリサイズ: 右ハンドルで折り返し幅を変え、確定時に実寸へ揃える。
     // テキストは (5,3)-(25,43)、右ハンドルは画像 (25,23) = スクリーン (421,306)
-    CHECK(app.onMouseDown({402, 288}));  // 本体クリックで選択(最前面のテキスト)
-    app.onMouseUp();
+    CHECK(app.onMouseDown(MouseButton::Left, {402, 288}));  // 本体クリックで選択(最前面のテキスト)
+    app.onMouseUp(MouseButton::Left);
     CHECK(app.annotations().selected == std::optional<size_t>(1));
-    CHECK(app.onMouseDown({421, 306}));
+    CHECK(app.onMouseDown(MouseButton::Left, {421, 306}));
     const int beforeResize = rasterizer.rasterizeCount;
     app.onMouseMove({431, 306});
     CHECK(nearly(app.annotations().specs->back().p2.x, 35));  // ドラッグ中は掴んだ幅のまま
     CHECK(rasterizer.rasterizeCount == beforeResize);
-    app.onMouseUp();  // 確定時に折り返し後の実寸を測り直す
+    app.onMouseUp(MouseButton::Left);  // 確定時に折り返し後の実寸を測り直す
     CHECK(rasterizer.rasterizeCount == beforeResize + 1);
     CHECK(nearly(app.annotations().specs->back().p2.x, 25));
     CHECK(nearly(app.annotations().specs->back().p2.y, 43));
@@ -1943,9 +1958,9 @@ void testAppEdit() {
     app.onResize(800, 600);
 
     // 画像がないときは選択を開始しない
-    app.onRightDragStart({400, 300});
+    app.onMouseDown(MouseButton::Right, {400, 300});
     CHECK(!app.selection().visible);
-    app.onRightDragEnd({500, 400});
+    app.onMouseUp(MouseButton::Right, {500, 400});
     CHECK(host.menuCount == 0);
 
     // 8x8 の不透明青画像を貼り付けて編集対象にする。
@@ -1978,8 +1993,8 @@ void testAppEdit() {
 
     // 既定のツールは矩形。ドラッグ中はラバーバンドではなく実物のプレビューが出る
     CHECK(app.currentTool() == EditTool::Rect);
-    app.onRightDragStart({396, 283});
-    app.onRightDragMove({400, 287});
+    app.onMouseDown(MouseButton::Right, {396, 283});
+    app.onMouseMove({400, 287});
     {
         const AnnotationsView view = app.annotations();
         CHECK(view.preview != nullptr);
@@ -1994,11 +2009,11 @@ void testAppEdit() {
     CHECK(app.annotations().specs->empty());
 
     // Shift ドラッグは正方形になる。画像 (0,0)-(6,5) → 短いほう(5)に合わせて (5,5)
-    app.onRightDragStart({396, 283});
-    app.onRightDragMove({402, 288}, true);
+    app.onMouseDown(MouseButton::Right, {396, 283});
+    app.onMouseMove({402, 288}, true);
     CHECK(nearly(app.annotations().preview->p2.x, 5));
     CHECK(nearly(app.annotations().preview->p2.y, 5));
-    app.onRightDragEnd({402, 288}, true);
+    app.onMouseUp(MouseButton::Right, {402, 288}, true);
     CHECK(app.annotations().specs->size() == 1);
     {
         const AnnotationSpec spec = app.annotations().specs->back();
@@ -2008,8 +2023,8 @@ void testAppEdit() {
 
     // 真円も同じ経路。左上向きのドラッグでも符号を保つ(画像 (6,6) → (1,1))
     app.execute(Command::SelectToolEllipse);
-    app.onRightDragStart({402, 289});
-    app.onRightDragEnd({397, 284}, true);
+    app.onMouseDown(MouseButton::Right, {402, 289});
+    app.onMouseUp(MouseButton::Right, {397, 284}, true);
     {
         const AnnotationSpec spec = app.annotations().specs->back();
         CHECK(spec.kind == AnnotationSpec::Kind::Ellipse);
@@ -2019,8 +2034,8 @@ void testAppEdit() {
 
     // 直線・矢印は 45 度固定になってしまうので正方形化しない
     app.execute(Command::SelectToolLine);
-    app.onRightDragStart({396, 283});
-    app.onRightDragEnd({402, 288}, true);
+    app.onMouseDown(MouseButton::Right, {396, 283});
+    app.onMouseUp(MouseButton::Right, {402, 288}, true);
     {
         const AnnotationSpec spec = app.annotations().specs->back();
         CHECK(spec.kind == AnnotationSpec::Kind::Line);
@@ -2035,8 +2050,8 @@ void testAppEdit() {
     // 末端項目: ツール9種 + 太さ7 + 文字サイズ7 + フォント9 + 色1 + 塗りつぶし(5+色1)
     // + 枠線(6+色1) = 46(回転角度はオブジェクト側にある)
     host.menuChoice = std::nullopt;  // キャンセルするので何も起きない
-    app.onRightDragStart({400, 300});
-    app.onRightDragEnd({402, 301});
+    app.onMouseDown(MouseButton::Right, {400, 300});
+    app.onMouseUp(MouseButton::Right, {402, 301});
     CHECK(host.menuCount == 1);
     CHECK(countMenuLeaves(host.lastMenuItems) == 46);
     CHECK(app.currentTool() == EditTool::Rect);
@@ -2047,8 +2062,8 @@ void testAppEdit() {
     // トリミングとテキストは形が定まらないのでラバーバンドを出す
     chooseInToolMenu(app, host, {0});  // トリミング
     CHECK(app.currentTool() == EditTool::Crop);
-    app.onRightDragStart({396, 283});
-    app.onRightDragMove({400, 287});
+    app.onMouseDown(MouseButton::Right, {396, 283});
+    app.onMouseMove({400, 287});
     {
         const SelectionView sel = app.selection();
         CHECK(sel.visible);
@@ -2058,7 +2073,7 @@ void testAppEdit() {
     }
 
     // トリミング: 画像座標 (0,0)-(4,4) → 4x4。一度きりの操作なので実行後は矩形へ戻る
-    app.onRightDragEnd({400, 287});
+    app.onMouseUp(MouseButton::Right, {400, 287});
     CHECK(app.currentImage()->width == 4 && app.currentImage()->height == 4);
     CHECK(app.currentTool() == EditTool::Rect);
     CHECK(app.statusBar().leftText == "4 x 4 px  |  ツール: 矩形");
@@ -2074,8 +2089,8 @@ void testAppEdit() {
     app.onTimer();
 
     // 矩形: 画像へは焼き込まず注釈オブジェクトとして追加され、追加直後は選択状態になる
-    app.onRightDragStart({396, 283});
-    app.onRightDragEnd({400, 287});
+    app.onMouseDown(MouseButton::Right, {396, 283});
+    app.onMouseUp(MouseButton::Right, {400, 287});
     CHECK(rasterizer.rasterizeCount == 0);  // 図形の追加ではラスタライズしない
     {
         const AnnotationsView view = app.annotations();
@@ -2107,8 +2122,8 @@ void testAppEdit() {
 
     // テキスト: 空のまま確定すると追加されない。入力があれば実測して追加される
     chooseInToolMenu(app, host, {8});
-    app.onRightDragStart({396, 283});
-    app.onRightDragEnd({400, 287});
+    app.onMouseDown(MouseButton::Right, {396, 283});
+    app.onMouseUp(MouseButton::Right, {400, 287});
     CHECK(app.isTextEditing());
     CHECK(app.annotations().specs->size() == 2);  // 編集中は空のテキストボックスが入る
     app.onKey({KeyCode::Escape});
@@ -2116,8 +2131,8 @@ void testAppEdit() {
     CHECK(app.annotations().specs->size() == 1);  // 空の箱は残さない
     rasterizer.overlayWidth = 24;   // 実測境界: 24-4 x 12-4 (テキスト余白 2px x 両側)
     rasterizer.overlayHeight = 12;
-    app.onRightDragStart({396, 283});
-    app.onRightDragEnd({400, 287});
+    app.onMouseDown(MouseButton::Right, {396, 283});
+    app.onMouseUp(MouseButton::Right, {400, 287});
     app.insertText("メモ");
     app.onKey({KeyCode::Escape});
     CHECK(rasterizer.rasterizeCount == 3);  // 高さ合わせ + 確定時の実測
@@ -2136,14 +2151,14 @@ void testAppEdit() {
     // {12,14,18,24,36,48,72}, 20-27 フォント, 28 色
     chooseInToolMenu(app, host, {13 /*太さ8px*/, 1 /*矩形*/});
     CHECK(host.menuQueue.empty());
-    app.onRightDragStart({396, 283});
-    app.onRightDragEnd({400, 287});
+    app.onMouseDown(MouseButton::Right, {396, 283});
+    app.onMouseUp(MouseButton::Right, {400, 287});
     CHECK(nearly(app.annotations().specs->back().strokeWidth, 8));
 
     // 文字サイズ 24px + 複数行テキスト。変更済みの設定も引き継がれる
     chooseInToolMenu(app, host, {19 /*文字24px*/, 8 /*テキスト*/});
-    app.onRightDragStart({396, 283});
-    app.onRightDragEnd({400, 287});
+    app.onMouseDown(MouseButton::Right, {396, 283});
+    app.onMouseUp(MouseButton::Right, {400, 287});
     app.insertText("1行目");
     app.onKey({KeyCode::Enter});  // 編集中の Enter は改行
     app.insertText("2行目");
@@ -2154,15 +2169,15 @@ void testAppEdit() {
     // 色の変更: ダイアログの結果が以降の編集に使われる。キャンセルなら元のまま
     host.colorChoice = 0x00CC66;
     chooseInToolMenu(app, host, {32 /*色*/, 4 /*直線*/});
-    app.onRightDragStart({396, 283});
-    app.onRightDragEnd({400, 287});
+    app.onMouseDown(MouseButton::Right, {396, 283});
+    app.onMouseUp(MouseButton::Right, {400, 287});
     CHECK(host.colorPickerCount == 1);
     CHECK(host.lastColorPickerInitial == 0xFF3B30);
     CHECK(app.annotations().specs->back().colorRGB == 0x00CC66);
     host.colorChoice = std::nullopt;
     chooseInToolMenu(app, host, {32 /*色 (キャンセル)*/, 4 /*直線*/});
-    app.onRightDragStart({396, 283});
-    app.onRightDragEnd({400, 287});
+    app.onMouseDown(MouseButton::Right, {396, 283});
+    app.onMouseUp(MouseButton::Right, {400, 287});
     CHECK(host.colorPickerCount == 2);
     CHECK(app.annotations().specs->back().colorRGB == 0x00CC66);
 
@@ -2173,21 +2188,21 @@ void testAppEdit() {
     CHECK(!app.selection().visible);
     CHECK(app.currentTool() == EditTool::Line);  // 直前のツールのまま
     chooseInToolMenu(app, host, {1 /*矩形*/});
-    app.onRightDragStart({396, 283});
-    app.onRightDragEnd({400, 287});
+    app.onMouseDown(MouseButton::Right, {396, 283});
+    app.onMouseUp(MouseButton::Right, {400, 287});
     CHECK(nearly(app.annotations().specs->back().strokeWidth, 3));  // 3px に戻っている
 
     // 塗りつぶし: 末端 index 33-37 が不透明度 {0,64,128,191,255}、38 が塗りつぶしの色。
     // 色を選ぶと塗りなしのままにならないよう不透明で塗り始める
     chooseInToolMenu(app, host, {35 /*不透明度 128*/, 1 /*矩形*/});
-    app.onRightDragStart({396, 283});
-    app.onRightDragEnd({400, 287});
+    app.onMouseDown(MouseButton::Right, {396, 283});
+    app.onMouseUp(MouseButton::Right, {400, 287});
     CHECK(app.annotations().specs->back().fillAlpha == 128);
     CHECK(app.annotations().specs->back().fillRGB == 0xFFFFFF);  // 既定は白
     host.colorChoice = 0x3366FF;
     chooseInToolMenu(app, host, {33 /*塗りなしへ戻す*/, 38 /*塗りつぶしの色*/, 2 /*楕円*/});
-    app.onRightDragStart({396, 283});
-    app.onRightDragEnd({400, 287});
+    app.onMouseDown(MouseButton::Right, {396, 283});
+    app.onMouseUp(MouseButton::Right, {400, 287});
     {
         const AnnotationSpec& spec = app.annotations().specs->back();
         CHECK(spec.kind == AnnotationSpec::Kind::Ellipse);
@@ -2196,12 +2211,12 @@ void testAppEdit() {
     }
 
     // オブジェクトメニューからも塗りつぶしを変えられる (17-21 不透明度, 22 色)
-    CHECK(app.onMouseDown({398, 285}));  // 塗ってあるので内部クリックで選択できる
-    app.onMouseUp();
+    CHECK(app.onMouseDown(MouseButton::Left, {398, 285}));  // 塗ってあるので内部クリックで選択できる
+    app.onMouseUp(MouseButton::Left);
     CHECK(app.annotations().selected.has_value());
     host.menuChoice = 19;  // 不透明度 128
-    app.onRightDragStart({398, 285});
-    app.onRightDragEnd({398, 285});
+    app.onMouseDown(MouseButton::Right, {398, 285});
+    app.onMouseUp(MouseButton::Right, {398, 285});
     CHECK(app.annotations().specs->back().fillAlpha == 128);
     app.execute(Command::Undo);
     CHECK(app.annotations().specs->back().fillAlpha == 255);
@@ -2212,8 +2227,8 @@ void testAppEdit() {
     chooseInToolMenu(app, host, {41 /*枠線 2px*/, 8 /*テキスト*/});
     rasterizer.overlayWidth = 24;
     rasterizer.overlayHeight = 12;
-    app.onRightDragStart({396, 283});
-    app.onRightDragEnd({400, 287});
+    app.onMouseDown(MouseButton::Right, {396, 283});
+    app.onMouseUp(MouseButton::Right, {400, 287});
     app.insertText("枠");
     app.onKey({KeyCode::Escape});
     {
@@ -2227,8 +2242,8 @@ void testAppEdit() {
     rasterizer.ok = false;
     chooseInToolMenu(app, host, {8 /*テキスト*/});
     const size_t countBeforeFail = app.annotations().specs->size();
-    app.onRightDragStart({396, 283});
-    app.onRightDragEnd({400, 287});
+    app.onMouseDown(MouseButton::Right, {396, 283});
+    app.onMouseUp(MouseButton::Right, {400, 287});
     app.insertText("失敗するテキスト");
     app.onKey({KeyCode::Escape});
     CHECK(app.statusBar().leftText == "描画に失敗しました");
@@ -2596,8 +2611,8 @@ void testAppTextEditing() {
 
     // テキストボックスを作って入力する
     chooseInToolMenu(app, host, {8});  // テキストツールへ切り替える
-    app.onRightDragStart(screenOf(10, 10));
-    app.onRightDragEnd(screenOf(50, 30));
+    app.onMouseDown(MouseButton::Right, screenOf(10, 10));
+    app.onMouseUp(MouseButton::Right, screenOf(50, 30));
     CHECK(app.isTextEditing());
     app.insertText("abcdef");
     CHECK(app.annotations().specs->back().text == "abcdef");
@@ -2641,10 +2656,10 @@ void testAppTextEditing() {
     // 枠内クリックでキャレットが動き、ドラッグで範囲選択できる
     app.onKey({KeyChord{static_cast<KeyCode>('A'), true, false, false}});
     app.insertText("0123456789");
-    app.onMouseDown(screenOf(10 + 25, 15));  // 枠内 2.5 文字目 → 境界 3
+    app.onMouseDown(MouseButton::Left, screenOf(10 + 25, 15));  // 枠内 2.5 文字目 → 境界 3
     CHECK(app.isTextEditing());
     app.onMouseMove(screenOf(10 + 55, 15));  // 5.5 文字目 → 境界 6
-    app.onMouseUp();
+    app.onMouseUp(MouseButton::Left);
     app.onKey({KeyChord{static_cast<KeyCode>('C'), true, false, false}});
     CHECK(clipboard.lastText == "345");  // [3,6) の 3 文字
 
@@ -2715,7 +2730,7 @@ void testAppTextEditing() {
     CHECK(app.annotations().textEdit.caretVisible != before);
 
     // 枠の外のクリックで確定して編集が終わる
-    app.onMouseDown(screenOf(90, 90));
+    app.onMouseDown(MouseButton::Left, screenOf(90, 90));
     CHECK(!app.isTextEditing());
     CHECK(!host.textEditing);
     CHECK(app.annotations().specs->back().text == "0123456789");
@@ -2725,16 +2740,16 @@ void testAppTextEditing() {
 
     // 編集中の Ctrl+Z は編集開始前へ戻す(新規作成なら注釈ごと消える)
     const size_t countBeforeUndo = app.annotations().specs->size();
-    app.onRightDragStart(screenOf(10, 60));  // ツールはテキストのまま(切り替え不要)
-    app.onRightDragEnd(screenOf(50, 80));
+    app.onMouseDown(MouseButton::Right, screenOf(10, 60));  // ツールはテキストのまま(切り替え不要)
+    app.onMouseUp(MouseButton::Right, screenOf(50, 80));
     app.insertText("捨てる");
     app.onKey({KeyChord{static_cast<KeyCode>('Z'), true, false, false}});
     CHECK(!app.isTextEditing());
     CHECK(app.annotations().specs->size() == countBeforeUndo);
 
     // 画像が切り替わると編集は破棄され、host にも終了が伝わる
-    app.onRightDragStart(screenOf(10, 60));
-    app.onRightDragEnd(screenOf(50, 80));
+    app.onMouseDown(MouseButton::Right, screenOf(10, 60));
+    app.onMouseUp(MouseButton::Right, screenOf(50, 80));
     app.insertText("破棄される");
     CHECK(app.isTextEditing());
     fs.files = {"a.png"};
@@ -2772,8 +2787,8 @@ void testAppTextStyles() {
     };
 
     chooseInToolMenu(app, host, {8});  // テキストツールへ切り替える
-    app.onRightDragStart(screenOf(10, 10));
-    app.onRightDragEnd(screenOf(50, 30));
+    app.onMouseDown(MouseButton::Right, screenOf(10, 10));
+    app.onMouseUp(MouseButton::Right, screenOf(50, 30));
     app.insertText("abcdef");
 
     // Ctrl+B は選択部分だけを太字にする(選択が無ければ何も起きない)
@@ -2803,8 +2818,8 @@ void testAppTextStyles() {
     // 選択範囲の上での右クリックは編集を確定せず、書式メニューを出す
     const int menusBefore = host.menuCount;
     host.menuChoice = std::nullopt;  // キャンセル
-    app.onRightDragStart(screenOf(20, 15));
-    app.onRightDragEnd(screenOf(20, 15));
+    app.onMouseDown(MouseButton::Right, screenOf(20, 15));
+    app.onMouseUp(MouseButton::Right, screenOf(20, 15));
     CHECK(app.isTextEditing());  // 右クリックで編集が終わらない
     CHECK(host.menuCount == menusBefore + 1);
     // 末端 index: 0-2 太字・斜体・下線, 3-11 フォント(候補9種), 12 文字色
@@ -2815,8 +2830,8 @@ void testAppTextStyles() {
 
     // メニューから斜体を選ぶと、選択部分だけ斜体になる(下線はそのまま)
     host.menuChoice = 1;  // 斜体
-    app.onRightDragStart(screenOf(20, 15));
-    app.onRightDragEnd(screenOf(20, 15));
+    app.onMouseDown(MouseButton::Right, screenOf(20, 15));
+    app.onMouseUp(MouseButton::Right, screenOf(20, 15));
     CHECK((app.annotations().specs->back().styles[0] ==
           TextStyleRun{0, 3, false, true, true, false, 0}));
     app.onKey(ctrl('I'));  // 斜体を戻して以降のテストを素直にする
@@ -2824,8 +2839,8 @@ void testAppTextStyles() {
     // メニューから文字色を選ぶと、選択部分だけ色が付く(下線はそのまま)
     host.menuChoice = 12;  // 文字色...
     host.colorChoice = 0x00FF00;
-    app.onRightDragStart(screenOf(20, 15));
-    app.onRightDragEnd(screenOf(20, 15));
+    app.onMouseDown(MouseButton::Right, screenOf(20, 15));
+    app.onMouseUp(MouseButton::Right, screenOf(20, 15));
     CHECK(app.annotations().specs->back().styles.size() == 1);
     CHECK((app.annotations().specs->back().styles[0] ==
           TextStyleRun{0, 3, false, false, true, true, 0x00FF00}));
@@ -2834,8 +2849,8 @@ void testAppTextStyles() {
 
     // メニューからフォントを選ぶと選択部分だけ書体が変わる(他の書式・全体のフォントは不変)
     host.menuChoice = 6;  // フォント: 3 游ゴシック, 4 游ゴシック UI, 5 游明朝, 6 メイリオ
-    app.onRightDragStart(screenOf(20, 15));
-    app.onRightDragEnd(screenOf(20, 15));
+    app.onMouseDown(MouseButton::Right, screenOf(20, 15));
+    app.onMouseUp(MouseButton::Right, screenOf(20, 15));
     CHECK(app.annotations().specs->back().styles.size() == 1);
     CHECK((app.annotations().specs->back().styles[0] ==
           TextStyleRun{0, 3, false, false, true, true, 0x00FF00, "Meiryo"}));
@@ -2843,8 +2858,8 @@ void testAppTextStyles() {
 
     // 見出しとチェックは選択範囲に付いているフォントに追従する
     host.menuChoice = std::nullopt;
-    app.onRightDragStart(screenOf(20, 15));
-    app.onRightDragEnd(screenOf(20, 15));
+    app.onMouseDown(MouseButton::Right, screenOf(20, 15));
+    app.onMouseUp(MouseButton::Right, screenOf(20, 15));
     {
         const MenuItem* family = findMenuItem(host.lastMenuItems, "フォント (");
         CHECK(family != nullptr);
@@ -2857,8 +2872,8 @@ void testAppTextStyles() {
 
     // 注釈全体と同じフォントを選ぶと指定が外れる(他の書式は残る)
     host.menuChoice = 3;  // 游ゴシック = 注釈全体のフォント
-    app.onRightDragStart(screenOf(20, 15));
-    app.onRightDragEnd(screenOf(20, 15));
+    app.onMouseDown(MouseButton::Right, screenOf(20, 15));
+    app.onMouseUp(MouseButton::Right, screenOf(20, 15));
     CHECK((app.annotations().specs->back().styles[0] ==
           TextStyleRun{0, 3, false, false, true, true, 0x00FF00}));
 
@@ -2873,14 +2888,14 @@ void testAppTextStyles() {
 
     // 枠の外での右クリックは従来どおり編集を確定する
     host.menuChoice = std::nullopt;
-    app.onRightDragStart(screenOf(90, 90));
-    app.onRightDragEnd(screenOf(90, 90));
+    app.onMouseDown(MouseButton::Right, screenOf(90, 90));
+    app.onMouseUp(MouseButton::Right, screenOf(90, 90));
     CHECK(!app.isTextEditing());
 
     // テキスト注釈を「選択中」の Ctrl+B は、サイドバー開閉ではなく全体の太字トグル
     CHECK(!app.sidebar().visible);
-    CHECK(app.onMouseDown(screenOf(20, 15)));  // 編集はせず選択だけ
-    app.onMouseUp();
+    CHECK(app.onMouseDown(MouseButton::Left, screenOf(20, 15)));  // 編集はせず選択だけ
+    app.onMouseUp(MouseButton::Left);
     CHECK(!app.isTextEditing());
     CHECK(app.annotations().selected.has_value());
     const size_t textBytes = app.annotations().specs->back().text.size();
@@ -2935,8 +2950,8 @@ void testAppFontFamily() {
     const auto screenOf = [&toScreen](float x, float y) { return toScreen.apply({x, y}); };
     // テキストを 1 つ作って確定する
     const auto addText = [&](const char* body) {
-        app.onRightDragStart(screenOf(10, 10));
-        app.onRightDragEnd(screenOf(50, 30));
+        app.onMouseDown(MouseButton::Right, screenOf(10, 10));
+        app.onMouseUp(MouseButton::Right, screenOf(50, 30));
         app.insertText(body);
         app.onKey({KeyCode::Escape});
     };
@@ -2960,11 +2975,11 @@ void testAppFontFamily() {
     // オブジェクトメニュー(テキスト)の末端 index:
     // 0 編集, 1 削除, 2-9 回転, 10-16 文字サイズ, 17-25 フォント, 26 色,
     // 27-31 塗りつぶし, 32 塗りつぶしの色, 33-38 枠線, 39 枠線の色
-    CHECK(app.onMouseDown(screenOf(20, 15)));  // 直近のテキストを選択
-    app.onMouseUp();
+    CHECK(app.onMouseDown(MouseButton::Left, screenOf(20, 15)));  // 直近のテキストを選択
+    app.onMouseUp(MouseButton::Left);
     host.menuChoice = 18;  // 游ゴシック UI
-    app.onRightDragStart(screenOf(20, 15));
-    app.onRightDragEnd(screenOf(20, 15));
+    app.onMouseDown(MouseButton::Right, screenOf(20, 15));
+    app.onMouseUp(MouseButton::Right, screenOf(20, 15));
     CHECK(countMenuLeaves(host.lastMenuItems) == 40);
     CHECK(app.annotations().specs->back().fontFamily == "Yu Gothic UI");
     app.execute(Command::Undo);
@@ -2979,8 +2994,8 @@ void testAppFontFamily() {
     // (選び直したあとで戻れるように)
     rasterizer.missingFonts = {"Yu Mincho", "MS Mincho"};
     host.menuChoice = std::nullopt;
-    app.onRightDragStart(kEmptySpot);
-    app.onRightDragEnd(kEmptySpot);
+    app.onMouseDown(MouseButton::Right, kEmptySpot);
+    app.onMouseUp(MouseButton::Right, kEmptySpot);
     const MenuItem* family = findMenuItem(host.lastMenuItems, "フォント (");
     CHECK(family != nullptr);
     if (family) {
@@ -3016,14 +3031,14 @@ void testAppPenTools() {
     // ペン: 右ドラッグの軌跡がそのまま注釈になる。近すぎる通過点は間引かれる
     app.execute(Command::SelectToolPen);
     CHECK(app.currentTool() == EditTool::Pen);
-    app.onRightDragStart(screenOf(0, 0));
-    app.onRightDragMove(screenOf(1, 0));  // 直前から 1px = 間引かれる
-    app.onRightDragMove(screenOf(20, 0));
-    app.onRightDragMove(screenOf(20, 20));
+    app.onMouseDown(MouseButton::Right, screenOf(0, 0));
+    app.onMouseMove(screenOf(1, 0));  // 直前から 1px = 間引かれる
+    app.onMouseMove(screenOf(20, 0));
+    app.onMouseMove(screenOf(20, 20));
     CHECK(app.annotations().preview != nullptr);  // ドラッグ中も実物が見える
     CHECK(app.annotations().preview->points.size() == 3);
     CHECK(!app.selection().visible);  // ラバーバンドとは排他
-    app.onRightDragEnd(screenOf(20, 20));
+    app.onMouseUp(MouseButton::Right, screenOf(20, 20));
     CHECK(app.annotations().specs->size() == 1);
     {
         const AnnotationSpec& spec = app.annotations().specs->back();
@@ -3039,7 +3054,7 @@ void testAppPenTools() {
     // 線の上だけ掴める(bbox の内側でも線から離れていればパンに回る)。
     // 選択中はハンドルが優先されるので、いったん選択を外してから掴む
     app.execute(Command::Escape);
-    CHECK(app.onMouseDown(screenOf(10, 0)));
+    CHECK(app.onMouseDown(MouseButton::Left, screenOf(10, 0)));
     CHECK(app.annotations().selected == std::optional<size_t>(0));
     app.onMouseMove(screenOf(12, 3));  // +2,+3 の移動は点列ごと動く
     {
@@ -3047,11 +3062,11 @@ void testAppPenTools() {
         CHECK(nearly(spec.points.front().x, 2) && nearly(spec.points.front().y, 3));
         CHECK(nearly(spec.p1.x, 2) && nearly(spec.p1.y, 3));
     }
-    app.onMouseUp();
+    app.onMouseUp(MouseButton::Left);
     app.execute(Command::Undo);
     CHECK(nearly(app.annotations().specs->back().points.front().x, 0));
-    CHECK(!app.onMouseDown(screenOf(10, 10)));  // L の内側は掴めない
-    app.onMouseUp();
+    CHECK(!app.onMouseDown(MouseButton::Left, screenOf(10, 10)));  // L の内側は掴めない
+    app.onMouseUp(MouseButton::Left);
 
     // やり直し: 取り消した移動を復元する。新しい編集をすると redo は捨てられる
     app.execute(Command::Redo);
@@ -3061,9 +3076,9 @@ void testAppPenTools() {
 
     // マーカー: 同じ Pen 注釈だが太く半透明になる
     app.execute(Command::SelectToolMarker);
-    app.onRightDragStart(screenOf(0, 30));
-    app.onRightDragMove(screenOf(30, 30));
-    app.onRightDragEnd(screenOf(30, 30));
+    app.onMouseDown(MouseButton::Right, screenOf(0, 30));
+    app.onMouseMove(screenOf(30, 30));
+    app.onMouseUp(MouseButton::Right, screenOf(30, 30));
     CHECK(app.annotations().specs->size() == 2);
     {
         const AnnotationSpec& spec = app.annotations().specs->back();
@@ -3078,8 +3093,8 @@ void testAppPenTools() {
 
     // 連番マーカー: 番号は自動で増え、小さすぎるドラッグでも最小の大きさになる
     app.execute(Command::SelectToolNumber);
-    app.onRightDragStart(screenOf(0, 0));
-    app.onRightDragEnd(screenOf(5, 5));
+    app.onMouseDown(MouseButton::Right, screenOf(0, 0));
+    app.onMouseUp(MouseButton::Right, screenOf(5, 5));
     {
         const AnnotationSpec& spec = app.annotations().specs->back();
         CHECK(spec.kind == AnnotationSpec::Kind::Number);
@@ -3089,29 +3104,29 @@ void testAppPenTools() {
         CHECK(nearly(spec.p2.x - spec.p1.x, spec.p2.y - spec.p1.y));  // 必ず円
         CHECK(spec.p2.x - spec.p1.x > 30);  // 文字サイズ 18px から決まる最小の直径
     }
-    app.onRightDragStart(screenOf(0, 20));
-    app.onRightDragEnd(screenOf(6, 26));
+    app.onMouseDown(MouseButton::Right, screenOf(0, 20));
+    app.onMouseUp(MouseButton::Right, screenOf(6, 26));
     CHECK(app.annotations().specs->back().number == 2);
     // 取り消して置き直しても番号は詰まる(状態ではなく既存の注釈から数えている)
     app.execute(Command::Undo);
-    app.onRightDragStart(screenOf(0, 20));
-    app.onRightDragEnd(screenOf(6, 26));
+    app.onMouseDown(MouseButton::Right, screenOf(0, 20));
+    app.onMouseUp(MouseButton::Right, screenOf(6, 26));
     CHECK(app.annotations().specs->back().number == 2);
     // Shift なしでもドラッグが正方形に寄せられる(円をつぶせない)
-    app.onRightDragStart(screenOf(0, 0));
-    app.onRightDragMove(screenOf(39, 35));  // 縦横の小さいほう = 35 の正方形になる
+    app.onMouseDown(MouseButton::Right, screenOf(0, 0));
+    app.onMouseMove(screenOf(39, 35));  // 縦横の小さいほう = 35 の正方形になる
     CHECK(app.annotations().preview != nullptr);
     CHECK(nearly(app.annotations().preview->p2.x, 35));
     CHECK(nearly(app.annotations().preview->p2.y, 35));
-    app.onRightDragEnd(screenOf(39, 35));
+    app.onMouseUp(MouseButton::Right, screenOf(39, 35));
 
     // オブジェクトメニューから番号を振り直せる(末端 index: 0 削除, 1-8 回転,
     // 9-15 太さ, 16-25 番号, 26 色, 27-31 塗りつぶし, 32 塗りつぶしの色)
-    CHECK(app.onMouseDown(screenOf(5, 5)));
-    app.onMouseUp();
+    CHECK(app.onMouseDown(MouseButton::Left, screenOf(5, 5)));
+    app.onMouseUp(MouseButton::Left);
     host.menuChoice = 22;  // 番号 7
-    app.onRightDragStart(screenOf(5, 5));
-    app.onRightDragEnd(screenOf(5, 5));
+    app.onMouseDown(MouseButton::Right, screenOf(5, 5));
+    app.onMouseUp(MouseButton::Right, screenOf(5, 5));
     CHECK(countMenuLeaves(host.lastMenuItems) == 33);
     CHECK(app.annotations().specs->back().number == 7);
 
@@ -3122,6 +3137,97 @@ void testAppPenTools() {
     CHECK(app.currentTool() == EditTool::Number);
     app.applyConfig(Config::parse("[edit]\ntool = pen\n"));
     CHECK(app.currentTool() == EditTool::Pen);
+}
+
+// [mouse] swap_buttons = true はパンと編集だけを入れ替える(メニューは常に右クリック)
+void testAppSwapMouseButtons() {
+    FakeDecoder decoder;
+    ImageCache cache(decoder);
+    FakeHost host;
+    FakeFileSystem fileSystem;
+    FakeClipboard clipboard;
+    FakeEncoder encoder;
+    FakeAnnotationRasterizer rasterizer;
+    App app(host, fileSystem, cache, clipboard, encoder, rasterizer);
+    app.onResize(800, 600);
+
+    // 既定では左がパン・右が編集
+    CHECK(app.mouseRole(MouseButton::Left) == MouseRole::Pan);
+    CHECK(app.mouseRole(MouseButton::Right) == MouseRole::Edit);
+    app.applyConfig(Config::parse("[mouse]\nswap_buttons = true\n"));
+    CHECK(app.mouseRole(MouseButton::Left) == MouseRole::Edit);
+    CHECK(app.mouseRole(MouseButton::Right) == MouseRole::Pan);
+
+    // 右ドラッグがパンになる(ウィンドウより大きい画像を等倍表示して動かせる状態にする)
+    auto wide = std::make_shared<DecodedImage>();
+    wide->width = 4000;
+    wide->height = 400;
+    wide->pixels.resize(static_cast<size_t>(4000) * 400 * 4);
+    clipboard.pasteImage = wide;
+    app.execute(Command::PasteImage);
+    app.execute(Command::ZoomActual);
+    const float originX = app.imageToScreen().apply({0, 0}).x;
+    CHECK(!app.onMouseDown(MouseButton::Right, kEmptySpot));  // 何も掴まない = パンになる
+    app.onMouseMove({kEmptySpot.x + 30, kEmptySpot.y});
+    app.onMouseUp(MouseButton::Right, {kEmptySpot.x + 30, kEmptySpot.y});
+    CHECK(nearly(app.imageToScreen().apply({0, 0}).x, originX + 30));
+    CHECK(app.annotations().specs->empty());  // パンなので注釈は作らない
+    CHECK(host.menuCount == 0);               // ドラッグしたのでメニューも出ない
+
+    // 8x8 画像を貼り付ける(等倍のまま中央 = 画像左上はスクリーン (396,283))
+    auto source = std::make_shared<DecodedImage>();
+    source->width = 8;
+    source->height = 8;
+    source->pixels.resize(8 * 8 * 4);
+    clipboard.pasteImage = source;
+    app.execute(Command::PasteImage);
+    CHECK(nearly(app.imageToScreen().apply({0, 0}).x, 396));
+
+    // 左ドラッグが現在のツール(矩形)を実行する
+    CHECK(app.onMouseDown(MouseButton::Left, {396, 283}));
+    app.onMouseMove({400, 287});
+    app.onMouseUp(MouseButton::Left, {400, 287});
+    CHECK(app.annotations().specs->size() == 1);
+    CHECK(host.menuCount == 0);
+
+    // 左クリック(ドラッグなし)は何も作らず、メニューも出さない
+    app.onMouseDown(MouseButton::Left, kEmptySpot);
+    app.onMouseUp(MouseButton::Left, kEmptySpot);
+    CHECK(app.annotations().specs->size() == 1);
+    CHECK(host.menuCount == 0);
+
+    // 右クリック(ドラッグなし)は入れ替えてもツール切り替えメニュー
+    host.menuChoice = std::nullopt;
+    app.onMouseDown(MouseButton::Right, kEmptySpot);
+    app.onMouseUp(MouseButton::Right, kEmptySpot);
+    CHECK(host.menuCount == 1);
+    CHECK(findMenuItem(host.lastMenuItems, "矩形") != nullptr);
+    CHECK(app.annotations().specs->size() == 1);
+
+    // 図形の上での右ドラッグは移動(閾値を超えて動かしたのでメニューは出ない)
+    constexpr Point corner{396, 283};  // 矩形の角 = 画像 (0,0)
+    CHECK(app.onMouseDown(MouseButton::Right, corner));
+    CHECK(app.annotations().selected == std::optional<size_t>(0));
+    app.onMouseMove({corner.x + 6, corner.y + 6});
+    app.onMouseUp(MouseButton::Right, {corner.x + 6, corner.y + 6});
+    CHECK(nearly(app.annotations().specs->front().p1.x, 6));
+    CHECK(host.menuCount == 1);
+
+    // 図形の上での右クリック(ドラッグなし)はオブジェクトメニュー
+    host.menuChoice = 0;  // 削除
+    constexpr Point movedCorner{corner.x + 6, corner.y + 6};
+    app.onMouseDown(MouseButton::Right, movedCorner);
+    app.onMouseUp(MouseButton::Right, movedCorner);
+    CHECK(host.menuCount == 2);
+    CHECK(app.annotations().specs->empty());
+
+    // サイドバーは UI 部品なので入れ替えの対象外(左クリックで消費、右は何もしない)
+    app.applyConfig(Config::parse("[view]\nsidebar = true\n"));
+    CHECK(app.onMouseDown(MouseButton::Left, {100, 100}));
+    app.onMouseUp(MouseButton::Left, {100, 100});
+    CHECK(app.onMouseDown(MouseButton::Right, {100, 100}));
+    app.onMouseUp(MouseButton::Right, {100, 100});
+    CHECK(host.menuCount == 2);  // サイドバー上ではメニューを出さない
 }
 
 void testNaturalCompare() {
@@ -3181,6 +3287,7 @@ int main() {
     testAppTextStyles();
     testAppFontFamily();
     testAppPenTools();
+    testAppSwapMouseButtons();
 
     if (g_failures == 0) {
         std::cout << "all tests passed\n";

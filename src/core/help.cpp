@@ -22,7 +22,7 @@ std::string keysLabel(const Keymap& keymap, const Command cmd) {
     return result;
 }
 
-std::vector<HelpLine> buildHelpLines(const Keymap& keymap) {
+std::vector<HelpLine> buildHelpLines(const Keymap& keymap, const bool swapMouseButtons) {
     std::vector<HelpLine> lines;
 
     // 見出しは中身が 1 行でも出てから追加する(ini で全部外された節を空のまま残さない)
@@ -97,16 +97,22 @@ std::vector<HelpLine> buildHelpLines(const Keymap& keymap) {
     row(Command::Escape, "選択解除 / 全画面解除 / 終了");
     row(Command::Quit, "終了");
 
-    // マウス操作は Command を経由しないため固定文言。右ドラッグの中身は
-    // 現在のツール(ステータスバーに出る)で決まる
+    // マウス操作は Command を経由しないため固定文言。編集ドラッグの中身は
+    // 現在のツール(ステータスバーに出る)で決まる。パンと編集のボタンは
+    // [mouse] swap_buttons で入れ替わるので、実際に効くほうを出す
+    // (メニューは入れ替えの対象外で常に右クリック)
+    const std::string_view panDrag = swapMouseButtons ? "右ドラッグ" : "左ドラッグ";
+    const std::string_view panClick = swapMouseButtons ? "右クリック" : "左クリック";
+    const std::string_view editDrag = swapMouseButtons ? "左ドラッグ" : "右ドラッグ";
+    const std::string_view editDragShift = swapMouseButtons ? "Shift+左ドラッグ" : "Shift+右ドラッグ";
     header("マウス");
     text("拡大 / 縮小", "ホイール");
-    text("スクロール", "左ドラッグ");
-    text("現在のツールを実行", "右ドラッグ");
-    text("正方形 / 真円で描く", "Shift+右ドラッグ");
+    text("スクロール", panDrag);
+    text("現在のツールを実行", editDrag);
+    text("正方形 / 真円で描く", editDragShift);
     text("ツール・書式メニュー", "余白で右クリック");
-    text("図形・テキストを選択", "左クリック");
-    text("選択中のオブジェクトを移動", "左ドラッグ");
+    text("図形・テキストを選択", panClick);
+    text("選択中のオブジェクトを移動", panDrag);
     text("オブジェクトのメニュー", "図形の上で右クリック");
     text("テキストを再編集", "ダブルクリック");
 
