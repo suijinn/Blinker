@@ -43,15 +43,15 @@ enum class Command {
     Undo,              ///< 直前の編集(トリミング・図形・テキスト)を取り消す
     Redo,              ///< 取り消した編集をやり直す
     DeleteAnnotation,  ///< 選択中の注釈オブジェクトを削除
-    SelectToolCrop,    ///< 右ドラッグのツールをトリミングに切り替える
-    SelectToolRect,    ///< 右ドラッグのツールを矩形に切り替える
-    SelectToolEllipse, ///< 右ドラッグのツールを楕円に切り替える
-    SelectToolArrow,   ///< 右ドラッグのツールを矢印に切り替える
-    SelectToolLine,    ///< 右ドラッグのツールを直線に切り替える
-    SelectToolPen,     ///< 右ドラッグのツールを手書き(ペン)に切り替える
-    SelectToolMarker,  ///< 右ドラッグのツールをマーカー(半透明の手書き)に切り替える
-    SelectToolNumber,  ///< 右ドラッグのツールを連番マーカーに切り替える
-    SelectToolText,    ///< 右ドラッグのツールをテキストに切り替える
+    SelectToolCrop,    ///< 編集ドラッグのツールをトリミングに切り替える
+    SelectToolRect,    ///< 編集ドラッグのツールを矩形に切り替える
+    SelectToolEllipse, ///< 編集ドラッグのツールを楕円に切り替える
+    SelectToolArrow,   ///< 編集ドラッグのツールを矢印に切り替える
+    SelectToolLine,    ///< 編集ドラッグのツールを直線に切り替える
+    SelectToolPen,     ///< 編集ドラッグのツールを手書き(ペン)に切り替える
+    SelectToolMarker,  ///< 編集ドラッグのツールをマーカー(半透明の手書き)に切り替える
+    SelectToolNumber,  ///< 編集ドラッグのツールを連番マーカーに切り替える
+    SelectToolText,    ///< 編集ドラッグのツールをテキストに切り替える
     ToggleSidebar,     ///< ファイル名一覧のサイドバーの表示切り替え
     ToggleStatusBar,   ///< ステータスバーの表示切り替え
     ToggleHelp,        ///< サイドバーにキー一覧(ヘルプ)を表示 / 非表示

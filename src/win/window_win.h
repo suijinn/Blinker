@@ -146,17 +146,21 @@ private:
     LRESULT handleMessage(UINT msg, WPARAM wp, LPARAM lp);
 
     /**
-     * @brief 左ボタン押下を処理し、パン/注釈ドラッグの開始を判断する。
-     * @param[in] pt 押下位置(クライアント座標)。
+     * @brief マウスボタン押下を App へ転送する。
+     * @param[in] button 押されたボタン。
+     * @param[in] pt     押下位置(クライアント座標)。
+     * @note ボタンが何をするか(パン・編集・メニュー)は App が決める。
+     *       ウィンドウ外へ出ても追従できるようキャプチャを取る。
      */
-    void handleLeftDown(POINT pt);
+    void handleButtonDown(MouseButton button, POINT pt);
 
     /**
-     * @brief 右ドラッグ中に Shift の状態が変わったことを App へ伝える。
-     * @param[in] shift Shift が押されたなら true、離されたなら false。
-     * @pre rightDragging_ が true であること。
+     * @brief マウスボタン解放を App へ転送する。
+     * @param[in] button 離されたボタン。
+     * @param[in] pt     解放位置(クライアント座標)。
+     * @param[in] wp     メッセージの wParam(Shift の状態を見る)。
      */
-    void updateRightDragShift(bool shift);
+    void handleButtonUp(MouseButton button, POINT pt, WPARAM wp);
 
     /// @brief WM_PAINT を処理し、App のスナップショットをレンダラへ渡す。
     void onPaint();
@@ -225,10 +229,6 @@ private:
     bool fullscreen_ = false;
     WINDOWPLACEMENT savedPlacement_{sizeof(WINDOWPLACEMENT)};
     LONG savedStyle_ = 0;
-    bool dragging_ = false;
-    bool rightDragging_ = false;  ///< 編集領域の選択中(右ボタン)
-    POINT lastRightDragPos_{};    ///< 右ドラッグ中の最後のポインタ位置(Shift 押下時の再計算用)
-    POINT lastDragPos_{};
     bool trackingMouseLeave_ = false;
     // テキスト編集(インプレース)の状態
     bool textEditing_ = false;      ///< App が編集中か。IME・点滅タイマーの制御に使う

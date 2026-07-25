@@ -19,6 +19,13 @@ std::string joinExtensionsForFilter() {
     return out;
 }
 
+// SDL のボタン番号を MouseButton へ。中ボタン等は扱わないので nullopt
+std::optional<MouseButton> mouseButtonFromSdl(Uint8 button) {
+    if (button == SDL_BUTTON_LEFT) return MouseButton::Left;
+    if (button == SDL_BUTTON_RIGHT) return MouseButton::Right;
+    return std::nullopt;
+}
+
 } // namespace
 
 // コールバックは別スレッドから来る可能性があるため atomic + mutex で受け渡す
@@ -139,38 +146,31 @@ void WindowSdl::handleEvent(const SDL_Event& event) {
     }
     case SDL_EVENT_MOUSE_BUTTON_DOWN: {
         if (!app_) return;
+        const auto button = mouseButtonFromSdl(event.button.button);
+        // 編集ドラッグは SDL バックエンドでは扱わない。ツールの切り替えに必要な
+        // ポップアップメニューも注釈の描画も未実装で、見えない注釈だけが増えてしまう。
+        // パンの役割は [mouse] swap_buttons で右ボタンへ移せる
+        if (!button || app_->mouseRole(*button) != MouseRole::Pan) return;
         const Point pos = toPixels(event.button.x, event.button.y);
-        if (event.button.button == SDL_BUTTON_LEFT) {
-            if (event.button.clicks == 2 && app_->onDoubleClick(pos)) return;
-            SDL_CaptureMouse(true);
-            if (!app_->onMouseDown(pos)) {
-                dragging_ = true;
-                lastDragX_ = pos.x;
-                lastDragY_ = pos.y;
-            }
-        }
-        // 右ドラッグ(編集)は SDL バックエンドでは扱わない。ツールの切り替えに必要な
-        // ポップアップメニューも注釈の描画も未実装で、見えない注釈だけが増えてしまう
+        if (event.button.clicks == 2 && app_->onDoubleClick(pos)) return;
+        SDL_CaptureMouse(true);
+        app_->onMouseDown(*button, pos);
         return;
     }
     case SDL_EVENT_MOUSE_BUTTON_UP: {
         if (!app_) return;
-        if (event.button.button == SDL_BUTTON_LEFT) {
-            dragging_ = false;
-            SDL_CaptureMouse(false);
-            app_->onMouseUp();
-        }
+        const auto button = mouseButtonFromSdl(event.button.button);
+        if (!button || app_->mouseRole(*button) != MouseRole::Pan) return;
+        SDL_CaptureMouse(false);
+        app_->onMouseUp(*button, toPixels(event.button.x, event.button.y),
+                        (SDL_GetModState() & SDL_KMOD_SHIFT) != 0);
         return;
     }
     case SDL_EVENT_MOUSE_MOTION: {
         if (!app_) return;
-        const Point pos = toPixels(event.motion.x, event.motion.y);
-        if (dragging_) {
-            app_->onDragPan(pos.x - lastDragX_, pos.y - lastDragY_);
-            lastDragX_ = pos.x;
-            lastDragY_ = pos.y;
-        }
-        app_->onMouseMove(pos, (SDL_GetModState() & SDL_KMOD_SHIFT) != 0);
+        // パン(押したままの移動)も App 側で処理される
+        app_->onMouseMove(toPixels(event.motion.x, event.motion.y),
+                          (SDL_GetModState() & SDL_KMOD_SHIFT) != 0);
         return;
     }
     case SDL_EVENT_DROP_FILE:
