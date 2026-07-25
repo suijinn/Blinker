@@ -278,7 +278,9 @@ void testHelpLines() {
     CHECK(hasSwapped("現在のツールを実行  左ドラッグ"));
     CHECK(hasSwapped("正方形 / 真円で描く  Shift+左ドラッグ"));
     CHECK(hasSwapped("直線・矢印を水平 / 垂直に  Shift+左ドラッグ"));
-    CHECK(hasSwapped("図形・テキストを選択  右クリック"));
+    // オブジェクトを掴む操作は入れ替えの対象外なので、入れ替えても左のまま
+    CHECK(hasSwapped("図形・テキストを選択  左クリック"));
+    CHECK(hasSwapped("選択中のオブジェクトを移動  左ドラッグ"));
     CHECK(hasSwapped("ツール・書式メニュー  余白で右クリック"));
 
     // ini でキーを変えたら一覧もそれに追従する(README のような固定テキストではない)
@@ -3260,14 +3262,26 @@ void testAppSwapMouseButtons() {
     CHECK(findMenuItem(host.lastMenuItems, "矩形") != nullptr);
     CHECK(app.annotations().specs->size() == 1);
 
-    // 図形の上での右ドラッグは移動(閾値を超えて動かしたのでメニューは出ない)
+    // 図形を掴む操作は入れ替えの対象外。入れ替えても左クリックで選択して移動できる
+    // (閾値を超えて動かしたので、左が編集役でも新しい矩形は作られない)
     constexpr Point corner{396, 283};  // 矩形の角 = 画像 (0,0)
-    CHECK(app.onMouseDown(MouseButton::Right, corner));
+    CHECK(app.onMouseDown(MouseButton::Left, corner));
     CHECK(app.annotations().selected == std::optional<size_t>(0));
     app.onMouseMove({corner.x + 6, corner.y + 6});
-    app.onMouseUp(MouseButton::Right, {corner.x + 6, corner.y + 6});
+    app.onMouseUp(MouseButton::Left, {corner.x + 6, corner.y + 6});
+    CHECK(app.annotations().specs->size() == 1);
     CHECK(nearly(app.annotations().specs->front().p1.x, 6));
     CHECK(host.menuCount == 1);
+
+    // 図形の上でもパン役(入れ替え時は右)のドラッグはパンのまま。掴まないので図形は動かない
+    {
+        constexpr Point moved{corner.x + 6, corner.y + 6};
+        CHECK(!app.onMouseDown(MouseButton::Right, moved));  // false = パンを始めた
+        app.onMouseMove({moved.x + 20, moved.y});
+        app.onMouseUp(MouseButton::Right, {moved.x + 20, moved.y});
+        CHECK(nearly(app.annotations().specs->front().p1.x, 6));  // 図形は動いていない
+        CHECK(app.annotations().specs->size() == 1);
+    }
 
     // 図形の上での右クリック(ドラッグなし)はオブジェクトメニュー
     host.menuChoice = 0;  // 削除
