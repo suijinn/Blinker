@@ -16,6 +16,7 @@
 #include "win/encoder_wic.h"
 #include "win/file_system_win.h"
 #include "win/ocr_winrt.h"
+#include "win/printer_win.h"
 #include "win/window_win.h"
 
 namespace {
@@ -80,6 +81,8 @@ int WINAPI wWinMain(HINSTANCE hinstance, HINSTANCE, PWSTR, int showCommand) {
         ClipboardWin clipboard;
         clipboard.setOwner(window.hwnd());
         EncoderWic encoder;
+        PrinterWin printer;
+        printer.setOwner(window.hwnd());  // 印刷ダイアログをメインウィンドウのモーダルにする
         AnnotationD2D annotationRasterizer;
         // [ocr] language が空ならユーザーの表示言語から自動で選ぶ。
         // 認識器の生成は最初の実行まで遅延するので、ここでは何も起きない
@@ -89,7 +92,8 @@ int WINAPI wWinMain(HINSTANCE hinstance, HINSTANCE, PWSTR, int showCommand) {
         // (~OcrService がワーカーを join し終えるまでエンジンは生きている必要がある)
         OcrService ocrService(ocrEngine);
 
-        App app(window, fileSystem, cache, clipboard, encoder, annotationRasterizer, ocrService);
+        App app(window, fileSystem, cache, clipboard, encoder, annotationRasterizer, ocrService,
+                printer);
         app.setDarkTheme(darkTheme);
         app.applyConfig(config);
         window.attachApp(&app);

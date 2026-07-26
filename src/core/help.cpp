@@ -36,6 +36,7 @@ constexpr std::array kCommandLabels = {
     CommandLabel{Command::OpenFile, "開く"},
     CommandLabel{Command::SaveImage, "上書き保存"},
     CommandLabel{Command::SaveImageAs, "名前を付けて保存"},
+    CommandLabel{Command::PrintImage, "印刷"},
     CommandLabel{Command::CopyImage, "画像をコピー"},
     CommandLabel{Command::CopyPath, "パスをコピー"},
     CommandLabel{Command::CopyFile, "ファイルをコピー"},
@@ -150,6 +151,7 @@ std::vector<HelpLine> buildHelpLines(const Keymap& keymap, const Mousemap& mouse
     row(Command::OpenFile);
     row(Command::SaveImage);
     row(Command::SaveImageAs);
+    row(Command::PrintImage);
     row(Command::CopyImage);
     row(Command::CopyPath);
     row(Command::CopyFile);

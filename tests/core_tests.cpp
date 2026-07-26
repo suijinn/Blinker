@@ -29,6 +29,7 @@
 #include "core/ocr_service.h"
 #include "core/ocr_text.h"
 #include "core/pixel_convert.h"
+#include "core/print_layout.h"
 #include "core/str_util.h"
 #include "core/text_edit.h"
 #include "core/text_style.h"
@@ -170,12 +171,14 @@ void testKeymap() {
     CHECK(km.find({KeyCode{'V'}, true}) == Command::PasteImage);        // Ctrl+V
     CHECK(km.find({KeyCode{'S'}, true}) == Command::SaveImage);          // Ctrl+S
     CHECK(km.find({KeyCode{'S'}, true, true}) == Command::SaveImageAs);  // Shift+Ctrl+S
+    CHECK(km.find({KeyCode{'P'}, true}) == Command::PrintImage);         // Ctrl+P
     CHECK(km.find({KeyCode{'B'}}) == Command::ToggleStatusBar);
     CHECK(km.find({KeyCode{'B'}, true}) == Command::ToggleSidebar);     // Ctrl+B
     CHECK(commandFromName("copy_file") == Command::CopyFile);
     CHECK(commandFromName("paste") == Command::PasteImage);
     CHECK(commandFromName("save") == Command::SaveImage);
     CHECK(commandFromName("save_as") == Command::SaveImageAs);
+    CHECK(commandFromName("print") == Command::PrintImage);
     CHECK(commandFromName("sidebar") == Command::ToggleSidebar);
     chord = Keymap::parseChord("+");
     CHECK(chord && chord->key == KeyCode::Plus);
@@ -410,6 +413,7 @@ void testHelpLines() {
     CHECK(has("パスをコピー  Ctrl+Shift+C"));
     CHECK(has("上書き保存  Ctrl+S"));
     CHECK(has("名前を付けて保存  Ctrl+Shift+S"));
+    CHECK(has("印刷  Ctrl+P"));
     CHECK(has("ファイルをコピー  Shift+C"));
     // キーの割り当てがない操作は行ごと出ない
     CHECK(!has("矢印ツール  "));
@@ -464,6 +468,7 @@ void testHelpLines() {
     stripped.unbindCommand(Command::OpenFile);
     stripped.unbindCommand(Command::SaveImage);
     stripped.unbindCommand(Command::SaveImageAs);
+    stripped.unbindCommand(Command::PrintImage);
     stripped.unbindCommand(Command::CopyImage);
     stripped.unbindCommand(Command::CopyPath);
     stripped.unbindCommand(Command::CopyFile);
@@ -1227,6 +1232,28 @@ public:
     std::vector<std::string> supportedExtensions{".png", ".jpg", ".jpeg", ".bmp"};
 };
 
+class FakePrinter final : public IPrinter {
+public:
+    PrintStatus print(const DecodedImage& image, const std::string& jobName,
+                      const PrintOptions& options) override {
+        ++printCount;
+        lastWidth = image.width;
+        lastHeight = image.height;
+        lastPixels = image.pixels;
+        lastJobName = jobName;
+        lastOptions = options;
+        return status;
+    }
+
+    PrintStatus status = PrintStatus::Printed;  // 印刷の応答
+    int printCount = 0;
+    uint32_t lastWidth = 0;
+    uint32_t lastHeight = 0;
+    std::vector<uint8_t> lastPixels;
+    std::string lastJobName;
+    PrintOptions lastOptions;
+};
+
 // 指定サイズの不透明単色 overlay を返すテスト用ラスタライザ
 // 決まった行を返す OCR エンジン。App から見た振る舞い(整形・クリップボード投入・
 // 世代の食い違い)を検証するために使う
@@ -1329,7 +1356,8 @@ void testAppClipboard() {
     FakeAnnotationRasterizer rasterizer;
     FakeOcrEngine ocrEngine;
     OcrService ocrService(ocrEngine);
-    App app(host, fileSystem, cache, clipboard, encoder, rasterizer, ocrService);
+    FakePrinter printer;
+    App app(host, fileSystem, cache, clipboard, encoder, rasterizer, ocrService, printer);
 
     // 画像を開いていない状態では何もコピーされない
     app.execute(Command::CopyImage);
@@ -1398,7 +1426,8 @@ void testAppSlowDecode() {
         cv.notify_all();
     });
 
-    App app(host, fileSystem, cache, clipboard, encoder, rasterizer, ocrService);
+    FakePrinter printer;
+    App app(host, fileSystem, cache, clipboard, encoder, rasterizer, ocrService, printer);
     app.onResize(800, 600);
     const std::filesystem::path path = "C:/pics/huge.jpeg";
     fileSystem.files = {path};
@@ -1428,7 +1457,8 @@ void testAppStatusBar() {
     FakeAnnotationRasterizer rasterizer;
     FakeOcrEngine ocrEngine;
     OcrService ocrService(ocrEngine);
-    App app(host, fileSystem, cache, clipboard, encoder, rasterizer, ocrService);
+    FakePrinter printer;
+    App app(host, fileSystem, cache, clipboard, encoder, rasterizer, ocrService, printer);
     app.onResize(800, 600);
 
     // 画像なし: バーは表示されるが左右とも空
@@ -1518,7 +1548,8 @@ void testAppPasteSave() {
     FakeAnnotationRasterizer rasterizer;
     FakeOcrEngine ocrEngine;
     OcrService ocrService(ocrEngine);
-    App app(host, fileSystem, cache, clipboard, encoder, rasterizer, ocrService);
+    FakePrinter printer;
+    App app(host, fileSystem, cache, clipboard, encoder, rasterizer, ocrService, printer);
     app.onResize(800, 600);
 
     // 画像なしでの保存: ダイアログは開かずメッセージ
@@ -1620,7 +1651,8 @@ void testAppSaveOverwrite() {
     FakeAnnotationRasterizer rasterizer;
     FakeOcrEngine ocrEngine;
     OcrService ocrService(ocrEngine);
-    App app(host, fileSystem, cache, clipboard, encoder, rasterizer, ocrService);
+    FakePrinter printer;
+    App app(host, fileSystem, cache, clipboard, encoder, rasterizer, ocrService, printer);
     app.onResize(800, 600);
     app.applyConfig(Config::parse("[save]\njpeg_quality = 55\n"));
 
@@ -1746,7 +1778,8 @@ void testAppSaveDownscaled() {
     FakeAnnotationRasterizer rasterizer;
     FakeOcrEngine ocrEngine;
     OcrService ocrService(ocrEngine);
-    App app(host, fileSystem, cache, clipboard, encoder, rasterizer, ocrService);
+    FakePrinter printer;
+    App app(host, fileSystem, cache, clipboard, encoder, rasterizer, ocrService, printer);
     app.onResize(800, 600);
 
     std::mutex mutex;
@@ -1924,7 +1957,8 @@ void testAppAdoptsRefinedImage() {
     FakeAnnotationRasterizer rasterizer;
     FakeOcrEngine ocrEngine;
     OcrService ocrService(ocrEngine);
-    App app(host, fileSystem, cache, clipboard, encoder, rasterizer, ocrService);
+    FakePrinter printer;
+    App app(host, fileSystem, cache, clipboard, encoder, rasterizer, ocrService, printer);
     app.onResize(800, 600);
 
     std::mutex mutex;
@@ -1989,7 +2023,8 @@ void testAppSaveColorConverted() {
     FakeAnnotationRasterizer rasterizer;
     FakeOcrEngine ocrEngine;
     OcrService ocrService(ocrEngine);
-    App app(host, fileSystem, cache, clipboard, encoder, rasterizer, ocrService);
+    FakePrinter printer;
+    App app(host, fileSystem, cache, clipboard, encoder, rasterizer, ocrService, printer);
     app.onResize(800, 600);
 
     std::mutex mutex;
@@ -2018,6 +2053,139 @@ void testAppSaveColorConverted() {
     CHECK(encoder.encodeCount == 1);
     // 確認を出さない設定でも、保存後のメッセージには残る
     CHECK(app.statusBar().leftText == "上書き保存しました(sRGB へ変換した色で): C:/pics/p3.jpg");
+}
+
+void testPrintLayout() {
+    // 横長の画像を横長の領域へ: 幅いっぱいに広げ、上下は中央
+    PrintPlacement placement = layoutPrintImage(200, 100, 1000, 800, true);
+    CHECK(!placement.rotated);
+    CHECK(placement.width == 1000);
+    CHECK(placement.height == 500);
+    CHECK(placement.x == 0);
+    CHECK(placement.y == 150);
+
+    // 画像が小さくても用紙いっぱいに拡大する(原寸で刷ると 600dpi では切手大になる)
+    placement = layoutPrintImage(10, 10, 1000, 800, false);
+    CHECK(placement.width == 800);
+    CHECK(placement.height == 800);
+    CHECK(placement.x == 100);
+    CHECK(placement.y == 0);
+
+    // 横長の画像 × 縦長の用紙: 回した方が大きく刷れるので回す
+    placement = layoutPrintImage(200, 100, 800, 1000, true);
+    CHECK(placement.rotated);
+    CHECK(placement.width == 500);
+    CHECK(placement.height == 1000);
+    CHECK(placement.x == 150);
+    CHECK(placement.y == 0);
+
+    // auto_rotate = false なら向きはそのまま(用紙は余る)
+    placement = layoutPrintImage(200, 100, 800, 1000, false);
+    CHECK(!placement.rotated);
+    CHECK(placement.width == 800);
+    CHECK(placement.height == 400);
+
+    // 画像と用紙の向きが同じなら回さない
+    placement = layoutPrintImage(100, 200, 800, 1000, true);
+    CHECK(!placement.rotated);
+    CHECK(placement.width == 500);
+    CHECK(placement.height == 1000);
+
+    // 正方形は回しても大きくならないので回さない
+    CHECK(!layoutPrintImage(100, 100, 800, 1000, true).rotated);
+
+    // 不正な入力では配置を返さない(呼び出し側は印刷を諦める)
+    CHECK(layoutPrintImage(0, 100, 800, 1000, true).width == 0);
+    CHECK(layoutPrintImage(100, 0, 800, 1000, true).width == 0);
+    CHECK(layoutPrintImage(100, 100, 0, 1000, true).width == 0);
+    CHECK(layoutPrintImage(100, 100, 800, 0, true).width == 0);
+}
+
+void testAppPrint() {
+    FakeDecoder decoder;
+    ImageCache cache(decoder);
+    FakeHost host;
+    FakeFileSystem fileSystem;
+    FakeClipboard clipboard;
+    FakeEncoder encoder;
+    FakeAnnotationRasterizer rasterizer;
+    FakeOcrEngine ocrEngine;
+    OcrService ocrService(ocrEngine);
+    FakePrinter printer;
+    App app(host, fileSystem, cache, clipboard, encoder, rasterizer, ocrService, printer);
+    app.onResize(800, 600);
+
+    // 画像なし: プリンタには渡さずメッセージだけ
+    app.execute(Command::PrintImage);
+    CHECK(printer.printCount == 0);
+    CHECK(app.statusBar().leftText == "印刷する画像がありません");
+
+    // フォルダの画像 (FakeDecoder の 1x1) を開く
+    std::mutex mutex;
+    std::condition_variable cv;
+    bool decoded = false;
+    cache.setOnDecoded([&](const std::filesystem::path&) {
+        std::lock_guard lock(mutex);
+        decoded = true;
+        cv.notify_all();
+    });
+    const std::filesystem::path path = "C:/pics/a.png";
+    fileSystem.files = {path};
+    app.openPath(path);
+    {
+        std::unique_lock lock(mutex);
+        CHECK(cv.wait_for(lock, std::chrono::seconds(5), [&] { return decoded; }));
+    }
+    app.onDecodeCompleted();
+
+    // ジョブ名はファイル名。設定を書いていなければ既定の余白・自動回転で渡る
+    app.execute(Command::PrintImage);
+    CHECK(printer.printCount == 1);
+    CHECK(printer.lastJobName == "a.png");
+    CHECK(printer.lastWidth == 1);
+    CHECK(printer.lastHeight == 1);
+    CHECK(nearly(printer.lastOptions.marginMm, 10.0f));
+    CHECK(printer.lastOptions.autoRotate);
+    CHECK(app.statusBar().leftText == "印刷しました: a.png");
+
+    // 取りやめ: 何も通知しない(保存ダイアログのキャンセルと同じ)
+    app.onTimer();  // 直前の通知を消しておく
+    printer.status = PrintStatus::Canceled;
+    app.execute(Command::PrintImage);
+    CHECK(printer.printCount == 2);
+    CHECK(app.statusBar().leftText == "1 x 1 px  |  ツール: 矩形");
+
+    // 失敗・未対応はそれぞれの理由を出す
+    printer.status = PrintStatus::Failed;
+    app.execute(Command::PrintImage);
+    CHECK(app.statusBar().leftText == "印刷に失敗しました");
+    printer.status = PrintStatus::Unsupported;
+    app.execute(Command::PrintImage);
+    CHECK(app.statusBar().leftText == "このビルドでは印刷に対応していません");
+    printer.status = PrintStatus::Printed;
+
+    // [print] の設定がそのまま渡る
+    app.applyConfig(Config::parse("[print]\nmargin_mm = 0\nauto_rotate = false\n"));
+    app.execute(Command::PrintImage);
+    CHECK(nearly(printer.lastOptions.marginMm, 0.0f));
+    CHECK(!printer.lastOptions.autoRotate);
+
+    // 貼り付けた 2x1 の完全に透明な画像を右 90 度回転して印刷する。
+    // 表示回転は焼き込まれ (1x2)、紙は白なので透明部分は白で埋まる
+    auto pasted = std::make_shared<DecodedImage>();
+    pasted->width = 2;
+    pasted->height = 1;
+    pasted->pixels = {0, 0, 0, 0, 0, 0, 0, 0};
+    clipboard.pasteImage = pasted;
+    app.execute(Command::PasteImage);
+    app.execute(Command::RotateCW);
+    app.execute(Command::PrintImage);
+    CHECK(printer.lastJobName == "クリップボードの画像");
+    CHECK(printer.lastWidth == 1);
+    CHECK(printer.lastHeight == 2);
+    CHECK(printer.lastPixels.size() == 8);
+    CHECK(printer.lastPixels[0] == 255);  // B
+    CHECK(printer.lastPixels[3] == 255);  // A(不透明になっている)
 }
 
 void testDownscaleToFit() {
@@ -2073,7 +2241,8 @@ void testAppSidebar() {
     FakeAnnotationRasterizer rasterizer;
     FakeOcrEngine ocrEngine;
     OcrService ocrService(ocrEngine);
-    App app(host, fileSystem, cache, clipboard, encoder, rasterizer, ocrService);
+    FakePrinter printer;
+    App app(host, fileSystem, cache, clipboard, encoder, rasterizer, ocrService, printer);
     app.onResize(800, 600);
 
     // 既定では非表示
@@ -2192,7 +2361,8 @@ void testAppSidebarResize() {
     FakeAnnotationRasterizer rasterizer;
     FakeOcrEngine ocrEngine;
     OcrService ocrService(ocrEngine);
-    App app(host, fileSystem, cache, clipboard, encoder, rasterizer, ocrService);
+    FakePrinter printer;
+    App app(host, fileSystem, cache, clipboard, encoder, rasterizer, ocrService, printer);
     app.onResize(800, 600);
     std::mutex mutex;
     std::condition_variable cv;
@@ -2277,7 +2447,8 @@ void testAppHelpSidebar() {
     FakeAnnotationRasterizer rasterizer;
     FakeOcrEngine ocrEngine;
     OcrService ocrService(ocrEngine);
-    App app(host, fileSystem, cache, clipboard, encoder, rasterizer, ocrService);
+    FakePrinter printer;
+    App app(host, fileSystem, cache, clipboard, encoder, rasterizer, ocrService, printer);
     app.onResize(800, 600);
     for (int i = 1; i <= 30; ++i) {
         fileSystem.files.push_back(std::format("C:/pics/f{:02}.png", i));
@@ -2360,14 +2531,14 @@ void testAppHelpSidebar() {
     CHECK(sb.items[1].text == "次の画像  N");
 
     // 起動時の案内はステータスバーに出る(未割り当てキーの案内に次ぐ2つ目の導線)
-    App fresh(host, fileSystem, cache, clipboard, encoder, rasterizer, ocrService);
+    App fresh(host, fileSystem, cache, clipboard, encoder, rasterizer, ocrService, printer);
     fresh.onResize(800, 600);
     fresh.showStartupHint();
     CHECK(fresh.statusBar().leftText == "F1 で操作一覧");
     CHECK(host.lastTimerMs > 0);  // 一定時間で消える
 
     // ini で無効にできる
-    App quiet(host, fileSystem, cache, clipboard, encoder, rasterizer, ocrService);
+    App quiet(host, fileSystem, cache, clipboard, encoder, rasterizer, ocrService, printer);
     quiet.onResize(800, 600);
     quiet.applyConfig(Config::parse("[view]\nhelp_hint = false\n"));
     quiet.showStartupHint();
@@ -2387,7 +2558,8 @@ void testAppHelpHint() {
     FakeAnnotationRasterizer rasterizer;
     FakeOcrEngine ocrEngine;
     OcrService ocrService(ocrEngine);
-    App app(host, fileSystem, cache, clipboard, encoder, rasterizer, ocrService);
+    FakePrinter printer;
+    App app(host, fileSystem, cache, clipboard, encoder, rasterizer, ocrService, printer);
     app.onResize(800, 600);
 
     // 何も割り当てられていないキー → 消費はしないが案内を出す
@@ -2415,7 +2587,7 @@ void testAppHelpHint() {
     CHECK(app.statusBar().leftText == "F1 で操作一覧");
 
     // ini でキーを変えれば案内の文面も変わる
-    App rebound(host, fileSystem, cache, clipboard, encoder, rasterizer, ocrService);
+    App rebound(host, fileSystem, cache, clipboard, encoder, rasterizer, ocrService, printer);
     rebound.onResize(800, 600);
     rebound.applyConfig(Config::parse("[keys]\nhelp = H\n"));
     CHECK(!rebound.onKey({KeyCode{'J'}}));
@@ -2424,7 +2596,7 @@ void testAppHelpHint() {
     CHECK(rebound.sidebarMode() == SidebarMode::Help);
 
     // ヘルプ自体を無効化(未割り当て)にしたら、案内する先がないので黙る
-    App unbound(host, fileSystem, cache, clipboard, encoder, rasterizer, ocrService);
+    App unbound(host, fileSystem, cache, clipboard, encoder, rasterizer, ocrService, printer);
     unbound.onResize(800, 600);
     unbound.applyConfig(Config::parse("[keys]\nhelp =\n"));
     CHECK(!unbound.onKey({KeyCode::F1}));
@@ -2734,7 +2906,8 @@ void testAppAnnotationObjects() {
     FakeAnnotationRasterizer rasterizer;
     FakeOcrEngine ocrEngine;
     OcrService ocrService(ocrEngine);
-    App app(host, fileSystem, cache, clipboard, encoder, rasterizer, ocrService);
+    FakePrinter printer;
+    App app(host, fileSystem, cache, clipboard, encoder, rasterizer, ocrService, printer);
     app.onResize(800, 600);
 
     // 8x8 画像を貼り付け、矩形注釈 (0,0)-(4,4) を追加(画像左上はスクリーン (396,283))
@@ -2912,7 +3085,8 @@ void testAppEdit() {
     FakeAnnotationRasterizer rasterizer;
     FakeOcrEngine ocrEngine;
     OcrService ocrService(ocrEngine);
-    App app(host, fileSystem, cache, clipboard, encoder, rasterizer, ocrService);
+    FakePrinter printer;
+    App app(host, fileSystem, cache, clipboard, encoder, rasterizer, ocrService, printer);
     app.onResize(800, 600);
 
     // 画像がないときは選択を開始しない
@@ -3586,7 +3760,8 @@ void testAppTextEditing() {
     FakeAnnotationRasterizer rasterizer;
     FakeOcrEngine ocrEngine;
     OcrService ocrService(ocrEngine);
-    App app(host, fs, cache, clipboard, encoder, rasterizer, ocrService);
+    FakePrinter printer;
+    App app(host, fs, cache, clipboard, encoder, rasterizer, ocrService, printer);
 
     app.onResize(800, 600);
     // 100x100 の画像を貼り付け、等倍表示にしてスクリーン座標を素直にする
@@ -3764,7 +3939,8 @@ void testAppTextStyles() {
     FakeAnnotationRasterizer rasterizer;
     FakeOcrEngine ocrEngine;
     OcrService ocrService(ocrEngine);
-    App app(host, fs, cache, clipboard, encoder, rasterizer, ocrService);
+    FakePrinter printer;
+    App app(host, fs, cache, clipboard, encoder, rasterizer, ocrService, printer);
 
     app.onResize(800, 600);
     auto source = std::make_shared<DecodedImage>();
@@ -3932,7 +4108,8 @@ void testAppFontFamily() {
     FakeAnnotationRasterizer rasterizer;
     FakeOcrEngine ocrEngine;
     OcrService ocrService(ocrEngine);
-    App app(host, fs, cache, clipboard, encoder, rasterizer, ocrService);
+    FakePrinter printer;
+    App app(host, fs, cache, clipboard, encoder, rasterizer, ocrService, printer);
 
     app.onResize(800, 600);
     auto source = std::make_shared<DecodedImage>();
@@ -4016,7 +4193,8 @@ void testAppPenTools() {
     FakeAnnotationRasterizer rasterizer;
     FakeOcrEngine ocrEngine;
     OcrService ocrService(ocrEngine);
-    App app(host, fileSystem, cache, clipboard, encoder, rasterizer, ocrService);
+    FakePrinter printer;
+    App app(host, fileSystem, cache, clipboard, encoder, rasterizer, ocrService, printer);
     app.onResize(800, 600);
 
     auto source = std::make_shared<DecodedImage>();
@@ -4183,7 +4361,8 @@ void testAnnotationSizeIsImageBased() {
     FakeAnnotationRasterizer rasterizer;
     FakeOcrEngine ocrEngine;
     OcrService ocrService(ocrEngine);
-    App app(host, fileSystem, cache, clipboard, encoder, rasterizer, ocrService);
+    FakePrinter printer;
+    App app(host, fileSystem, cache, clipboard, encoder, rasterizer, ocrService, printer);
     app.onResize(800, 600);
 
     // 画面中央付近で描いても縁に当たらないよう、余裕のある大きさにする
@@ -4247,7 +4426,8 @@ void testAppSwapMouseButtons() {
     FakeAnnotationRasterizer rasterizer;
     FakeOcrEngine ocrEngine;
     OcrService ocrService(ocrEngine);
-    App app(host, fileSystem, cache, clipboard, encoder, rasterizer, ocrService);
+    FakePrinter printer;
+    App app(host, fileSystem, cache, clipboard, encoder, rasterizer, ocrService, printer);
     app.onResize(800, 600);
 
     // 既定では左がパン・右が編集
@@ -4536,7 +4716,8 @@ void testAppOcr() {
         return cv.wait_for(lock, std::chrono::seconds(5), [&] { return completions >= count; });
     };
 
-    App app(host, fileSystem, cache, clipboard, encoder, rasterizer, ocrService);
+    FakePrinter printer;
+    App app(host, fileSystem, cache, clipboard, encoder, rasterizer, ocrService, printer);
     app.onResize(800, 600);
 
     // 画像が無いときは予約せず通知だけ
@@ -4678,6 +4859,8 @@ int main() {
     testAppSaveOverwrite();
     testAppSaveDownscaled();
     testAppSaveColorConverted();
+    testPrintLayout();
+    testAppPrint();
     testImageCacheColorRefine();
     testAppAdoptsRefinedImage();
     testDownscaleToFit();

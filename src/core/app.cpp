@@ -177,14 +177,16 @@ AnnotationSpec::Kind kindOfTool(EditTool tool) {
 } // namespace
 
 App::App(IAppHost& host, IFileSystem& fileSystem, ImageCache& cache, IClipboard& clipboard,
-         IImageEncoder& encoder, IAnnotationRasterizer& rasterizer, OcrService& ocr)
+         IImageEncoder& encoder, IAnnotationRasterizer& rasterizer, OcrService& ocr,
+         IPrinter& printer)
     : host_(host),
       fileSystem_(fileSystem),
       cache_(cache),
       clipboard_(clipboard),
       encoder_(encoder),
       rasterizer_(rasterizer),
-      ocr_(ocr) {}
+      ocr_(ocr),
+      printer_(printer) {}
 
 void App::applyConfig(const Config& config) {
     keymap_.applyConfig(config.section("keys"));
@@ -204,6 +206,10 @@ void App::applyConfig(const Config& config) {
         std::clamp(config.getInt("save", "jpeg_quality", encodeOptions_.jpegQuality), 1, 100);
     // 上書き保存(Ctrl+S)は元の画像を失うので既定では確認する
     confirmOverwrite_ = config.getBool("save", "confirm_overwrite", confirmOverwrite_);
+    // 印刷の余白は用紙の印刷可能領域からさらに空ける分(0-50mm)
+    printOptions_.marginMm = static_cast<float>(std::clamp(
+        config.getInt("print", "margin_mm", static_cast<int>(printOptions_.marginMm)), 0, 50));
+    printOptions_.autoRotate = config.getBool("print", "auto_rotate", printOptions_.autoRotate);
     // 端に近づくと出る画像遷移用の矢印(使用感が合わなければ false で消せる)
     navArrowsEnabled_ = config.getBool("view", "nav_arrows", navArrowsEnabled_);
     // パンと編集の左右を入れ替える(メニューは入れ替えず常に右クリック)
@@ -370,6 +376,9 @@ void App::execute(Command command) {
         break;
     case Command::SaveImageAs:
         executeSaveAs();
+        break;
+    case Command::PrintImage:
+        executePrint();
         break;
     case Command::Undo:
         executeUndo();
@@ -1903,6 +1912,36 @@ void App::executeSaveAs() {
         const bool isOverwrite =
             !clipboardImage_ && !list_.empty() && samePath(*path, list_.current());
         saveImageTo(*path, isOverwrite);
+    }
+}
+
+void App::executePrint() {
+    if (!current_) {
+        showMessage("印刷する画像がありません");
+        return;
+    }
+    // 印刷するのは画面で見えているとおりのもの(注釈と表示回転を焼き込む)
+    std::shared_ptr<const DecodedImage> image = compositeImage();
+    // 紙は白。事前乗算のまま渡すと透明部分が黒くなるので焼き込んでおく
+    // (GDI はアルファを見ない。文字認識へ渡すときと同じ理由)
+    if (hasTransparency(*image)) {
+        if (auto flattened = flattenOnBackground(*image, 0xFFFFFF)) image = std::move(flattened);
+    }
+    const std::string jobName =
+        clipboardImage_ || list_.empty() ? "クリップボードの画像"
+                                         : pathToUtf8(list_.current().filename());
+    switch (printer_.print(*image, jobName, printOptions_)) {
+    case PrintStatus::Printed:
+        showMessage("印刷しました: " + jobName);
+        break;
+    case PrintStatus::Canceled:
+        break;  // 利用者が取りやめただけなので何も出さない(保存ダイアログと同じ)
+    case PrintStatus::Unsupported:
+        showMessage("このビルドでは印刷に対応していません");
+        break;
+    case PrintStatus::Failed:
+        showMessage("印刷に失敗しました");
+        break;
     }
 }
 

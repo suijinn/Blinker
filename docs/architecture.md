@@ -17,13 +17,14 @@
 │  decoder_wic / encoder_wic │  │  renderer_sdl / font_stb /    │
 │  / wic_factory /           │  │  decoder_stb / encoder_stb /  │
 │  file_system_win /         │  │  file_system_posix /          │
-│  clipboard_win             │  │  clipboard_sdl                │
+│  clipboard_win /           │  │  clipboard_sdl /              │
+│  printer_win               │  │  printer_stub                 │
 └──────────────┬────────────┘  └────────────┬──────────────────┘
                │ 実装・所有                   │ 実装・所有
 ┌──────────────▼─────────────────────────────▼──────────────────┐
 │ src/platform (抽象インターフェース)                              │
 │  IRenderer / IImageDecoder / IImageEncoder / IFileSystem /     │
-│  IClipboard / IAnnotationRasterizer                            │
+│  IClipboard / IAnnotationRasterizer / IOcrEngine / IPrinter    │
 └──────────────┬────────────────────────────────────────────────┘
                │ 利用
 ┌──────────────▼────────────────────────────┐
@@ -56,10 +57,11 @@
 | `EncoderStb` | `EncoderWic` | stb_image_write。PNG/JPEG/BMP(JPEG 品質は `EncodeOptions`) |
 | `FileSystemPosix` | `FileSystemWin` | `std::filesystem` + core の `naturalCompare`(自然順) |
 | `ClipboardSdl` | `ClipboardWin` | テキストは SDL、画像は "image/png" MIME で PNG 受け渡し |
+| `PrinterStub` | `PrinterWin` | **未実装**。印刷 (Ctrl+P) は「対応していない」旨をステータスバーに出すだけ(Linux では CUPS、macOS では Cocoa の印刷 API が要り、外部依存ゼロで賄えないため) |
 | `AnnotationStub` | `OcrEngineWinrt` | Windows.Media.Ocr による文字認識(`IOcrEngine` 実装)。**WinRT を C++/WinRT ではなく ABI で直接呼び、`combase.dll` は `LoadLibrary` で遅延解決する**。`windowsapp.lib` を静的リンクすると exe のインポートが増え、OCR を使わない起動でも DLL が読まれるため。認識器の生成も最初の実行まで遅延する。上限を超える画像は WIC で縮小し、座標は元のスケールへ戻す。文字が小さいときは 1 回目の行高から拡大率を決めて読み直す 2 パス構成(判断は core の `ocrRetryUpscale`)|
 | `AnnotationD2D` | **未実装**(ラスタライズ・テキスト計測とも)。ツールメニュー(コンテキストメニュー・色選択)やテキストのインプレース編集も未対応のため、SDL 版は閲覧専用 |
 
-SDL 版の既知の制限: 注釈編集ができない(`WindowSdl` は編集役のボタン
+SDL 版の既知の制限: 印刷ができない、注釈編集ができない(`WindowSdl` は編集役のボタン
 (`App::mouseRole` が `MouseRole::Edit` を返すほう)のイベントを App へ渡さない。
 ツールメニューも注釈の描画も無いため、繋ぐと見えない注釈だけが増える)、
 対応形式が stb_image の範囲(WebP/HEIC/AVIF/TIFF 等は不可)、
@@ -156,8 +158,14 @@ redo は undo 側へ積み替えるだけの対称な操作 (`App::restoreFrom`)
 出す前に断る)。表示できる大きさへ縮めたピクセルで元ファイルを潰すと画素が戻らないため。
 名前を付けて保存は許し、縮小した大きさをメッセージに出す。
 **表示回転 (Viewport) は `current_` のピクセルには入っていない**ので、保存・コピー・
-文字認識では `App::compositeImage` / `requestOcr` が注釈の後に回転を焼き込む
+印刷・文字認識では `App::compositeImage` / `requestOcr` が注釈の後に回転を焼き込む
 (画面で見えているとおりに外へ出す)。
+
+印刷 (Ctrl+P、`App::executePrint`) も出口の一つで、保存と同じ `compositeImage` を
+`IPrinter` へ渡す。紙は白なので、半透明を含む画像は文字認識と同じ理由(受け手が
+アルファを見ない)で `flattenOnBackground` で白へ焼き込んでから渡す。用紙のどこに
+どう置くかだけが `[print]` の設定で、プリンタ・用紙・向き・部数は OS の印刷ダイアログ
+に任せる(自前の印刷設定 UI は持たない)。
 
 ### マウス操作への Command の割り当て
 
@@ -363,6 +371,8 @@ Text 注釈は PowerPoint のテキストボックスと同じく**画像上で�
 | `MainWindow` | Win32 メッセージ変換、フルスクリーン、ダイアログ(開く・保存・上書き確認・色選択)・編集メニュー(サブメニュー対応)・テキストのインプレース編集まわり(`WM_CHAR`・IME・キャレット点滅タイマー)(IAppHost 実装) |
 | `RendererD2D` | BGRA ピクセル → ID2D1Bitmap(±1枚をGPU側にキャッシュ。枚数とバイト数の両方で上限)して描画。**GPU が扱える大きさの上限 (`GetMaximumBitmapSize`。機種により 8192 のこともある) を超える画像は `downscaleToFit` で縮小して載せ、転送元矩形はビットマップの実寸から取る**(縮むのは GPU 側のコピーだけで、保存・コピー・文字認識は元の大きさのまま)。注釈オブジェクト(`AnnotationsView`、選択枠・回転ハンドル含む)と選択領域のラバーバンド(`SelectionView`)もここで描く。図形の描画コードは焼き込みと共通(win/annotation_draw)。サイドバー・ステータスバーの文字は DirectWrite |
 | `DecoderWic` | WIC で 32bpp PBGRA に統一デコード。EXIF 回転適用、16384px 超は縮小(**メモリのための上限**。16384<sup>2</sup> でも PBGRA で 1GB になる)。縮小したときは元の大きさを `DecodedImage::sourceWidth/sourceHeight` に残し、上書き保存の拒否とステータスバーの表示に使う。デコード失敗時は失敗した段階と HRESULT を文字列で返し、ステータスバーに出す。**カラーマネジメントは遅延式**: `decode` はプロファイルの有無だけ見て `colorPending` を立て、`decodeColorManaged`(`IWICColorTransform` で ICC → sRGB)が後から読み直す。色変換は 24MP で 0.5 秒ほどかかり、最初の表示を待たせたくないため(`[view] color_management`。既定 true)|
+| `PrinterWin` | GDI による印刷 (Ctrl+P)。`PrintDlg` で選ばせたプリンタの DC へ `StretchDIBits` で 1 ページ描く(プリンタ・用紙・向き・部数はダイアログ、余白と自動回転は `[print]`)。**印刷される大きさを超える画素は先に `downscaleToFit` で捨てる**(GDI の間引きより結果がきれいで、ドライバへ渡す量も減る)。ダイアログの取りやめと失敗を区別して返し、App がメッセージを出し分ける |
+| `print_layout.h` | 用紙のどこに画像を置くかの計算(`layoutPrintImage`)。縦横比を保って印刷可能領域いっぱいに拡大縮小し、中央へ置く。**用紙より小さい画像も拡大する**(600dpi のプリンタで原寸に刷ると切手ほどにしかならないため)。90 度回した方が大きく刷れるなら回すかどうかも返す(`[print] auto_rotate`)。純粋関数で単体テスト対象 |
 | `image_scale.h` | `downscaleToFit`(箱型フィルタで縦横を上限以下に縮小)。**描画側の上限に収めるために両レンダラが呼ぶ**。純粋関数で単体テスト対象。事前乗算なのでチャンネルをそのまま平均してよい |
 | `exif.h` | EXIF Orientation の読み取り(`readExifOrientation`、JPEG の APP1 と PNG の eXIf を自前パース。SDL 版のためだが core に置く)と適用(`applyExifOrientation`、32bpp バッファの回転・反転。表示回転の焼き込みにも流用する)。いずれも純粋関数で単体テスト対象。**`IWICBitmapFlipRotator` は使わない**: コーデックへ直結すると 90/270 度回転で出力行ごとにソースを引き直し、iPhone の 12〜24MP 写真で事実上停止するため。デコード完了後の連続バッファ上で回せば画素数に比例した時間で済む |
 | `EncoderWic` | WIC で PNG/JPEG/BMP 保存 (Ctrl+S / Shift+Ctrl+S)。JPEG 品質は `EncodeOptions::jpegQuality` を ImageQuality へ渡す。`supports` は拡張子だけで可否を答える(上書き保存の可否をファイルへ手を付ける前に判断するため)。PNG は逆乗算してアルファ保持、JPEG/BMP は白背景に合成 |
