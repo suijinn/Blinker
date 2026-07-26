@@ -70,6 +70,7 @@ std::vector<HelpLine> buildHelpLines(const Keymap& keymap, const bool swapMouseB
     row(Command::CopyImage, "画像をコピー");
     row(Command::CopyPath, "パスをコピー");
     row(Command::CopyFile, "ファイルをコピー");
+    row(Command::CopyOcrText, "文字を認識してコピー");
     row(Command::PasteImage, "貼り付け");
 
     header("編集");
@@ -77,6 +78,7 @@ std::vector<HelpLine> buildHelpLines(const Keymap& keymap, const bool swapMouseB
     row(Command::Redo, "やり直す");
     row(Command::DeleteAnnotation, "選択中の図形・テキストを削除");
     row(Command::SelectToolCrop, "トリミングツール");
+    row(Command::SelectToolOcr, "文字認識ツール (範囲指定)");
     row(Command::SelectToolRect, "矩形ツール");
     row(Command::SelectToolEllipse, "楕円ツール");
     row(Command::SelectToolArrow, "矢印ツール");

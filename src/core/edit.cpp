@@ -55,4 +55,40 @@ void blendOverlay(DecodedImage& dst, const DecodedImage& overlay, int x, int y) 
     }
 }
 
+std::shared_ptr<DecodedImage> flattenOnBackground(const DecodedImage& src,
+                                                  const uint32_t backgroundRGB) {
+    if (src.width == 0 || src.height == 0) return nullptr;
+
+    const auto bgB = static_cast<uint8_t>(backgroundRGB & 0xFF);
+    const auto bgG = static_cast<uint8_t>((backgroundRGB >> 8) & 0xFF);
+    const auto bgR = static_cast<uint8_t>((backgroundRGB >> 16) & 0xFF);
+
+    auto result = std::make_shared<DecodedImage>();
+    result->width = src.width;
+    result->height = src.height;
+    result->pixels = src.pixels;
+
+    const size_t count = static_cast<size_t>(src.width) * src.height;
+    uint8_t* p = result->pixels.data();
+    for (size_t i = 0; i < count; ++i, p += 4) {
+        const unsigned inv = 255u - p[3];
+        if (inv == 0) continue;
+        // 事前乗算なので、背景を (1 - srcA) 倍して足すだけでよい
+        p[0] = static_cast<uint8_t>(p[0] + (bgB * inv + 127u) / 255u);
+        p[1] = static_cast<uint8_t>(p[1] + (bgG * inv + 127u) / 255u);
+        p[2] = static_cast<uint8_t>(p[2] + (bgR * inv + 127u) / 255u);
+        p[3] = 255;
+    }
+    return result;
+}
+
+bool hasTransparency(const DecodedImage& src) {
+    const size_t count = static_cast<size_t>(src.width) * src.height;
+    const uint8_t* p = src.pixels.data();
+    for (size_t i = 0; i < count; ++i, p += 4) {
+        if (p[3] != 255) return true;
+    }
+    return false;
+}
+
 } // namespace blinker

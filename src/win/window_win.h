@@ -27,6 +27,9 @@ public:
     /// @brief ImageCache のワーカースレッドからのデコード完了通知に使うウィンドウメッセージ。
     static constexpr UINT kMsgImageDecoded = WM_APP + 1;
 
+    /// @brief OcrService のワーカースレッドからの文字認識完了通知に使うウィンドウメッセージ。
+    static constexpr UINT kMsgOcrCompleted = WM_APP + 2;
+
     /**
      * @brief ウィンドウクラスを登録してウィンドウを作成・表示する。
      * @param[in] hinstance   モジュールインスタンスハンドル。

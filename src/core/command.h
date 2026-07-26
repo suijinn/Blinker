@@ -38,6 +38,7 @@ enum class Command {
     CopyImage,         ///< 表示中の画像をクリップボードへ
     CopyPath,          ///< 表示中の画像のフルパスをクリップボードへ
     CopyFile,          ///< 表示中の画像のファイル実体をクリップボードへ(エクスプローラに貼り付け可能)
+    CopyOcrText,       ///< 表示中の画像から文字を認識してクリップボードへ
     PasteImage,        ///< クリップボードの画像を表示(次/前でフォルダ一覧に戻る)
     SaveImageAs,       ///< 表示中の画像を名前を付けて保存 (PNG/JPEG/BMP)
     Undo,              ///< 直前の編集(トリミング・図形・テキスト)を取り消す
@@ -52,6 +53,7 @@ enum class Command {
     SelectToolMarker,  ///< 編集ドラッグのツールをマーカー(半透明の手書き)に切り替える
     SelectToolNumber,  ///< 編集ドラッグのツールを連番マーカーに切り替える
     SelectToolText,    ///< 編集ドラッグのツールをテキストに切り替える
+    SelectToolOcr,     ///< 編集ドラッグのツールを文字認識(範囲指定)に切り替える
     ToggleSidebar,     ///< ファイル名一覧のサイドバーの表示切り替え
     ToggleStatusBar,   ///< ステータスバーの表示切り替え
     ToggleHelp,        ///< サイドバーにキー一覧(ヘルプ)を表示 / 非表示

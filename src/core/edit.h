@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <memory>
 
 #include "platform/decoder.h"
@@ -40,5 +41,27 @@ std::shared_ptr<DecodedImage> cropImage(const DecodedImage& src, RectI rect);
  * @param[in]     y       合成先での上端 Y 座標。はみ出した分はクリップする。
  */
 void blendOverlay(DecodedImage& dst, const DecodedImage& overlay, int x, int y);
+
+/**
+ * @brief 半透明を単色の背景へ焼き込んだ不透明なコピーを返す。
+ *
+ * 透明部分を持つ画像を、アルファを見ない相手(OCR エンジンなど)へ渡すために使う。
+ * 事前乗算のまま背景を足すだけなので、逆乗算による丸め誤差は入らない。
+ *
+ * @param[in] src           変換元の画像(32bpp PBGRA)。
+ * @param[in] backgroundRGB 敷く背景色(0xRRGGBB)。
+ * @return アルファがすべて 255 になったコピー。src が空なら nullptr。
+ * @note 完全に透明な画素は元の色が残っていないため、背景色そのものになる
+ *       (背景と同系色の文字は読めなくなる)。
+ */
+std::shared_ptr<DecodedImage> flattenOnBackground(const DecodedImage& src,
+                                                  uint32_t backgroundRGB);
+
+/**
+ * @brief 半透明の画素を含むかを調べる。
+ * @param[in] src 調べる画像(32bpp PBGRA)。
+ * @return アルファが 255 未満の画素が 1 つでもあれば true。
+ */
+bool hasTransparency(const DecodedImage& src);
 
 } // namespace blinker
