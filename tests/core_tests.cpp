@@ -2239,7 +2239,7 @@ void testAppEdit() {
         const AnnotationSpec& spec = view.specs->front();
         CHECK(spec.kind == AnnotationSpec::Kind::Rect);
         CHECK(nearly(spec.p1.x, 0) && nearly(spec.p2.x, 4));
-        CHECK(nearly(spec.strokeWidth, 3));  // 等倍表示なので画面基準の値のまま
+        CHECK(nearly(spec.strokeWidth, 3));  // 既定の太さ(画像px)
         CHECK(spec.colorRGB == 0xFF3B30);
         CHECK(nearly(spec.angleDeg, 0));
         CHECK(view.selected && *view.selected == 0);
@@ -2282,7 +2282,7 @@ void testAppEdit() {
     {
         const AnnotationsView view = app.annotations();
         const AnnotationSpec& text = view.specs->back();
-        CHECK(nearly(text.fontSize, 18));  // 既定値 (等倍表示)
+        CHECK(nearly(text.fontSize, 18));  // 既定値(画像px)
         CHECK(nearly(text.p1.x, 0) && nearly(text.p1.y, 0));
         CHECK(nearly(text.p2.x, 20) && nearly(text.p2.y, 8));  // 実測境界が p2 に入る
     }
@@ -3188,7 +3188,7 @@ void testAppPenTools() {
         CHECK(nearly(spec.points.back().x, 20) && nearly(spec.points.back().y, 20));
         CHECK(nearly(spec.p1.x, 0) && nearly(spec.p1.y, 0));
         CHECK(nearly(spec.p2.x, 20) && nearly(spec.p2.y, 20));
-        CHECK(nearly(spec.strokeWidth, 3));  // 既定の太さ(等倍なので画面px = 画像px)
+        CHECK(nearly(spec.strokeWidth, 3));  // 既定の太さ(画像px)
         CHECK(spec.strokeAlpha == 255);
     }
 
@@ -3278,6 +3278,68 @@ void testAppPenTools() {
     CHECK(app.currentTool() == EditTool::Number);
     app.applyConfig(Config::parse("[edit]\ntool = pen\n"));
     CHECK(app.currentTool() == EditTool::Pen);
+}
+
+// 線幅・文字サイズは画像px基準。描いたときの表示倍率に影響されない
+void testAnnotationSizeIsImageBased() {
+    FakeDecoder decoder;
+    ImageCache cache(decoder);
+    FakeHost host;
+    FakeFileSystem fileSystem;
+    FakeClipboard clipboard;
+    FakeEncoder encoder;
+    FakeAnnotationRasterizer rasterizer;
+    App app(host, fileSystem, cache, clipboard, encoder, rasterizer);
+    app.onResize(800, 600);
+
+    // 画面中央付近で描いても縁に当たらないよう、余裕のある大きさにする
+    auto source = std::make_shared<DecodedImage>();
+    source->width = 400;
+    source->height = 400;
+    source->pixels.resize(400 * 400 * 4);
+    clipboard.pasteImage = source;
+    app.execute(Command::PasteImage);
+    CHECK(nearly(app.zoom(), 1.0f));  // 400x400 は 800x600 に収まるので等倍
+
+    // 等倍で 1 本引く。既定の 3px がそのまま画像座標に入る
+    app.execute(Command::SelectToolRect);
+    app.onMouseDown(MouseButton::Right, {390, 277});
+    app.onMouseUp(MouseButton::Right, {400, 287});
+    CHECK(nearly(app.annotations().specs->back().strokeWidth, 3));
+
+    // 拡大してから引いても同じ太さ(以前は 1/zoom されて細くなっていた)
+    app.execute(Command::ZoomIn);
+    app.execute(Command::ZoomIn);
+    CHECK(app.zoom() > 1.0f);
+    app.onMouseDown(MouseButton::Right, {390, 277});
+    app.onMouseUp(MouseButton::Right, {400, 287});
+    CHECK(nearly(app.annotations().specs->back().strokeWidth, 3));
+
+    // 縮小側も同じ
+    app.execute(Command::ZoomOut);
+    app.execute(Command::ZoomOut);
+    app.execute(Command::ZoomOut);
+    app.execute(Command::ZoomOut);
+    CHECK(app.zoom() < 1.0f);
+    app.onMouseDown(MouseButton::Right, {395, 282});
+    app.onMouseUp(MouseButton::Right, {400, 287});
+    CHECK(nearly(app.annotations().specs->back().strokeWidth, 3));
+
+    // マーカーの 4 倍も、連番マーカーの最小直径(文字サイズ由来)も倍率に依らない
+    app.execute(Command::SelectToolMarker);
+    app.onMouseDown(MouseButton::Right, {395, 282});
+    app.onMouseMove({400, 287});
+    app.onMouseUp(MouseButton::Right, {400, 287});
+    CHECK(nearly(app.annotations().specs->back().strokeWidth, 12));
+
+    app.execute(Command::SelectToolNumber);
+    app.onMouseDown(MouseButton::Right, {380, 270});
+    app.onMouseUp(MouseButton::Right, {386, 276});
+    {
+        const AnnotationSpec& spec = app.annotations().specs->back();
+        CHECK(spec.kind == AnnotationSpec::Kind::Number);
+        CHECK(nearly(spec.p2.x - spec.p1.x, 18 * 1.8f));  // 文字サイズ 18px の 1.8 倍
+    }
 }
 
 // [mouse] swap_buttons = true はパンと編集だけを入れ替える(メニューは常に右クリック)
@@ -3441,6 +3503,7 @@ int main() {
     testAppTextStyles();
     testAppFontFamily();
     testAppPenTools();
+    testAnnotationSizeIsImageBased();
     testAppSwapMouseButtons();
 
     if (g_failures == 0) {

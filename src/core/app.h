@@ -1057,14 +1057,14 @@ private:
     /// やり直し履歴。undo で積み、新しい編集(pushUndoState)で捨てる
     std::vector<UndoState> redoStack_;
     uint32_t editColorRGB_ = 0xFF3B30;  ///< 新規注釈の色(0xRRGGBB)
-    float editStrokeWidth_ = 3.0f;  ///< 線幅。画面px基準(適用時に 1/zoom で画像座標へ換算)
-    float editFontSize_ = 18.0f;    ///< フォントサイズ。画面px基準(同上)
+    float editStrokeWidth_ = 3.0f;  ///< 新規注釈の線幅(画像座標)。表示倍率では変わらない
+    float editFontSize_ = 18.0f;    ///< 新規テキストのフォントサイズ(画像座標)。同上
     /// 新規テキストのフォントファミリ名(UTF-8)。常に非空
     std::string editFontFamily_ = kDefaultFontFamily;
     uint32_t editFillRGB_ = 0xFFFFFF;  ///< 新規注釈の塗りつぶし色(0xRRGGBB)
     int editFillAlpha_ = 0;            ///< 塗りつぶしの不透明度(0-255)。0 は塗りなし
     uint32_t editBorderRGB_ = 0x000000;  ///< 新規テキストの枠線色(0xRRGGBB)
-    float editBorderWidth_ = 0;  ///< 枠線幅。画面px基準(同上)。0 は枠線なし
+    float editBorderWidth_ = 0;  ///< 新規テキストの枠線幅(画像座標)。0 は枠線なし
 };
 
 } // namespace blinker
