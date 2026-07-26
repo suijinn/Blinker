@@ -12,6 +12,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "core/config.h"
 #include "platform/decoder.h"
 
 /**
@@ -20,6 +21,34 @@
  */
 
 namespace blinker {
+
+/**
+ * @brief ImageCache が保持する量の上限。
+ *
+ * 既定値の正はここ。blinker.ini の `[cache]` を読む cacheLimitsFromConfig も
+ * この既定値を土台にする。
+ */
+struct ImageCacheLimits {
+    size_t maxBytes = size_t{512} << 20;  ///< ピクセルデータの合計上限(バイト)
+    size_t maxItems = 8;                  ///< 保持するエントリ数の上限
+};
+
+/// @brief cacheLimitsFromConfig が受け付ける値の範囲(範囲外は丸める)。
+constexpr int kMinCacheMemoryMB = 32;     ///< 上限メモリの下限 (MB)
+constexpr int kMaxCacheMemoryMB = 16384;  ///< 上限メモリの上限 (MB)
+constexpr int kMinCacheItems = 2;         ///< 保持枚数の下限(表示中と隣の 1 枚)
+constexpr int kMaxCacheItems = 64;        ///< 保持枚数の上限
+
+/**
+ * @brief blinker.ini の `[cache]` から容量上限を読む。
+ *
+ * `max_memory_mb`(MB 単位)と `max_items`(枚数)を見る。どちらも範囲外の値は
+ * 丸め、キーが無ければ ImageCacheLimits の既定値をそのまま使う。
+ *
+ * @param[in] config 読み込み済みの設定。
+ * @return 適用する上限。
+ */
+ImageCacheLimits cacheLimitsFromConfig(const Config& config);
 
 /// @brief std::filesystem::path を unordered_map のキーにするためのハッシュ関手。
 struct PathHash {
@@ -44,12 +73,12 @@ class ImageCache {
 public:
     /**
      * @brief キャッシュを構築し、ワーカースレッドを起動する。
-     * @param[in] decoder  デコードに使う実装。本オブジェクトより長生きすること。
-     * @param[in] maxBytes 保持するピクセルデータの合計上限(バイト)。
-     * @param[in] maxItems 保持するエントリ数の上限。
+     * @param[in] decoder デコードに使う実装。本オブジェクトより長生きすること。
+     * @param[in] limits  保持量の上限。省略時は ImageCacheLimits の既定値。
+     * @note maxItems は 2 未満を渡しても 2 として扱う(表示中の 1 枚しか持てないと
+     *       前後へ移るたびに再デコードになる)。
      */
-    explicit ImageCache(IImageDecoder& decoder, size_t maxBytes = size_t{512} << 20,
-                        size_t maxItems = 8);
+    explicit ImageCache(IImageDecoder& decoder, ImageCacheLimits limits = {});
 
     /// @brief ワーカースレッドを停止して待ち合わせる。
     ~ImageCache();
@@ -106,18 +135,38 @@ private:
         std::shared_ptr<DecodedImage> image;  ///< デコード結果。失敗時は nullptr
         bool failed = false;                  ///< デコードに失敗したパスか
         std::string error;                    ///< 失敗理由(成功時は空)
+        bool refined = true;  ///< 色変換のための読み直しが済んだ(または不要)か
         std::list<std::filesystem::path>::iterator lruIt;  ///< lru_ 内の自分の位置
+    };
+
+    /// @brief ワーカースレッドが処理する 1 件の仕事。
+    struct Task {
+        std::filesystem::path path;  ///< 対象のパス。空なら仕事なし
+        bool refine = false;         ///< true なら色変換のための読み直し
     };
 
     /// @brief ワーカースレッドの本体。予約されたパスを順にデコードする。
     void workerLoop();
 
     /**
-     * @brief 次にデコードすべきパスを選ぶ(urgent_ を優先)。
-     * @return デコード対象のパス。候補がなければ空パス。
+     * @brief 次の仕事を選ぶ(urgent_ → prefetch_ → refine_ の順)。
+     *
+     * 色変換の読み直しは最も優先度が低い。表示や先読みを待たせないため。
+     *
+     * @return 処理する仕事。候補がなければ path が空。
      * @pre mutex_ をロック済みであること。
      */
-    std::filesystem::path nextTaskLocked() const;
+    Task nextTaskLocked() const;
+
+    /**
+     * @brief 色変換で読み直した結果をエントリへ反映する。
+     * @param[in] path  対象のパス。既に捨てられていれば何もしない。
+     * @param[in] image 変換済み画像。nullptr なら「変換できなかった」として印だけ付ける。
+     * @return 差し替えたら true(呼び出し側は完了通知を出す)。
+     * @pre mutex_ をロック済みであること。
+     */
+    bool storeRefinedLocked(const std::filesystem::path& path,
+                            std::shared_ptr<DecodedImage> image);
 
     /**
      * @brief デコード結果をキャッシュへ格納する。
@@ -147,6 +196,8 @@ private:
     size_t totalBytes_ = 0;
     std::deque<std::filesystem::path> urgent_;
     std::vector<std::filesystem::path> prefetch_;
+    /// 色変換のために読み直す待ち行列(`DecodedImage::colorPending` が立った分)
+    std::deque<std::filesystem::path> refine_;
     std::function<void(const std::filesystem::path&)> onDecoded_;
     std::thread worker_;
 };

@@ -65,8 +65,9 @@ int WINAPI wWinMain(HINSTANCE hinstance, HINSTANCE, PWSTR, int showCommand) {
     {
         const Config config = Config::loadFile(exeDirectory() / L"blinker.ini");
 
-        DecoderWic decoder;
-        ImageCache cache(decoder);
+        // 埋め込み ICC プロファイル → sRGB の変換。Display P3 の写真などで色が正しくなる
+        DecoderWic decoder(config.getBool("view", "color_management", true));
+        ImageCache cache(decoder, cacheLimitsFromConfig(config));
         FileSystemWin fileSystem;
 
         const bool darkTheme = resolveDarkTheme(config);

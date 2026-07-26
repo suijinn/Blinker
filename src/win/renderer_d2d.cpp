@@ -4,6 +4,7 @@
 #include <array>
 
 #include "core/annotation_edit.h"
+#include "core/image_scale.h"
 #include "core/unicode.h"
 #include "win/annotation_draw.h"
 
@@ -13,6 +14,9 @@ namespace {
 using Microsoft::WRL::ComPtr;
 
 constexpr size_t kBitmapCacheSize = 3;
+// GPU 側のコピーに使う上限。1 億画素級の画像が並ぶフォルダでも溢れないよう、
+// 枚数だけでなくバイト数でも切る(直近の 1 枚は上限を超えても残す)
+constexpr size_t kBitmapCacheBytes = size_t{256} << 20;
 
 D2D1_COLOR_F colorFromRGB(uint32_t rgb) {
     return D2D1::ColorF(((rgb >> 16) & 0xFF) / 255.0f, ((rgb >> 8) & 0xFF) / 255.0f,
@@ -89,21 +93,36 @@ void RendererD2D::resize(uint32_t width, uint32_t height) {
 
 ID2D1Bitmap* RendererD2D::bitmapFor(const std::shared_ptr<const DecodedImage>& image) {
     for (auto it = bitmaps_.begin(); it != bitmaps_.end(); ++it) {
-        if (it->first == image) {
+        if (it->image == image) {
             bitmaps_.splice(bitmaps_.begin(), bitmaps_, it);
-            return bitmaps_.front().second.Get();
+            return bitmaps_.front().bitmap.Get();
         }
     }
+    // GPU が扱える上限を超える画像は縮小して載せる(元のピクセルはそのまま残る)
+    const UINT32 maxSize = target_->GetMaximumBitmapSize();
+    std::shared_ptr<DecodedImage> reduced;
+    if (image->width > maxSize || image->height > maxSize) {
+        reduced = downscaleToFit(*image, maxSize);
+        if (!reduced) return nullptr;  // 縮小できないなら載せる術がない
+    }
+    const DecodedImage& source = reduced ? *reduced : *image;
+
     ComPtr<ID2D1Bitmap> bitmap;
     const auto props = D2D1::BitmapProperties(
         D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED));
-    if (FAILED(target_->CreateBitmap(D2D1::SizeU(image->width, image->height),
-                                     image->pixels.data(), image->width * 4, props, &bitmap))) {
+    if (FAILED(target_->CreateBitmap(D2D1::SizeU(source.width, source.height),
+                                     source.pixels.data(), source.width * 4, props, &bitmap))) {
         return nullptr;
     }
-    bitmaps_.emplace_front(image, std::move(bitmap));
-    if (bitmaps_.size() > kBitmapCacheSize) bitmaps_.pop_back();
-    return bitmaps_.front().second.Get();
+    bitmaps_.push_front(BitmapEntry{image, std::move(bitmap), source.byteSize()});
+    size_t totalBytes = 0;
+    for (const BitmapEntry& entry : bitmaps_) totalBytes += entry.bytes;
+    while (bitmaps_.size() > 1 &&
+           (bitmaps_.size() > kBitmapCacheSize || totalBytes > kBitmapCacheBytes)) {
+        totalBytes -= bitmaps_.back().bytes;
+        bitmaps_.pop_back();
+    }
+    return bitmaps_.front().bitmap.Get();
 }
 
 void RendererD2D::render(const std::shared_ptr<const DecodedImage>& image,
@@ -122,9 +141,12 @@ void RendererD2D::render(const std::shared_ptr<const DecodedImage>& image,
             // 拡大表示時はピクセル境界が見えるよう最近傍補間へ切り替える
             const auto mode = zoom >= 4.0f ? D2D1_BITMAP_INTERPOLATION_MODE_NEAREST_NEIGHBOR
                                            : D2D1_BITMAP_INTERPOLATION_MODE_LINEAR;
-            const auto rect = D2D1::RectF(0, 0, static_cast<float>(image->width),
+            const auto dest = D2D1::RectF(0, 0, static_cast<float>(image->width),
                                           static_cast<float>(image->height));
-            target_->DrawBitmap(bitmap, rect, 1.0f, mode, rect);
+            // ビットマップは上限に収めるため画像より小さいことがある。転送元は実寸で取る
+            const D2D1_SIZE_F bitmapSize = bitmap->GetSize();
+            const auto src = D2D1::RectF(0, 0, bitmapSize.width, bitmapSize.height);
+            target_->DrawBitmap(bitmap, dest, 1.0f, mode, src);
             target_->SetTransform(D2D1::Matrix3x2F::Identity());
         }
     }

@@ -148,6 +148,8 @@ bool applyExifOrientation(DecodedImage& image, uint16_t orientation) {
     image.pixels = std::move(out);
     image.width = static_cast<uint32_t>(dstW);
     image.height = static_cast<uint32_t>(dstH);
+    // 縮小して取り込んだ画像なら、記録してある元の大きさも一緒に入れ替える
+    if (transposed) std::swap(image.sourceWidth, image.sourceHeight);
     return true;
 }
 

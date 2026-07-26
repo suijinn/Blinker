@@ -1,7 +1,7 @@
 # Blinker — 開発ガイド
 
 軽量・高速起動の画像ビューア。C++20。Windows版は Win32 API / Direct2D / WIC / WinRT(OCR)で
-外部ライブラリ依存ゼロの単一exe(約590KB。うちOCRが約35KB)。Linux/macOS版は SDL3 + stb(third_party/にベンダリング)の `src/sdl` バックエンド(閲覧専用、編集は未対応)。
+外部ライブラリ依存ゼロの単一exe(約610KB。うちOCRが約35KB)。Linux/macOS版は SDL3 + stb(third_party/にベンダリング)の `src/sdl` バックエンド(閲覧専用、編集は未対応)。
 
 設計の詳細(層構造・コンポーネントの責務・データフロー・起動シーケンス)の正は
 [docs/architecture.md](docs/architecture.md)。ここにはビルド方法と、コードを触るたびに必要になる
@@ -52,7 +52,9 @@ cmake --preset linux-release && cmake --build --preset linux-release
 - **スレッドモデル**: App/Viewport/ImageListはUIスレッド専用でスレッド安全ではない。
   ワーカースレッドは2本だけで、どちらも同じ形(キュー投入 → 完了をPostMessage):
   デコードは `ImageCache` 内の1本(UI→ワーカーは `requestNow`/`setPrefetch`、
-  ワーカー→UIは `onDecoded` → `PostMessage(kMsgImageDecoded)` → `App::onDecodeCompleted`)、
+  ワーカー→UIは `onDecoded` → `PostMessage(kMsgImageDecoded)` → `App::onDecodeCompleted`。
+  **同じパスで通知が2回来ることがある**: カラーマネジメントは遅延式で、1回目は未変換、
+  2回目が sRGB 変換後。2回目は `App::adoptRefinedImage` が画素だけ差し替える)、
   文字認識は `OcrService` 内の1本(`request` → `onCompleted` →
   `PostMessage(kMsgOcrCompleted)` → `App::onOcrCompleted`)。
   `DecoderWic` はthread_localでCOM初期化するためどのスレッドからでも呼べるが、
@@ -67,6 +69,11 @@ cmake --preset linux-release && cmake --build --preset linux-release
 
 - 画像ピクセルは常に 32bpp PBGRA(事前乗算)。`DecodedImage` 参照は `shared_ptr` で持ち回る
   (RendererD2DのGPUビットマップキャッシュはshared_ptrをキーにしてアドレス再利用の取り違えを防いでいる)
+- **GPU 側のコピーは `DecodedImage` より小さいことがある**。描画側の上限
+  (D2D の `GetMaximumBitmapSize` / SDL の最大テクスチャサイズ)を超える画像は
+  `downscaleToFit` で縮めて載せるため、転送元の矩形は画像の寸法ではなく
+  ビットマップの実寸(`GetSize` 等)から取ること。逆に**取り込み時に縮小された画像**
+  (`DecodedImage::downscaled()`)は元ファイルより小さいので、上書き保存してはならない
 - 座標はすべて物理ピクセル(D2DはDPI 96固定でDIP=px)。DPI対応はmanifestのPerMonitorV2
 - パス比較は大文字小文字を無視(Windows準拠)。フォルダ内ソートは Win版が `StrCmpLogicalW`、
   SDL版が core の `naturalCompare`(いずれもエクスプローラと同じ自然順)
@@ -168,7 +175,7 @@ release.yml のビルドは Ninja プリセットではなく Visual Studio ジ�
 プリセットは vcvars を要求し、CI では第三者製アクションが必要になるため。配布バイナリの
 生成経路なのでサプライチェーンは公式アクションのみに絞っている。両ジェネレータの出力は
 バイト単位で一致する(サイズ上の不利はない。実測値は機能追加で増えるので参考値として、
-v0.1.4 + マウス遷移の時点で 602,112 バイト)。Linux/macOS 版のバイナリ配布は未対応。
+v0.1.4 + 上書き保存・巨大画像対応・カラーマネジメントの時点で 622,080 バイト)。Linux/macOS 版のバイナリ配布は未対応。
 なお VS のバージョンは `-G` で決め打ちせず CMake に検出させること。GitHub の
 `windows-latest` イメージは載せる VS が更新される(2026-07 に vs2022 → vs2026)。
 

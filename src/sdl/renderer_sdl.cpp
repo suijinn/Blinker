@@ -4,6 +4,8 @@
 #include <cmath>
 #include <string_view>
 
+#include "core/image_scale.h"
+
 namespace blinker {
 
 RendererSdl::RendererSdl(SDL_Renderer* renderer, FontStb& font)
@@ -25,19 +27,41 @@ SDL_Texture* RendererSdl::textureFor(const std::shared_ptr<const DecodedImage>& 
             return cache_.front().texture;
         }
     }
+    // レンダラの上限を超える画像は縮小して載せる(元のピクセルはそのまま残る)
+    std::shared_ptr<DecodedImage> reduced;
+    const uint32_t maxSize = maxTextureSize();
+    if (image->width > maxSize || image->height > maxSize) {
+        reduced = downscaleToFit(*image, maxSize);
+        if (!reduced) return nullptr;  // 縮小できないなら載せる術がない
+    }
+    const DecodedImage& source = reduced ? *reduced : *image;
+
     SDL_Texture* texture = SDL_CreateTexture(
         renderer_, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STATIC,
-        static_cast<int>(image->width), static_cast<int>(image->height));
+        static_cast<int>(source.width), static_cast<int>(source.height));
     if (!texture) return nullptr;
-    SDL_UpdateTexture(texture, nullptr, image->pixels.data(),
-                      static_cast<int>(image->width) * 4);
+    SDL_UpdateTexture(texture, nullptr, source.pixels.data(),
+                      static_cast<int>(source.width) * 4);
     SDL_SetTextureBlendMode(texture, SDL_BLENDMODE_BLEND_PREMULTIPLIED);
-    cache_.insert(cache_.begin(), {image, texture});
-    while (cache_.size() > kTextureCacheSize) {
+    cache_.insert(cache_.begin(), {image, texture, source.byteSize()});
+    size_t totalBytes = 0;
+    for (const CacheEntry& entry : cache_) totalBytes += entry.bytes;
+    while (cache_.size() > 1 &&
+           (cache_.size() > kTextureCacheSize || totalBytes > kTextureCacheBytes)) {
         if (cache_.back().texture) SDL_DestroyTexture(cache_.back().texture);
+        totalBytes -= cache_.back().bytes;
         cache_.pop_back();
     }
     return texture;
+}
+
+uint32_t RendererSdl::maxTextureSize() const {
+    const SDL_PropertiesID props = SDL_GetRendererProperties(renderer_);
+    // 取得できない場合は、どの環境でも通る保守的な値にしておく
+    const Sint64 value =
+        props == 0 ? 0
+                   : SDL_GetNumberProperty(props, SDL_PROP_RENDERER_MAX_TEXTURE_SIZE_NUMBER, 0);
+    return value > 0 ? static_cast<uint32_t>(value) : 2048u;
 }
 
 void RendererSdl::fillRect(float x, float y, float w, float h, uint32_t rgb, uint8_t alpha) {

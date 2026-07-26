@@ -33,6 +33,16 @@ bool samePath(const fs::path& a, const fs::path& b) {
     return toLower(pathToUtf8(a)) == toLower(pathToUtf8(b));
 }
 
+// 上書き保存を断る理由を返す(断らないなら空文字列)。
+// 巨大画像は表示できる大きさへ縮小して取り込まれるので、それで元ファイルを潰すと
+// 失った画素は取り戻せない。名前を付けて保存なら許す
+std::string overwriteBlockedReason(const DecodedImage& image) {
+    if (!image.downscaled()) return {};
+    return std::format("元が大きい({} x {})ため表示用に {} x {} へ縮小してあります。"
+                       "上書きすると画素が失われるので、名前を付けて保存を使ってください",
+                       image.sourceWidth, image.sourceHeight, image.width, image.height);
+}
+
 // Viewport の表示回転を画素へ焼き込む(保存・コピー・文字認識用)。回転は表示状態で
 // current_ のピクセルには入っていないため、外へ出すときにここで反映する。
 // EXIF Orientation の 6 / 3 / 8 が時計回り 90 / 180 / 270 度に一致するので流用する
@@ -1848,6 +1858,10 @@ void App::executeSaveOverwrite() {
         executeSaveAs();
         return;
     }
+    if (const std::string reason = overwriteBlockedReason(*current_); !reason.empty()) {
+        showMessage(reason);  // 確認ダイアログを出す前に断る
+        return;
+    }
     const fs::path path = list_.current();
     if (!encoder_.supports(path)) {
         showMessage(std::format("{} は上書き保存に対応していない形式です"
@@ -1855,10 +1869,22 @@ void App::executeSaveOverwrite() {
                                 pathToUtf8(path.extension())));
         return;
     }
+    // カラープロファイル付きの画像は、上書きすると色の情報が失われる。
+    // 変換済みなら元の色空間が、変換前(遅延変換の待ち中)ならプロファイルが消える
+    std::string colorWarning;
+    if (current_->colorConverted) {
+        colorWarning =
+            "\nこの画像は埋め込みプロファイルから sRGB へ変換して表示しているため、"
+            "上書きすると元の色空間の情報は失われます。";
+    } else if (current_->colorPending) {
+        colorWarning =
+            "\nこの画像の埋め込みカラープロファイルは保存時に引き継がれないため、"
+            "上書きすると色の解釈が変わります。";
+    }
     if (confirmOverwrite_ &&
         !host_.showConfirm(std::format("{} を上書き保存します。\n"
-                                       "元の画像は元に戻せません。よろしいですか?",
-                                       pathToUtf8(path.filename())))) {
+                                       "元の画像は元に戻せません。{}よろしいですか?",
+                                       pathToUtf8(path.filename()), colorWarning))) {
         return;
     }
     saveImageTo(path, true);
@@ -1881,11 +1907,31 @@ void App::executeSaveAs() {
 }
 
 void App::saveImageTo(const fs::path& path, const bool isOverwrite) {
+    // 名前を付けて保存で現在のファイルを選び直した場合もここへ来るので、同じ理由で断る
+    if (isOverwrite && current_) {
+        if (const std::string reason = overwriteBlockedReason(*current_); !reason.empty()) {
+            showMessage(reason);
+            return;
+        }
+    }
     if (!encoder_.encode(*compositeImage(), path, encodeOptions_)) {
         showMessage("保存に失敗しました: " + pathToUtf8(path));
         return;
     }
-    showMessage((isOverwrite ? "上書き保存しました: " : "保存しました: ") + pathToUtf8(path));
+    // 表示のために変えてある点(縮小・色変換)は保存結果にも入るので伝える
+    const bool reduced = current_ && current_->downscaled();
+    const bool converted = current_ && current_->colorConverted;
+    std::string note;
+    if (reduced && converted) {
+        note = std::format("(表示用に縮小した {} x {} / sRGB へ変換した色で)", current_->width,
+                           current_->height);
+    } else if (reduced) {
+        note = std::format("(表示用に縮小した {} x {} で)", current_->width, current_->height);
+    } else if (converted) {
+        note = "(sRGB へ変換した色で)";
+    }
+    showMessage(std::format("{}しました{}: {}", isOverwrite ? "上書き保存" : "保存", note,
+                            pathToUtf8(path)));
     if (!isOverwrite) return;
     // ディスクの内容が表示に一致したので、未保存マークを消してキャッシュを捨てる
     // (捨てないと戻ってきたときに保存前のピクセルが出る)
@@ -2256,8 +2302,21 @@ void App::onDecodeCompleted() {
     if (edited_) return;          // 編集中の画像も同様
     if (list_.empty()) return;
     // 表示すべき画像がまだ画面に出ていなければ取得を再試行する
-    if (displayedPath_ == list_.current() && (current_ || loadFailed_)) return;
+    if (displayedPath_ == list_.current() && (current_ || loadFailed_)) {
+        adoptRefinedImage();  // 表示中の画像が良い版に差し替わっていれば拾う
+        return;
+    }
     refreshCurrent();
+}
+
+void App::adoptRefinedImage() {
+    if (!current_ || displayedPath_.empty()) return;
+    auto latest = cache_.tryGet(displayedPath_);
+    if (!latest || latest == current_) return;
+    // 大きさが変わる差し替えは来ない想定だが、来たら座標系が食い違うので拒む
+    if (latest->width != current_->width || latest->height != current_->height) return;
+    current_ = std::move(latest);
+    host_.requestRedraw();  // ズーム・パン・注釈はそのまま(画素だけ入れ替わる)
 }
 
 void App::refreshCurrent() {
@@ -2433,9 +2492,15 @@ StatusBarView App::statusBar() const {
     if (!message_.empty()) {
         bar.leftText = message_;
     } else if (current_) {
-        // 編集ドラッグが何をするかは見た目に出ないので、現在のツールをここに出す
-        bar.leftText = std::format("{} x {} px  |  ツール: {}", current_->width,
-                                   current_->height, toolLabel(tool_));
+        // 編集ドラッグが何をするかは見た目に出ないので、現在のツールをここに出す。
+        // 縮小して取り込んだ画像は、ズーム率が元の大きさに対する比でなくなるので明示する
+        bar.leftText =
+            current_->downscaled()
+                ? std::format("{} x {} px (元 {} x {} を縮小表示)  |  ツール: {}",
+                              current_->width, current_->height, current_->sourceWidth,
+                              current_->sourceHeight, toolLabel(tool_))
+                : std::format("{} x {} px  |  ツール: {}", current_->width, current_->height,
+                              toolLabel(tool_));
     } else if (loadFailed_) {
         // 失敗した段階とコードまで出す(現物が手元にない不具合を切り分けられるように)
         bar.leftText = loadError_.empty() ? "読み込み失敗"

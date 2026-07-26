@@ -53,7 +53,7 @@ int main(int argc, char** argv) {
         const Config config = Config::loadFile(exeDirectory() / "blinker.ini");
 
         DecoderStb decoder;
-        ImageCache cache(decoder);
+        ImageCache cache(decoder, cacheLimitsFromConfig(config));
         FileSystemPosix fileSystem;
 
         FontStb font;
