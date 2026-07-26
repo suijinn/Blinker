@@ -24,6 +24,7 @@
 #include "core/image_list.h"
 #include "core/keymap.h"
 #include "core/mousemap.h"
+#include "core/nav_arrows.h"
 #include "core/ocr_service.h"
 #include "core/ocr_text.h"
 #include "core/pixel_convert.h"
@@ -324,6 +325,58 @@ void testMousemap() {
     CHECK(consumeWheelSteps(accum, 0.9f) == 0);
     CHECK(consumeWheelSteps(accum, -0.9f) == 0);
     CHECK(consumeWheelSteps(accum, -0.9f) == -1);
+}
+
+void testNavArrows() {
+    const SizeF viewport{800, 600};
+    // 800x600 なら 左ボタン x 12-56 / 右ボタン x 744-788、y 278-322(上下中央)、帯は 110px
+    const auto state = [&viewport](std::optional<Point> pointer, bool hasPrev = true,
+                                   bool hasNext = true) {
+        return navArrowsState(viewport, pointer, hasPrev, hasNext);
+    };
+
+    // ポインタが無い(ウィンドウ外・ドラッグ中)なら出さない
+    CHECK(!state(std::nullopt).prev.visible);
+    CHECK(!state(std::nullopt).next.visible);
+    // 中央では出さない(端の帯に入ったときだけ)
+    CHECK(!state(Point{400, 300}).prev.visible);
+    CHECK(!state(Point{400, 300}).next.visible);
+    // 左の帯 → 左だけ、右の帯 → 右だけ
+    CHECK(state(Point{90, 300}).prev.visible);
+    CHECK(!state(Point{90, 300}).next.visible);
+    CHECK(state(Point{700, 300}).next.visible);
+    CHECK(!state(Point{700, 300}).prev.visible);
+    // 帯の中でもボタンの上でなければホバーしない
+    CHECK(!state(Point{90, 300}).prev.hovered);
+    CHECK(state(Point{30, 300}).prev.hovered);
+    CHECK(state(Point{760, 300}).next.hovered);
+    // ボタンは上下中央、端から kNavArrowMarginPx
+    const NavArrow prev = state(Point{30, 300}).prev;
+    CHECK(prev.p1.x == kNavArrowMarginPx);
+    CHECK(prev.p2.x == kNavArrowMarginPx + kNavArrowSizePx);
+    CHECK(prev.p1.y == (600 - kNavArrowSizePx) / 2);
+    CHECK(prev.p2.y == prev.p1.y + kNavArrowSizePx);
+    const NavArrow next = state(Point{760, 300}).next;
+    CHECK(next.p2.x == 800 - kNavArrowMarginPx);
+    CHECK(next.p1.x == next.p2.x - kNavArrowSizePx);
+    // 先頭 / 末尾では行き先が無いほうを出さない
+    CHECK(!state(Point{30, 300}, false, true).prev.visible);
+    CHECK(!state(Point{760, 300}, true, false).next.visible);
+    // ポインタがビューポートの外(サイドバー・ステータスバー上)なら出さない
+    CHECK(!state(Point{-10, 300}).prev.visible);
+    CHECK(!state(Point{30, 700}).prev.visible);
+    // ボタンが収まらない狭いビューポートでは出さない
+    CHECK(!navArrowsState({150, 600}, Point{10, 300}, true, true).prev.visible);
+    CHECK(!navArrowsState({800, 60}, Point{30, 30}, true, true).prev.visible);
+
+    // クリック判定はボタンの内側だけ(帯全体を当たりにしない)
+    const NavArrowsState both = state(Point{30, 300});
+    CHECK(hitTestNavArrows(both, Point{30, 300}) == std::optional<bool>{false});
+    CHECK(!hitTestNavArrows(both, Point{90, 300}));  // 帯の中だが枠外
+    const NavArrowsState nextShown = state(Point{760, 300});
+    CHECK(hitTestNavArrows(nextShown, Point{760, 300}) == std::optional<bool>{true});
+    // 出ていないボタンには当たらない
+    CHECK(!hitTestNavArrows(state(Point{30, 300}, false, true), Point{30, 300}));
 }
 
 void testHelpLines() {
@@ -3936,6 +3989,7 @@ int main() {
     testKeymap();
     testChordToString();
     testMousemap();
+    testNavArrows();
     testHelpLines();
     testConfig();
     testDib();

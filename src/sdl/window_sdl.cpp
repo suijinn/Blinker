@@ -131,7 +131,7 @@ void WindowSdl::renderIfNeeded() {
     needsRedraw_ = false;
     renderer_->render(app_->currentImage(), app_->imageToScreen(), app_->zoom(),
                       app_->backgroundRGB(), app_->annotations(), app_->selection(),
-                      app_->sidebar(), app_->statusBar());
+                      app_->navArrows(), app_->sidebar(), app_->statusBar());
 }
 
 void WindowSdl::handleEvent(const SDL_Event& event) {

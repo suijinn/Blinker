@@ -180,6 +180,42 @@ BROWSER_BACKWARD/FORWARD が生成され、サイドボタンが二重に届く)
 ダブルクリックは**テキスト注釈の再編集が優先**で、そこに当たらなかったときだけ
 `MouseInput::DoubleClick` の割り当てを見る(`App::onDoubleClick`)。
 
+### オーバーレイ矢印(画像遷移ボタン)
+
+ポインタがビューポート左右の端の帯(`kNavArrowBandPx`)に入ると、前後の画像へ移る
+ボタン(◀ ▶)を画像の上に重ねて出す。**クリックが効くのはボタンの内側だけ**で、
+帯全体を当たりにはしない(端をクリックしたつもりで画像が変わるのを防ぐ)。
+先頭・末尾では行き先の無い側を出さない。`[view] nav_arrows = false` で完全に消せる。
+
+出さない条件は `App::navArrowsGeometry` に集約してある: 設定で無効、フォルダが空、
+ポインタがウィンドウ外(`onMouseLeave`)かビューポート外、ドラッグ中(パン・編集・
+オブジェクト・サイドバー幅)、テキスト編集中(端のボタンを押して編集が消えるのを防ぐ)。
+
+クリックは**サイドバーの項目と同じ UI 部品**の扱いで、`swap_buttons` にかかわらず
+常に左ボタン。`onMouseDown` では注釈を掴む判定より先に見る(端に図形があっても
+ボタンが押せるように)。ただし SDL 版で `swap_buttons = true` にすると左ボタンが
+編集役になり、`WindowSdl` が編集役のボタンを App へ渡さないためボタンを押せない
+(SDL 版は閲覧専用で、入れ替える動機自体が無いので放置してある)。
+
+**この表示は使用感が合わなければ廃止しうる**前提で、次の 6 か所に閉じ込めてある
+(消すときはこれだけを消せばよく、既存の入力・描画の流れには手を入れていない):
+
+1. `core/nav_arrows.h` / `.cpp` — 寸法と表示・当たりの判定(純粋関数、単体テスト対象)
+2. `platform/renderer.h` の `NavArrowsView` と `render` の引数
+3. `App::navArrows` / `navArrowsGeometry` / `clickNavArrow` / `updateNavArrowHover` と
+   `pointerInside_` / `navArrowsEnabled_` / `navArrowsShown_`
+4. `RendererD2D::drawNavArrows`(+ 山形用の `navGlyphStroke_`)
+5. `RendererSdl::drawNavArrows`
+6. `[view] nav_arrows` の読み取り
+
+再描画は `onMouseMove` / `onMouseLeave` が `updateNavArrowHover` で「表示・ホバーが
+変わったときだけ」要求する(ステータスバーのホバー表示と同じ考え方。ポインタが動く
+たびに再描画しない)。`navArrowsShown_` はそのための直前の状態で、描画の正は
+毎回組み立てる `navArrows()` のほう。
+
+操作一覧 (F1) には載せていない。ボタン自体が「マウスで遷移できる」ことの案内なので、
+一覧に書いても見る人はもう知っている(廃止時に消す箇所を増やしたくないのもある)。
+
 ### マウスボタンの役割
 
 物理ボタン (`MouseButton`) と役割 (`MouseRole`) を分けてあり、対応は
@@ -304,6 +340,7 @@ Text 注釈は PowerPoint のテキストボックスと同じく**画像上で�
 | `ocr_text.h` | 認識結果の後処理。テキストの整形(`ocrResultToText`。行の連結と、CJK 文字に挟まれた空白の除去 — Windows の OCR は日本語でも語間に空白を入れて返す)と、拡大して読み直すかの判断(`ocrRetryUpscale`)。閾値は実測で決めてあり、根拠はヘッダのコメントに残してある。純粋関数で単体テスト対象 |
 | `Keymap` | KeyChord → Command。デフォルト表 + ini 上書き。逆引き (`chordsFor` / `chordToString`) も持ち、操作一覧の生成に使う |
 | `Mousemap` | MouseChord → Command(中・サイドボタン・ホイール・ダブルクリック)。`Keymap` と同じ形。ini 用の表記 (`chordToString`) と操作一覧用の日本語表記 (`chordToDisplayString`) を持つ。ホイール量の蓄積 (`consumeWheelSteps`) も同じヘッダ(いずれも単体テスト対象) |
+| `nav_arrows.h` | オーバーレイ矢印(左右の端に出る画像遷移ボタン)の寸法・表示条件・当たり判定(純粋関数、単体テスト対象)。**廃止しうる表示なので判定をここに閉じている**(上記「オーバーレイ矢印」) |
 | `help.h` | 現在の `Keymap` / `Mousemap` から操作一覧の表示テキストを組み立てる(`buildHelpLines`)。固定テキストを持たないので README と drift しない。コマンドの表示名の正はこのファイルの表 1 つで、キーの節とマウスの節が共有する(単体テスト対象) |
 | `TextEditBuffer` | インプレース編集中の文字列・キャレット・選択範囲・部分書式(`text_edit.h`。UTF-8 バイト位置の純粋ロジック、単体テスト対象)。文字列を変えるたびに書式範囲を追従させる |
 | `text_style.h` | 部分書式(色・太字・斜体・下線・フォント)の範囲リストとその編集の純関数。範囲の切り分け・正規化・編集への追従(`adjustTextStyles`)を担う(単体テスト対象) |

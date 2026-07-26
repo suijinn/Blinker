@@ -282,7 +282,7 @@ void MainWindow::onPaint() {
     if (app_ && renderer_) {
         renderer_->render(app_->currentImage(), app_->imageToScreen(), app_->zoom(),
                           app_->backgroundRGB(), app_->annotations(), app_->selection(),
-                          app_->sidebar(), app_->statusBar());
+                          app_->navArrows(), app_->sidebar(), app_->statusBar());
     }
     EndPaint(hwnd_, &ps);
 }

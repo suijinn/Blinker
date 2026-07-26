@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "core/geometry.h"
+#include "core/nav_arrows.h"
 #include "platform/annotation.h"
 #include "platform/decoder.h"
 
@@ -114,6 +115,23 @@ struct SelectionView {
 };
 
 /**
+ * @brief 画像遷移用オーバーレイ矢印の描画内容。
+ *
+ * 位置は App がスクリーン座標へ寄せて渡す(判定の幾何は core の nav_arrows.h)。
+ * ボタンの地を半透明で塗り、その上に山形(シェブロン)を描く。
+ *
+ * @note 使用感が合わなければ廃止しうる表示。廃止時はこの構造体と
+ *       各レンダラの drawNavArrows、render の引数を消せばよい。
+ */
+struct NavArrowsView {
+    NavArrowsState arrows;       ///< 左右のボタンの位置と表示状態(スクリーン座標)
+    uint32_t backgroundRGB = 0;  ///< ボタンの地の色(0xRRGGBB)
+    uint8_t alpha = 0;           ///< 地の不透明度(通常時)
+    uint8_t hoverAlpha = 0;      ///< 地の不透明度(ポインタが上にあるとき)
+    uint32_t glyphRGB = 0;       ///< 山形の色(0xRRGGBB)
+};
+
+/**
  * @brief 描画のプラットフォーム抽象。
  *
  * Windows 実装は Direct2D (renderer_d2d)、SDL バックエンドは SDL_Renderer (renderer_sdl)。
@@ -138,13 +156,15 @@ public:
      * @param[in] backgroundRGB   背景色(0xRRGGBB)。
      * @param[in] annotations     注釈オブジェクトの描画内容。
      * @param[in] selection       選択領域(ラバーバンド)の描画内容。
+     * @param[in] navArrows       画像遷移用オーバーレイ矢印の描画内容。
      * @param[in] sidebar         サイドバーの描画内容。
      * @param[in] statusBar       ステータスバーの描画内容。
      */
     virtual void render(const std::shared_ptr<const DecodedImage>& image,
                         const Matrix3x2& imageToScreen, float zoom, uint32_t backgroundRGB,
                         const AnnotationsView& annotations, const SelectionView& selection,
-                        const SidebarView& sidebar, const StatusBarView& statusBar) = 0;
+                        const NavArrowsView& navArrows, const SidebarView& sidebar,
+                        const StatusBarView& statusBar) = 0;
 };
 
 } // namespace blinker

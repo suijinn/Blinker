@@ -536,6 +536,14 @@ public:
      */
     AnnotationsView annotations() const;
 
+    /**
+     * @brief 画像遷移用オーバーレイ矢印の描画内容を組み立てる。
+     * @return ボタンの位置と色(スクリーン座標)。出さない場合は visible が false。
+     * @note 使用感が合わなければ廃止しうる表示(`[view] nav_arrows = false` で消せる)。
+     *       判定の幾何は core の nav_arrows.h に閉じてある。
+     */
+    NavArrowsView navArrows() const;
+
 private:
     static constexpr float kPanStepPx = 64.0f;         ///< パンコマンド 1 回の移動量
     static constexpr float kStatusBarHeight = 26.0f;   ///< ステータスバーの高さ
@@ -1049,6 +1057,30 @@ private:
      */
     bool wheelCommand(float notches, bool horizontal, bool ctrl, bool shift, bool alt);
 
+    // --- オーバーレイ矢印(廃止しうる表示。消すときはこの 3 つと navArrows / メンバ) ---
+
+    /**
+     * @brief オーバーレイ矢印の現在の状態を求める(スクリーン座標)。
+     * @return 左右のボタンの位置と表示状態。出さない状況では visible が false。
+     * @note 出さない状況: `[view] nav_arrows = false`、画像なし、ポインタがウィンドウ外か
+     *       ビューポート外、ドラッグ中(パン・編集・オブジェクト・幅変更)、
+     *       テキスト編集中(端のボタンを押して編集が消えるのを防ぐ)。
+     */
+    NavArrowsState navArrowsGeometry() const;
+
+    /**
+     * @brief クリック位置がオーバーレイ矢印なら画像を送る。
+     * @param[in] screenPos クリック位置(スクリーン座標)。
+     * @return ボタンに当たって遷移したら true。
+     */
+    bool clickNavArrow(Point screenPos);
+
+    /**
+     * @brief ポインタ移動でオーバーレイ矢印の表示が変わったかを調べ、状態を更新する。
+     * @return 表示・ホバーが変わって再描画が必要なら true。
+     */
+    bool updateNavArrowHover();
+
     IAppHost& host_;
     IFileSystem& fileSystem_;
     ImageCache& cache_;
@@ -1094,6 +1126,11 @@ private:
     /// 1 ノッチ未満ずつ通知される高精細ホイールでも取りこぼさないため
     float wheelAccumV_ = 0.0f;
     float wheelAccumH_ = 0.0f;
+    bool pointerInside_ = false;  ///< ポインタがクライアント領域内にあるか(矢印の表示判定)
+    /// オーバーレイ矢印を出すか(`[view] nav_arrows`)。使用感が合わなければ false にできる
+    bool navArrowsEnabled_ = true;
+    /// 直前に描いた矢印の状態。ポインタ移動で再描画が必要かの判定にだけ使う
+    NavArrowsState navArrowsShown_;
     bool sidebarResizing_ = false;      ///< サイドバーの右端を掴んで幅を変更中か
     float sidebarResizeStartX_ = 0;     ///< 変更開始時のポインタ X(スクリーン座標)
     float sidebarResizeStartWidth_ = 0; ///< 変更開始時のサイドバー幅(px)

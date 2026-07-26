@@ -171,6 +171,8 @@ void App::applyConfig(const Config& config) {
         std::clamp(config.getInt("view", "sidebar_width", static_cast<int>(sidebarWidth_)),
                    static_cast<int>(kMinSidebarWidth), static_cast<int>(kMaxSidebarWidth)));
     helpHintEnabled_ = config.getBool("view", "help_hint", helpHintEnabled_);
+    // 端に近づくと出る画像遷移用の矢印(使用感が合わなければ false で消せる)
+    navArrowsEnabled_ = config.getBool("view", "nav_arrows", navArrowsEnabled_);
     // パンと編集の左右を入れ替える(メニューは入れ替えず常に右クリック)
     swapMouseButtons_ = config.getBool("mouse", "swap_buttons", swapMouseButtons_);
     editColorRGB_ = config.getColorRGB("edit", "color", editColorRGB_);
@@ -520,6 +522,7 @@ bool App::inViewportArea(Point screenPos) const {
 
 bool App::onMouseDown(MouseButton button, Point screenPos) {
     lastPointerScreen_ = screenPos;
+    pointerInside_ = true;
     panning_ = false;
     menuPressed_ = false;
     // 右端を掴んだら幅の変更。項目のクリック判定より先に見る(境界際のクリックで
@@ -553,6 +556,9 @@ bool App::onMouseDown(MouseButton button, Point screenPos) {
             }
         }
     }
+    // オーバーレイ矢印はサイドバーの項目と同じ UI 部品なので、入れ替えの対象外で
+    // 常に左ボタン。図形を掴む判定より先に見る(端に図形があっても押せるように)
+    if (button == MouseButton::Left && clickNavArrow(screenPos)) return true;
     // オブジェクトを掴む操作(選択・移動・回転・サイズ変更、テキストのキャレット移動)は
     // 入れ替えの対象外で、常に左ボタン。入れ替えると左が編集役になるが、既存の図形を
     // 選ぶのに右クリックが要るのは他のペイント系ソフトと食い違って戸惑うため
@@ -1926,6 +1932,62 @@ SelectionView App::selection() const {
     return sel;
 }
 
+// --- オーバーレイ矢印(廃止しうる表示。判定の幾何は core/nav_arrows.h) ---------
+
+NavArrowsState App::navArrowsGeometry() const {
+    if (!navArrowsEnabled_ || !pointerInside_ || list_.empty()) return {};
+    // ドラッグ中とテキスト編集中は出さない(操作の途中で押せてしまうと編集が消える)
+    if (panning_ || selecting_ || sidebarResizing_ || textEditing_ || textEditMouseSelect_ ||
+        objectDrag_ != ObjectDrag::None) {
+        return {};
+    }
+    const float offset = sidebarOffset();
+    const float barHeight = statusBarVisible() ? kStatusBarHeight : 0.0f;
+    const SizeF viewport{clientSize_.w - offset, clientSize_.h - barHeight};
+    // 貼り付け画像の表示中は、前後どちらでもフォルダ一覧の表示へ戻れる
+    const bool hasPrev = clipboardImage_ || list_.index() > 0;
+    const bool hasNext = clipboardImage_ || list_.index() + 1 < list_.size();
+    NavArrowsState state = navArrowsState(
+        viewport, Point{lastPointerScreen_.x - offset, lastPointerScreen_.y}, hasPrev, hasNext);
+    // ビューポート左上原点 → スクリーン座標
+    for (NavArrow* arrow : {&state.prev, &state.next}) {
+        arrow->p1.x += offset;
+        arrow->p2.x += offset;
+    }
+    return state;
+}
+
+NavArrowsView App::navArrows() const {
+    NavArrowsView view;
+    view.arrows = navArrowsGeometry();
+    // 画像の上に重ねるので、テーマ(darkTheme_)ではなく明暗どちらの画像でも
+    // 見えるように固定色にする
+    view.backgroundRGB = 0x000000;
+    view.alpha = 96;
+    view.hoverAlpha = 176;
+    view.glyphRGB = 0xFFFFFF;
+    return view;
+}
+
+bool App::clickNavArrow(Point screenPos) {
+    const auto next = hitTestNavArrows(navArrowsGeometry(), screenPos);
+    if (!next) return false;
+    execute(*next ? Command::NextImage : Command::PrevImage);
+    return true;
+}
+
+bool App::updateNavArrowHover() {
+    const NavArrowsState state = navArrowsGeometry();
+    const auto same = [](const NavArrow& a, const NavArrow& b) {
+        return a.visible == b.visible && a.hovered == b.hovered;
+    };
+    if (same(state.prev, navArrowsShown_.prev) && same(state.next, navArrowsShown_.next)) {
+        return false;
+    }
+    navArrowsShown_ = state;
+    return true;
+}
+
 AnnotationsView App::annotations() const {
     AnnotationsView view;
     view.specs = &annotations_;
@@ -2005,6 +2067,7 @@ void App::onMouseMove(Point screenPos, bool shift) {
     const float panDx = screenPos.x - lastPointerScreen_.x;
     const float panDy = screenPos.y - lastPointerScreen_.y;
     lastPointerScreen_ = screenPos;
+    pointerInside_ = true;  // オーバーレイ矢印の表示判定(onMouseLeave で false へ戻す)
     // 幅の変更中は掴んだ位置からの総移動量で決める(クランプで取りこぼしが出ないように)
     if (sidebarResizing_) {
         setSidebarWidth(sidebarResizeStartWidth_ + screenPos.x - sidebarResizeStartX_);
@@ -2058,16 +2121,24 @@ void App::onMouseMove(Point screenPos, bool shift) {
         host_.requestRedraw();
         return;
     }
+    // 表示が変わるときだけ再描画する(オーバーレイ矢印の出入りとホバーもここで拾う)
+    bool redraw = updateNavArrowHover();
     std::string text = hoverInfoText(screenPos);
-    if (text == hoverText_) return;  // 表示が変わるときだけ再描画する
-    hoverText_ = std::move(text);
-    if (statusBarVisible()) host_.requestRedraw();
+    if (text != hoverText_) {
+        hoverText_ = std::move(text);
+        redraw = redraw || statusBarVisible();
+    }
+    if (redraw) host_.requestRedraw();
 }
 
 void App::onMouseLeave() {
-    if (hoverText_.empty()) return;
-    hoverText_.clear();
-    if (statusBarVisible()) host_.requestRedraw();
+    pointerInside_ = false;  // ウィンドウから出たらオーバーレイ矢印を消す
+    bool redraw = updateNavArrowHover();
+    if (!hoverText_.empty()) {
+        hoverText_.clear();
+        redraw = redraw || statusBarVisible();
+    }
+    if (redraw) host_.requestRedraw();
 }
 
 void App::onTimer() {

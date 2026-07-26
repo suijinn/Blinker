@@ -53,13 +53,15 @@ public:
      * @param[in] backgroundRGB 背景色(0xRRGGBB)。
      * @param[in] annotations   注釈オブジェクトの描画内容(本実装では未使用)。
      * @param[in] selection     選択領域(ラバーバンド)の描画内容。
+     * @param[in] navArrows     画像遷移用オーバーレイ矢印の描画内容。
      * @param[in] sidebar       サイドバーの描画内容。
      * @param[in] statusBar     ステータスバーの描画内容。
      */
     void render(const std::shared_ptr<const DecodedImage>& image,
                 const Matrix3x2& imageToScreen, float zoom, uint32_t backgroundRGB,
                 const AnnotationsView& annotations, const SelectionView& selection,
-                const SidebarView& sidebar, const StatusBarView& statusBar) override;
+                const NavArrowsView& navArrows, const SidebarView& sidebar,
+                const StatusBarView& statusBar) override;
 
 private:
     static constexpr size_t kTextureCacheSize = 3;  ///< 表示中 + 前後の先読み分
@@ -86,6 +88,14 @@ private:
      * @param[in] selection 描画する選択領域。
      */
     void drawSelection(const SelectionView& selection);
+
+    /**
+     * @brief 画像遷移用オーバーレイ矢印を描く。
+     * @param[in] navArrows 描画する矢印の内容。visible なボタンだけ描く。
+     * @note D2D 版と違い、地は角丸にせず山形も三角形の塗りで描く(SDL に太線と
+     *       角丸の塗りが無いため)。
+     */
+    void drawNavArrows(const NavArrowsView& navArrows);
 
     /**
      * @brief サイドバーを描く。
