@@ -43,7 +43,12 @@ std::optional<FormatChoice> choiceFromExtension(std::wstring ext) {
 
 } // namespace
 
-bool EncoderWic::encode(const DecodedImage& image, const std::filesystem::path& path) {
+bool EncoderWic::supports(const std::filesystem::path& path) const {
+    return choiceFromExtension(path.extension().wstring()).has_value();
+}
+
+bool EncoderWic::encode(const DecodedImage& image, const std::filesystem::path& path,
+                        const EncodeOptions& options) {
     if (image.width == 0 || image.height == 0) return false;
     IWICImagingFactory* factory = wicFactoryForThisThread();
     if (!factory) return false;
@@ -76,7 +81,7 @@ bool EncoderWic::encode(const DecodedImage& image, const std::filesystem::path& 
         option.pstrName = optionName;
         VARIANT value{};
         value.vt = VT_R4;
-        value.fltVal = 0.9f;
+        value.fltVal = std::clamp(options.jpegQuality, 1, 100) / 100.0f;
         props->Write(1, &option, &value);  // 失敗しても既定品質で続行
     }
     if (FAILED(frame->Initialize(props.Get())) ||

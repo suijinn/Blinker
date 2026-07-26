@@ -97,6 +97,13 @@ public:
         const std::string& defaultFileName) override;
 
     /**
+     * @brief 確認ダイアログ (SDL_ShowMessageBox) を表示する。
+     * @param[in] message 確認したい内容(UTF-8)。
+     * @return 「OK」なら true。「キャンセル」・表示できなかった場合は false。
+     */
+    bool showConfirm(const std::string& message) override;
+
+    /**
      * @brief ポップアップメニューを表示する(SDL バックエンドでは未実装)。
      * @param[in] items     メニュー構造(未使用)。
      * @param[in] screenPos 表示位置(未使用)。

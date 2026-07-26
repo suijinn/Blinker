@@ -30,6 +30,13 @@ prefetch_radius = 2
 # 未指定なら Noto CJK 等の既知のシステムフォントを自動探索する
 # font_path = /usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc
 
+[save]
+# JPEG で保存するときの品質 (1-100)。大きいほど高画質・大きいファイルになる
+jpeg_quality = 90
+# 上書き保存 (Ctrl+S) の前に確認ダイアログを出すか。
+# 元の画像は元に戻せないので既定は true。毎回聞かれるのが煩わしければ false
+confirm_overwrite = true
+
 [mouse]
 # 左右ボタンの役割を入れ替える。入れ替わるのは「画像のパン(スクロール)」と
 # 「編集ドラッグ(現在のツールの実行)」の 2 つだけで、true にすると
@@ -97,7 +104,8 @@ border_width = 0
 # 使えるコマンド:
 #   next prev first last zoom_in zoom_out fit actual_size
 #   pan_left pan_right pan_up pan_down rotate_cw rotate_ccw
-#   fullscreen open copy_image copy_path copy_file copy_ocr_text paste save_as
+#   fullscreen open copy_image copy_path copy_file copy_ocr_text paste save save_as
+#     (save = 元のファイルへ上書き保存、save_as = 名前を付けて保存)
 #   undo redo delete_annotation
 #   sidebar statusbar help escape quit
 #   tool_crop tool_ocr tool_rect tool_ellipse tool_arrow tool_line tool_pen tool_marker

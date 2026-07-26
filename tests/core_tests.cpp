@@ -167,11 +167,13 @@ void testKeymap() {
     CHECK(km.find({KeyCode{'C'}, true, true}) == Command::CopyPath);    // Shift+Ctrl+C
     CHECK(km.find({KeyCode{'C'}, false, true}) == Command::CopyFile);   // Shift+C
     CHECK(km.find({KeyCode{'V'}, true}) == Command::PasteImage);        // Ctrl+V
-    CHECK(km.find({KeyCode{'S'}, true}) == Command::SaveImageAs);       // Ctrl+S
+    CHECK(km.find({KeyCode{'S'}, true}) == Command::SaveImage);          // Ctrl+S
+    CHECK(km.find({KeyCode{'S'}, true, true}) == Command::SaveImageAs);  // Shift+Ctrl+S
     CHECK(km.find({KeyCode{'B'}}) == Command::ToggleStatusBar);
     CHECK(km.find({KeyCode{'B'}, true}) == Command::ToggleSidebar);     // Ctrl+B
     CHECK(commandFromName("copy_file") == Command::CopyFile);
     CHECK(commandFromName("paste") == Command::PasteImage);
+    CHECK(commandFromName("save") == Command::SaveImage);
     CHECK(commandFromName("save_as") == Command::SaveImageAs);
     CHECK(commandFromName("sidebar") == Command::ToggleSidebar);
     chord = Keymap::parseChord("+");
@@ -405,6 +407,8 @@ void testHelpLines() {
     CHECK(has("この操作一覧  F1"));
     CHECK(has("右 90 度回転  R"));
     CHECK(has("パスをコピー  Ctrl+Shift+C"));
+    CHECK(has("上書き保存  Ctrl+S"));
+    CHECK(has("名前を付けて保存  Ctrl+Shift+S"));
     CHECK(has("ファイルをコピー  Shift+C"));
     // キーの割り当てがない操作は行ごと出ない
     CHECK(!has("矢印ツール  "));
@@ -457,6 +461,7 @@ void testHelpLines() {
     // 節の中身が全部消えたら見出しも出さない
     Keymap stripped = Keymap::defaults();
     stripped.unbindCommand(Command::OpenFile);
+    stripped.unbindCommand(Command::SaveImage);
     stripped.unbindCommand(Command::SaveImageAs);
     stripped.unbindCommand(Command::CopyImage);
     stripped.unbindCommand(Command::CopyPath);
@@ -596,6 +601,90 @@ void testApplyExifOrientation() {
 
     blinker::DecodedImage empty;
     CHECK(!applyExifOrientation(empty, 6));
+}
+
+// Orientation 1 件だけを持つ最小の TIFF (Exif 本体) を組み立てる
+std::vector<uint8_t> makeExifTiff(uint16_t orientation, bool bigEndian) {
+    const auto lo = static_cast<uint8_t>(orientation & 0xFF);
+    const auto hi = static_cast<uint8_t>(orientation >> 8);
+    if (bigEndian) {
+        return {'M',  'M',  0x00, 0x2A, 0x00, 0x00, 0x00, 0x08,  // ヘッダ (IFD0 は +8)
+                0x00, 0x01,                                     // エントリ数
+                0x01, 0x12, 0x00, 0x03,                         // Orientation / SHORT
+                0x00, 0x00, 0x00, 0x01,                         // 個数
+                hi,   lo,   0x00, 0x00};  // 値(4 バイト枠の先頭に詰める)
+    }
+    return {'I',  'I',  0x2A, 0x00, 0x08, 0x00, 0x00, 0x00,
+            0x01, 0x00,
+            0x12, 0x01, 0x03, 0x00,
+            0x01, 0x00, 0x00, 0x00,
+            lo,   hi,   0x00, 0x00};
+}
+
+// APP1 (Exif) セグメントだけを持つ JPEG のバイト列(画像データは無い)
+std::vector<uint8_t> makeExifJpeg(const std::vector<uint8_t>& tiff) {
+    std::vector<uint8_t> out = {0xFF, 0xD8};
+    const size_t length = 2 + 6 + tiff.size();  // 長さフィールド + "Exif\0\0" + TIFF
+    out.push_back(0xFF);
+    out.push_back(0xE1);
+    out.push_back(static_cast<uint8_t>(length >> 8));  // 長さはビッグエンディアン
+    out.push_back(static_cast<uint8_t>(length & 0xFF));
+    for (const char c : std::string_view("Exif\0\0", 6)) out.push_back(static_cast<uint8_t>(c));
+    out.insert(out.end(), tiff.begin(), tiff.end());
+    out.push_back(0xFF);
+    out.push_back(0xD9);  // EOI
+    return out;
+}
+
+// eXIf チャンクを持つ PNG のバイト列(IHDR/IDAT は無い)
+std::vector<uint8_t> makeExifPng(const std::vector<uint8_t>& tiff) {
+    std::vector<uint8_t> out = {0x89, 'P', 'N', 'G', '\r', '\n', 0x1A, '\n'};
+    const auto size = static_cast<uint32_t>(tiff.size());
+    out.push_back(static_cast<uint8_t>(size >> 24));
+    out.push_back(static_cast<uint8_t>(size >> 16));
+    out.push_back(static_cast<uint8_t>(size >> 8));
+    out.push_back(static_cast<uint8_t>(size));
+    for (const char c : std::string_view("eXIf")) out.push_back(static_cast<uint8_t>(c));
+    out.insert(out.end(), tiff.begin(), tiff.end());
+    out.insert(out.end(), 4, 0x00);  // CRC(読み飛ばされるので中身は問わない)
+    return out;
+}
+
+void testReadExifOrientation() {
+    using blinker::readExifOrientation;
+    const auto read = [](const std::vector<uint8_t>& bytes) {
+        return readExifOrientation(bytes.data(), bytes.size());
+    };
+
+    // JPEG の APP1 / PNG の eXIf、リトルエンディアン・ビッグエンディアンとも読める
+    for (const bool bigEndian : {false, true}) {
+        for (const uint16_t o : {uint16_t{1}, uint16_t{3}, uint16_t{6}, uint16_t{8}}) {
+            const std::vector<uint8_t> tiff = makeExifTiff(o, bigEndian);
+            CHECK(read(makeExifJpeg(tiff)) == o);
+            CHECK(read(makeExifPng(tiff)) == o);
+        }
+    }
+
+    // 範囲外の値は 1(回転なし)へ丸める
+    CHECK(read(makeExifJpeg(makeExifTiff(0, false))) == 1);
+    CHECK(read(makeExifJpeg(makeExifTiff(9, false))) == 1);
+
+    // Exif の無い JPEG(別の APP セグメントは読み飛ばして SOS で止まる)
+    std::vector<uint8_t> plain = {0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x04, 0x00, 0x00,
+                                  0xFF, 0xDA, 0x00, 0x02};
+    CHECK(read(plain) == 1);
+
+    // 途中で切れた Exif、TIFF のマジックが違う、他形式、空
+    std::vector<uint8_t> truncated = makeExifJpeg(makeExifTiff(6, false));
+    truncated.resize(truncated.size() - 8);
+    CHECK(read(truncated) == 1);
+    std::vector<uint8_t> badMagic = makeExifTiff(6, false);
+    badMagic[0] = 'X';
+    CHECK(read(makeExifJpeg(badMagic)) == 1);
+    const std::vector<uint8_t> bmp = {'B', 'M', 0x36, 0, 0, 0, 0, 0, 0, 0, 0x36, 0, 0, 0};
+    CHECK(read(bmp) == 1);
+    CHECK(readExifOrientation(nullptr, 0) == 1);
+    CHECK(read({0xFF, 0xD8}) == 1);
 }
 
 void testImageList() {
@@ -886,6 +975,13 @@ void testImageCache() {
     CHECK(cache.tryGet("never_requested.png", &failed, &error) == nullptr);
     CHECK(!failed);
     CHECK(error.empty());
+
+    // invalidate: 1 件だけ捨てる(上書き保存でファイルが変わったとき)
+    cache.invalidate("ok.png");
+    CHECK(cache.tryGet("ok.png", &failed, &error) == nullptr);
+    CHECK(!failed);  // 失敗ではなく「未デコード」に戻る
+    CHECK(cache.tryGet("fail.png", &failed, &error) == nullptr && failed);  // 他は残る
+    cache.invalidate("never_requested.png");  // 無いパスでも安全
 }
 
 class FakeHost final : public IAppHost {
@@ -900,6 +996,11 @@ public:
         ++saveDialogCount;
         lastDefaultName = defaultFileName;
         return savePath;
+    }
+    bool showConfirm(const std::string& message) override {
+        ++confirmCount;
+        lastConfirmMessage = message;
+        return confirmAnswer;
     }
     std::optional<size_t> showContextMenu(const std::vector<MenuItem>& items, Point) override {
         ++menuCount;
@@ -932,6 +1033,9 @@ public:
     std::optional<std::filesystem::path> savePath;  // 保存ダイアログの応答 (nullopt = キャンセル)
     int saveDialogCount = 0;
     std::string lastDefaultName;
+    bool confirmAnswer = true;  // 確認ダイアログの応答 (false = 取りやめ)
+    int confirmCount = 0;
+    std::string lastConfirmMessage;
     std::optional<size_t> menuChoice;  // メニューの応答 (nullopt = キャンセル)
     std::deque<size_t> menuQueue;      // 空でなければ menuChoice より優先
     int menuCount = 0;
@@ -999,6 +1103,7 @@ public:
     bool setImage(const DecodedImage& image) override {
         ++imageCount;
         lastWidth = image.width;
+        lastHeight = image.height;
         lastPixels = image.pixels;
         return true;
     }
@@ -1021,6 +1126,7 @@ public:
     std::vector<std::filesystem::path> lastFiles;
     std::string pasteText;  // getText の応答
     uint32_t lastWidth = 0;
+    uint32_t lastHeight = 0;
     std::vector<uint8_t> lastPixels;
     std::string lastText;
     std::shared_ptr<DecodedImage> pasteImage;  // getImage の応答 (nullptr = 画像なし)
@@ -1028,17 +1134,31 @@ public:
 
 class FakeEncoder final : public IImageEncoder {
 public:
-    bool encode(const DecodedImage& image, const std::filesystem::path& path) override {
+    bool supports(const std::filesystem::path& path) const override {
+        const std::string ext = toLower(pathToUtf8(path.extension()));
+        return std::find(supportedExtensions.begin(), supportedExtensions.end(), ext) !=
+               supportedExtensions.end();
+    }
+    bool encode(const DecodedImage& image, const std::filesystem::path& path,
+                const EncodeOptions& options) override {
         ++encodeCount;
         lastWidth = image.width;
+        lastHeight = image.height;
         lastPath = path;
+        lastPixels = image.pixels;
+        lastJpegQuality = options.jpegQuality;
         return ok;
     }
 
     bool ok = true;
     int encodeCount = 0;
     uint32_t lastWidth = 0;
+    uint32_t lastHeight = 0;
+    std::vector<uint8_t> lastPixels;
+    int lastJpegQuality = 0;
     std::filesystem::path lastPath;
+    // EncoderWic / EncoderStb と同じ範囲(上書き保存の可否の判定に使われる)
+    std::vector<std::string> supportedExtensions{".png", ".jpg", ".jpeg", ".bmp"};
 };
 
 // 指定サイズの不透明単色 overlay を返すテスト用ラスタライザ
@@ -1422,6 +1542,117 @@ void testAppPasteSave() {
     host.savePath = std::filesystem::path("C:/out/x.png");
     app.execute(Command::SaveImageAs);
     CHECK(app.statusBar().leftText == "保存に失敗しました: C:/out/x.png");
+}
+
+void testAppSaveOverwrite() {
+    FakeDecoder decoder;
+    ImageCache cache(decoder);
+    FakeHost host;
+    FakeFileSystem fileSystem;
+    FakeClipboard clipboard;
+    FakeEncoder encoder;
+    FakeAnnotationRasterizer rasterizer;
+    FakeOcrEngine ocrEngine;
+    OcrService ocrService(ocrEngine);
+    App app(host, fileSystem, cache, clipboard, encoder, rasterizer, ocrService);
+    app.onResize(800, 600);
+    app.applyConfig(Config::parse("[save]\njpeg_quality = 55\n"));
+
+    std::mutex mutex;
+    std::condition_variable cv;
+    bool decoded = false;
+    cache.setOnDecoded([&](const std::filesystem::path&) {
+        std::lock_guard lock(mutex);
+        decoded = true;
+        cv.notify_all();
+    });
+    const std::filesystem::path path = "C:/pics/a.png";
+    fileSystem.files = {path};
+    app.openPath(path);
+    {
+        std::unique_lock lock(mutex);
+        CHECK(cv.wait_for(lock, std::chrono::seconds(5), [&] { return decoded; }));
+    }
+    app.onDecodeCompleted();
+    CHECK(app.currentImage() != nullptr);
+
+    // 上書き保存: 保存先は尋ねず、確認だけ取って元のファイルへ書く
+    app.execute(Command::SaveImage);
+    CHECK(host.confirmCount == 1);
+    CHECK(host.lastConfirmMessage.find("a.png") != std::string::npos);
+    CHECK(host.saveDialogCount == 0);
+    CHECK(encoder.lastPath == path);
+    CHECK(encoder.lastJpegQuality == 55);  // [save] jpeg_quality が届いている
+    CHECK(app.statusBar().leftText == "上書き保存しました: C:/pics/a.png");
+    // 書き換えたファイルのキャッシュは捨てる(戻ってきたときに読み直させる)
+    CHECK(cache.tryGet(path) == nullptr);
+
+    // 確認で取りやめたら書かない
+    host.confirmAnswer = false;
+    const int encodeCountBefore = encoder.encodeCount;
+    app.execute(Command::SaveImage);
+    CHECK(host.confirmCount == 2);
+    CHECK(encoder.encodeCount == encodeCountBefore);
+    host.confirmAnswer = true;
+
+    // confirm_overwrite = false なら聞かずに書く
+    app.applyConfig(Config::parse("[save]\nconfirm_overwrite = false\n"));
+    app.execute(Command::SaveImage);
+    CHECK(host.confirmCount == 2);
+    CHECK(encoder.encodeCount == encodeCountBefore + 1);
+
+    // 保存できない形式は、ファイルへ手を付ける前に断る
+    encoder.supportedExtensions.clear();
+    app.execute(Command::SaveImage);
+    CHECK(encoder.encodeCount == encodeCountBefore + 1);
+    CHECK(app.statusBar().leftText.find("上書き保存に対応していない形式") != std::string::npos);
+    CHECK(app.statusBar().leftText.find(".png") != std::string::npos);
+    encoder.supportedExtensions = {".png"};
+
+    // 貼り付け画像には上書き先が無いので、名前を付けて保存へ回る
+    auto pasted = std::make_shared<DecodedImage>();
+    pasted->width = 2;
+    pasted->height = 1;
+    pasted->pixels = {0, 0, 255, 255, 0, 255, 0, 255};  // 赤・緑 (PBGRA)
+    clipboard.pasteImage = pasted;
+    app.execute(Command::PasteImage);
+    host.savePath = std::filesystem::path("C:/out/p.png");
+    app.execute(Command::SaveImage);
+    CHECK(host.saveDialogCount == 1);
+    CHECK(host.confirmCount == 2);  // 上書きではないので確認しない
+    CHECK(encoder.lastPath == std::filesystem::path("C:/out/p.png"));
+    CHECK(encoder.lastWidth == 2 && encoder.lastHeight == 1);
+    CHECK(app.statusBar().leftText == "保存しました: C:/out/p.png");
+
+    // 表示回転は保存・コピーにも効く(2x1 を右 90 度に回すと 1x2 になる)
+    app.execute(Command::RotateCW);  // 0 → 90
+    app.execute(Command::SaveImage);
+    CHECK(encoder.lastWidth == 1 && encoder.lastHeight == 2);
+    app.execute(Command::CopyImage);
+    CHECK(clipboard.lastWidth == 1 && clipboard.lastHeight == 2);
+    CHECK(clipboard.lastPixels == std::vector<uint8_t>({0, 0, 255, 255, 0, 255, 0, 255}));
+
+    // 左 90 度は右 90 度と並びが逆になる
+    app.execute(Command::RotateCCW);  // 90 → 0
+    app.execute(Command::RotateCCW);  // 0 → 270 (= 左 90 度)
+    app.execute(Command::CopyImage);
+    CHECK(clipboard.lastWidth == 1 && clipboard.lastHeight == 2);
+    CHECK(clipboard.lastPixels == std::vector<uint8_t>({0, 255, 0, 255, 0, 0, 255, 255}));
+
+    // 180 度は縦横が変わらないので並びで見る
+    app.execute(Command::RotateCW);  // 270 → 0
+    app.execute(Command::RotateCW);
+    app.execute(Command::RotateCW);  // 0 → 180
+    app.execute(Command::CopyImage);
+    CHECK(clipboard.lastWidth == 2 && clipboard.lastHeight == 1);
+    CHECK(clipboard.lastPixels == std::vector<uint8_t>({0, 255, 0, 255, 0, 0, 255, 255}));
+
+    // 回転を戻せば元のままコピーされる
+    app.execute(Command::RotateCW);
+    app.execute(Command::RotateCW);  // 180 → 0
+    app.execute(Command::CopyImage);
+    CHECK(clipboard.lastWidth == 2 && clipboard.lastHeight == 1);
+    CHECK(clipboard.lastPixels == pasted->pixels);
 }
 
 void testAppSidebar() {
@@ -4028,12 +4259,14 @@ int main() {
     testDib();
     testPixelConvert();
     testApplyExifOrientation();
+    testReadExifOrientation();
     testImageList();
     testImageCache();
     testAppSlowDecode();
     testAppClipboard();
     testAppStatusBar();
     testAppPasteSave();
+    testAppSaveOverwrite();
     testAppSidebar();
     testAppSidebarResize();
     testAppHelpSidebar();

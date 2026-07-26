@@ -90,6 +90,13 @@ public:
         const std::string& defaultFileName) override;
 
     /**
+     * @brief 確認ダイアログ (MessageBox) を表示する。
+     * @param[in] message 確認したい内容(UTF-8)。
+     * @return 「OK」なら true。「キャンセル」・閉じるなら false。
+     */
+    bool showConfirm(const std::string& message) override;
+
+    /**
      * @brief ポップアップメニューを表示する(モーダル)。
      * @param[in] items     メニュー構造。
      * @param[in] screenPos 表示位置(クライアント座標)。

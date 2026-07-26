@@ -298,6 +298,23 @@ std::optional<std::filesystem::path> WindowSdl::showSaveDialog(
     return path;
 }
 
+bool WindowSdl::showConfirm(const std::string& message) {
+    const SDL_MessageBoxButtonData buttons[] = {
+        {SDL_MESSAGEBOX_BUTTON_ESCAPEKEY_DEFAULT, 0, "キャンセル"},
+        {SDL_MESSAGEBOX_BUTTON_RETURNKEY_DEFAULT, 1, "OK"},
+    };
+    SDL_MessageBoxData data{};
+    data.flags = SDL_MESSAGEBOX_WARNING;
+    data.window = window_;
+    data.title = "Blinker";
+    data.message = message.c_str();
+    data.numbuttons = 2;
+    data.buttons = buttons;
+    int result = 0;
+    if (!SDL_ShowMessageBox(&data, &result)) return false;  // 出せなければ実行しない
+    return result == 1;
+}
+
 std::optional<size_t> WindowSdl::showContextMenu(const std::vector<MenuItem>&, Point) {
     return std::nullopt;  // 未実装(編集メニュー)。閲覧機能には影響しない
 }

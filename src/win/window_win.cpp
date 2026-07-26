@@ -445,6 +445,11 @@ std::optional<std::filesystem::path> MainWindow::showSaveDialog(
     return result;
 }
 
+bool MainWindow::showConfirm(const std::string& message) {
+    return MessageBoxW(hwnd_, utf8ToWide(message).c_str(), L"Blinker",
+                       MB_OKCANCEL | MB_ICONWARNING | MB_DEFBUTTON1) == IDOK;
+}
+
 namespace {
 
 // MenuItem 木を HMENU に組み立てる。末端項目に深さ優先で 1 始まりの ID を振る

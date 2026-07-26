@@ -44,6 +44,15 @@ void ImageCache::requestNow(const fs::path& path) {
     wake_.notify_one();
 }
 
+void ImageCache::invalidate(const fs::path& path) {
+    std::lock_guard lock(mutex_);
+    const auto it = entries_.find(path);
+    if (it == entries_.end()) return;
+    if (it->second.image) totalBytes_ -= it->second.image->byteSize();
+    lru_.erase(it->second.lruIt);
+    entries_.erase(it);
+}
+
 void ImageCache::setPrefetch(std::vector<fs::path> paths) {
     {
         std::lock_guard lock(mutex_);
