@@ -345,7 +345,7 @@ Text 注釈は PowerPoint のテキストボックスと同じく**画像上で�
 | `App` | 状態機械の中心。Command を受けて状態更新、host へ再描画依頼。ステータスバー (`StatusBarView`) とサイドバー (`SidebarView`、可視範囲の項目のみ) の表示内容もここで組み立てる。サイドバーは `SidebarMode` でファイル名一覧と操作一覧 (F1) を切り替える(レンダラからは同じ文字列リストに見える)。貼り付け画像はフォルダ一覧から独立した表示状態(`clipboardImage_`)で持ち、移動系コマンドで一覧表示へ戻る。編集(現在のツール `EditTool` と編集ドラッグでの適用、プレビュー・`SelectionView`・注釈オブジェクトの選択/移動/回転ドラッグ状態・undo 履歴)もここで管理し、画像切替で破棄する |
 | `Viewport` | ズーム/パン/フィット/回転の座標変換(純粋計算、テスト容易) |
 | `ImageList` | フォルダ内画像の一覧・現在位置・先読み候補の順序付け |
-| `ImageCache` | ワーカースレッド1本で非同期デコード。LRU(既定: 8枚 or 512MB) |
+| `ImageCache` | ワーカースレッド1本で非同期デコード。LRU で、枚数とバイト数の**両方**を上限にする(既定: 8枚 / 512MB。`[cache] max_items` / `max_memory_mb` で変更でき、読み取りは `cacheLimitsFromConfig`)。表示中の可能性が高い直近の1枚は上限を超えても捨てない |
 | `OcrService` | ワーカースレッド1本で非同期に文字認識(`ImageCache` と同じ形)。予約は最後の1件だけが走り、結果は generation 付きで返るので、画像を切り替えた後に届いた古い結果を App 側で捨てられる |
 | `ocr_text.h` | 認識結果の後処理。テキストの整形(`ocrResultToText`。行の連結と、CJK 文字に挟まれた空白の除去 — Windows の OCR は日本語でも語間に空白を入れて返す)と、拡大して読み直すかの判断(`ocrRetryUpscale`)。閾値は実測で決めてあり、根拠はヘッダのコメントに残してある。純粋関数で単体テスト対象 |
 | `Keymap` | KeyChord → Command。デフォルト表 + ini 上書き。逆引き (`chordsFor` / `chordToString`) も持ち、操作一覧の生成に使う |

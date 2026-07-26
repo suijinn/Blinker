@@ -984,6 +984,71 @@ void testImageCache() {
     cache.invalidate("never_requested.png");  // 無いパスでも安全
 }
 
+// 1 枚 4MB (1024x1024) の画像を返すデコーダ。バイト上限による破棄を確かめる
+class BigDecoder final : public IImageDecoder {
+public:
+    std::shared_ptr<DecodedImage> decode(const std::filesystem::path&,
+                                         std::string* = nullptr) override {
+        auto image = std::make_shared<DecodedImage>();
+        image->width = 1024;
+        image->height = 1024;
+        image->pixels.assign(size_t{1024} * 1024 * 4, 0);
+        return image;
+    }
+};
+
+void testImageCacheLimits() {
+    constexpr size_t kMB = size_t{1} << 20;
+
+    // [cache] が無ければ既定値
+    const ImageCacheLimits defaults = cacheLimitsFromConfig(Config::parse(""));
+    CHECK(defaults.maxBytes == 512 * kMB);
+    CHECK(defaults.maxItems == 8);
+
+    const auto limits = cacheLimitsFromConfig(
+        Config::parse("[cache]\nmax_memory_mb = 128\nmax_items = 4\n"));
+    CHECK(limits.maxBytes == 128 * kMB);
+    CHECK(limits.maxItems == 4);
+
+    // 範囲外は丸める(小さすぎる指定で 1 枚も持てなくなるのを防ぐ)
+    const auto low =
+        cacheLimitsFromConfig(Config::parse("[cache]\nmax_memory_mb = 0\nmax_items = 1\n"));
+    CHECK(low.maxBytes == static_cast<size_t>(kMinCacheMemoryMB) * kMB);
+    CHECK(low.maxItems == static_cast<size_t>(kMinCacheItems));
+    const auto high = cacheLimitsFromConfig(
+        Config::parse("[cache]\nmax_memory_mb = 999999\nmax_items = 999\n"));
+    CHECK(high.maxBytes == static_cast<size_t>(kMaxCacheMemoryMB) * kMB);
+    CHECK(high.maxItems == static_cast<size_t>(kMaxCacheItems));
+
+    // 数として読めない値は既定のまま
+    CHECK(cacheLimitsFromConfig(Config::parse("[cache]\nmax_memory_mb = abc\n")).maxBytes ==
+          512 * kMB);
+
+    // バイト上限に達したら、枚数上限に余裕があっても古い方から捨てる。
+    // 1 枚 4MB / 上限 10MB なので 2 枚しか残らない
+    BigDecoder decoder;
+    ImageCache cache(decoder, ImageCacheLimits{.maxBytes = 10 * kMB, .maxItems = 8});
+    std::mutex mutex;
+    std::condition_variable cv;
+    int decodedCount = 0;
+    cache.setOnDecoded([&](const std::filesystem::path&) {
+        std::lock_guard lock(mutex);
+        ++decodedCount;
+        cv.notify_all();
+    });
+    // 1 枚ずつ完了を待って積む(LRU の順序を確定させるため)
+    const char* paths[] = {"a.png", "b.png", "c.png", "d.png"};
+    for (int i = 0; i < 4; ++i) {
+        cache.requestNow(paths[i]);
+        std::unique_lock lock(mutex);
+        CHECK(cv.wait_for(lock, std::chrono::seconds(5), [&] { return decodedCount >= i + 1; }));
+    }
+    CHECK(cache.tryGet("a.png") == nullptr);  // 古い 2 枚は捨てられている
+    CHECK(cache.tryGet("b.png") == nullptr);
+    CHECK(cache.tryGet("c.png") != nullptr);
+    CHECK(cache.tryGet("d.png") != nullptr);
+}
+
 class FakeHost final : public IAppHost {
 public:
     void requestRedraw() override {}
@@ -4262,6 +4327,7 @@ int main() {
     testReadExifOrientation();
     testImageList();
     testImageCache();
+    testImageCacheLimits();
     testAppSlowDecode();
     testAppClipboard();
     testAppStatusBar();

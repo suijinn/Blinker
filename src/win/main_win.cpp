@@ -66,7 +66,7 @@ int WINAPI wWinMain(HINSTANCE hinstance, HINSTANCE, PWSTR, int showCommand) {
         const Config config = Config::loadFile(exeDirectory() / L"blinker.ini");
 
         DecoderWic decoder;
-        ImageCache cache(decoder);
+        ImageCache cache(decoder, cacheLimitsFromConfig(config));
         FileSystemWin fileSystem;
 
         const bool darkTheme = resolveDarkTheme(config);

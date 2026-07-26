@@ -6,8 +6,22 @@ namespace blinker {
 
 namespace fs = std::filesystem;
 
-ImageCache::ImageCache(IImageDecoder& decoder, size_t maxBytes, size_t maxItems)
-    : decoder_(decoder), maxBytes_(maxBytes), maxItems_(std::max<size_t>(maxItems, 2)) {
+ImageCacheLimits cacheLimitsFromConfig(const Config& config) {
+    const ImageCacheLimits defaults;
+    const int memoryMB = std::clamp(
+        config.getInt("cache", "max_memory_mb",
+                      static_cast<int>(defaults.maxBytes >> 20)),
+        kMinCacheMemoryMB, kMaxCacheMemoryMB);
+    const int items = std::clamp(
+        config.getInt("cache", "max_items", static_cast<int>(defaults.maxItems)),
+        kMinCacheItems, kMaxCacheItems);
+    return ImageCacheLimits{static_cast<size_t>(memoryMB) << 20, static_cast<size_t>(items)};
+}
+
+ImageCache::ImageCache(IImageDecoder& decoder, ImageCacheLimits limits)
+    : decoder_(decoder),
+      maxBytes_(limits.maxBytes),
+      maxItems_(std::max<size_t>(limits.maxItems, 2)) {
     worker_ = std::thread(&ImageCache::workerLoop, this);
 }
 
