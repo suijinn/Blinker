@@ -744,19 +744,38 @@ void App::beginEditDrag(Point screenPos) {
     selStartImage_ = clampToImage(imageToScreen().inverted().apply(screenPos));
     selEndImage_ = selStartImage_;
     penPoints_.clear();
+    penStraightAnchor_.reset();
     if (penToolActive()) penPoints_.push_back(selStartImage_);
     updatePreview();
     host_.requestRedraw();
 }
 
+void App::updatePenStraightAnchor(bool shift) {
+    if (!shift || !penToolActive()) {
+        penStraightAnchor_.reset();
+        return;
+    }
+    // 押し始めた位置を覚える。押している間は動かさないので、そこから先だけが直線になる
+    if (!penStraightAnchor_ && !penPoints_.empty()) penStraightAnchor_ = penPoints_.size() - 1;
+}
+
+void App::extendPenPoints(float minDistancePx) {
+    if (!penToolActive()) return;
+    if (penStraightAnchor_ && *penStraightAnchor_ < penPoints_.size()) {
+        // Shift 中はアンカーから先を捨てて引き直す(1 本の直線として追従させる)
+        penPoints_.resize(*penStraightAnchor_ + 1);
+        penPoints_.push_back(selEndImage_);
+        return;
+    }
+    appendPenPoint(penPoints_, selEndImage_, minDistancePx);
+}
+
 void App::updateEditDrag(Point screenPos, bool shift) {
+    updatePenStraightAnchor(shift);
     selEndImage_ = dragEndImage(screenPos, shift);
     // 手書きは通過点を溜める(bbox ではなく軌跡そのものが図形になる)。
     // 間引きは画面上の見た目基準なので、ズームに応じて画像座標へ換算する
-    if (penToolActive()) {
-        appendPenPoint(penPoints_, selEndImage_,
-                       kPenMinDistancePx / std::max(viewport_.zoom(), 0.001f));
-    }
+    extendPenPoints(kPenMinDistancePx / std::max(viewport_.zoom(), 0.001f));
     updatePreview();
     host_.requestRedraw();
 }
@@ -764,6 +783,7 @@ void App::updateEditDrag(Point screenPos, bool shift) {
 void App::endEditDrag(Point screenPos, bool shift) {
     if (!selecting_) return;
     selecting_ = false;
+    updatePenStraightAnchor(shift);
     selEndImage_ = dragEndImage(screenPos, shift);
     const float dx = screenPos.x - selStartScreen_.x;
     const float dy = screenPos.y - selStartScreen_.y;
@@ -776,7 +796,7 @@ void App::endEditDrag(Point screenPos, bool shift) {
     // 事前に選んであるツールをそのまま適用する(メニューは出さない)。
     // ドラッグ中のプレビューはここで実物の注釈へ置き換わる
     // 終点まで線を届かせる(同じ点なら足さない)
-    if (penToolActive()) appendPenPoint(penPoints_, selEndImage_, 0.01f);
+    extendPenPoints(0.01f);
     applyCurrentTool();
     host_.requestRedraw();
 }
@@ -1890,6 +1910,7 @@ void App::discardEdits() {
     objectDrag_ = ObjectDrag::None;
     annotations_.clear();
     penPoints_.clear();
+    penStraightAnchor_.reset();
     if (undoStack_.empty() && redoStack_.empty() && !edited_) return;
     undoStack_.clear();
     redoStack_.clear();
@@ -1909,8 +1930,13 @@ Point App::dragEndImage(Point screenPos, bool shift) const {
     const Point p = clampToImage(imageToScreen().inverted().apply(screenPos));
     // 連番マーカーは常に円にしたいので、Shift の有無によらず正方形へ寄せる
     if (tool_ == EditTool::Number) return constrainToSquare(selStartImage_, p);
-    // 手書きは軌跡そのものが図形なので、そもそも選択領域の形に意味がない
-    if (!shift || penToolActive()) return p;
+    if (!shift) return p;
+    // 手書きは軌跡そのものが図形なので、選択領域の形ではなく線の向きを揃える。
+    // 起点は Shift を押した時点の点(それまでに描いた軌跡はそのまま残る)
+    if (penToolActive()) {
+        if (!penStraightAnchor_ || *penStraightAnchor_ >= penPoints_.size()) return p;
+        return constrainToAxis(penPoints_[*penStraightAnchor_], p);
+    }
     // 直線・矢印は bbox ではなく線の向きを揃えたいので、正方形化(=45 度固定)
     // ではなく水平・垂直・45 度へのスナップにする
     if (tool_ == EditTool::Line || tool_ == EditTool::Arrow) {

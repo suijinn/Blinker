@@ -331,7 +331,7 @@ public:
      * @param[in] button    離されたボタン。
      * @param[in] screenPos 解放位置(スクリーン座標)。メニューの表示位置にもなる。
      * @param[in] shift     Shift が押されているか。押されていれば選択領域を正方形にする
-     *                      (直線・矢印ツールを除く)。
+     *                      (直線・矢印・手書きツールは向きを水平 / 垂直 / 45 度へ寄せる)。
      */
     void onMouseUp(MouseButton button, Point screenPos = {}, bool shift = false);
 
@@ -443,7 +443,7 @@ public:
      * @return ドラッグ中で表示を作り直したら true(呼び出し側はキーをコマンドとして
      *         処理しないこと)。ドラッグ中でなければ false。
      * @note マウスを止めたまま Shift を押し引きしても、正方形・真円のプレビューや
-     *       直線・矢印の向きのスナップが追従するようにするためのもの。
+     *       直線・矢印・手書きの向きのスナップが追従するようにするためのもの。
      *       オブジェクトのハンドルを掴んでいる間(端点・回転)も同様に効く。
      */
     bool onShiftChanged(bool shift);
@@ -712,7 +712,7 @@ private:
      * @brief 編集ドラッグ中の選択領域(とプレビュー)を更新する。
      * @param[in] screenPos 現在位置(スクリーン座標)。
      * @param[in] shift     Shift が押されているか。押されていれば選択領域を正方形にする
-     *                      (直線・矢印ツールを除く)。
+     *                      (直線・矢印・手書きツールは向きを水平 / 垂直 / 45 度へ寄せる)。
      */
     void updateEditDrag(Point screenPos, bool shift);
 
@@ -737,10 +737,27 @@ private:
      * @brief 編集ドラッグ中のポインタ位置を選択領域の終点(画像座標)へ変換する。
      * @param[in] screenPos ポインタ位置(スクリーン座標)。
      * @param[in] shift     Shift が押されているか。
-     * @return 画像内へクランプした終点。shift のときは、直線・矢印なら水平・垂直・
-     *         45 度へ、正方形にできるツールなら選択領域が正方形になる位置へ寄せたもの。
+     * @return 画像内へクランプした終点。shift のときは、直線・矢印・手書きなら水平・
+     *         垂直・45 度へ、正方形にできるツールなら選択領域が正方形になる位置へ寄せたもの。
+     * @note 手書きの起点は penStraightAnchor_ が指す点なので、先に
+     *       updatePenStraightAnchor を呼んでおくこと。
      */
     Point dragEndImage(Point screenPos, bool shift) const;
+
+    /**
+     * @brief 手書きの直線アンカー(penStraightAnchor_)を Shift の状態に合わせる。
+     * @param[in] shift Shift が押されているか。
+     * @note dragEndImage が参照するので、終点を求める前に呼ぶこと。
+     */
+    void updatePenStraightAnchor(bool shift);
+
+    /**
+     * @brief 手書きの軌跡を selEndImage_ まで伸ばす。
+     * @param[in] minDistancePx 直前の点との最小距離(画像座標)。これ未満の動きは捨てる。
+     * @note 手書きツール以外では何もしない。直線アンカーがある間は、アンカーから
+     *       終点までのまっすぐな 1 本で置き換える。
+     */
+    void extendPenPoints(float minDistancePx);
 
     /**
      * @brief ツール切り替えメニューの末端項目が表す操作。
@@ -1158,6 +1175,9 @@ private:
     AnnotationSpec previewSpec_;
     /// 手書きツールで編集ドラッグ中に溜めている軌跡(画像座標)。確定時に注釈へ移す
     std::vector<Point> penPoints_;
+    /// Shift を押し始めたときの penPoints_ の末尾 index。押している間、ここから先は
+    /// まっすぐな 1 本の線で置き換える(押す前に描いた軌跡は残る)。離すと無効になる
+    std::optional<size_t> penStraightAnchor_;
     /// 軌跡へ点を足す最小間隔(画面px)。これ未満の動きは無視して点数を抑える
     static constexpr float kPenMinDistancePx = 2.0f;
     /// マーカーの線幅の倍率(「線の太さ」設定に掛ける)。蛍光ペンらしい太さにする

@@ -121,6 +121,10 @@ Shift ドラッグの寄せ方は種別で変える(`App::dragEndImage`)。矩�
 選択領域を正方形にする (`constrainToSquare`) が、直線・矢印は bbox ではなく**線の向き**を
 揃えたいので、始点から見て一番近い水平・垂直・45 度へ寄せる (`constrainToAxis`)。
 どちらも移動量の小さいほうに合わせるので、画像の端まで引いても結果は画像内に収まる。
+手書きも `constrainToAxis` だが、起点は始点ではなく **Shift を押した時点の点**
+(`penStraightAnchor_` が指す `penPoints_` の index)。押している間はアンカーから先の
+点列を捨てて直線 1 本で引き直し (`extendPenPoints`)、離すとアンカーを捨ててまた
+通過点を溜めるので、手書きと直線を 1 ストロークの中で混ぜられる。
 `onShiftChanged` がドラッグ中の Shift の押し引きを拾い、マウスを止めたままでも
 プレビューが追従する。
 
