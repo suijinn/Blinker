@@ -92,6 +92,35 @@ void RendererSdl::drawSelection(const SelectionView& selection) {
     SDL_RenderRect(renderer_, &rect);
 }
 
+void RendererSdl::drawNavArrows(const NavArrowsView& navArrows) {
+    for (const NavArrow* arrow : {&navArrows.arrows.prev, &navArrows.arrows.next}) {
+        if (!arrow->visible) continue;
+        const bool next = arrow == &navArrows.arrows.next;
+        const float w = arrow->p2.x - arrow->p1.x;
+        const float h = arrow->p2.y - arrow->p1.y;
+        // 地は半透明の板(D2D 版は角丸だが、SDL には角丸の塗りが無いので直角のまま)
+        fillRect(arrow->p1.x, arrow->p1.y, w, h, navArrows.backgroundRGB,
+                 arrow->hovered ? navArrows.hoverAlpha : navArrows.alpha);
+        // 山形は三角形 1 枚で描く(SDL には太線が無いため塗りで表現する)。
+        // D2D 版は太線 2 本で描くぶん大きく見えるので、こちらは少し大きめに取る
+        const float cx = (arrow->p1.x + arrow->p2.x) / 2;
+        const float cy = (arrow->p1.y + arrow->p2.y) / 2;
+        const float half = h / 5;
+        const float tipX = next ? cx + half : cx - half;
+        const float tailX = next ? cx - half * 0.6f : cx + half * 0.6f;
+        const SDL_FColor color{static_cast<float>((navArrows.glyphRGB >> 16) & 0xFF) / 255.0f,
+                               static_cast<float>((navArrows.glyphRGB >> 8) & 0xFF) / 255.0f,
+                               static_cast<float>(navArrows.glyphRGB & 0xFF) / 255.0f, 1.0f};
+        const SDL_Vertex vertices[3] = {
+            {{tailX, cy - half}, color, {0, 0}},
+            {{tipX, cy}, color, {0, 0}},
+            {{tailX, cy + half}, color, {0, 0}},
+        };
+        const int indices[3] = {0, 1, 2};
+        SDL_RenderGeometry(renderer_, nullptr, vertices, 3, indices, 3);
+    }
+}
+
 void RendererSdl::drawTextClipped(std::string_view utf8, float x, float top, float maxWidth,
                                   uint32_t rgb) {
     if (utf8.empty() || maxWidth <= 1 || !font_.ok()) return;
@@ -169,7 +198,8 @@ void RendererSdl::drawStatusBar(const StatusBarView& bar) {
 void RendererSdl::render(const std::shared_ptr<const DecodedImage>& image,
                          const Matrix3x2& imageToScreen, float zoom, uint32_t backgroundRGB,
                          const AnnotationsView& annotations, const SelectionView& selection,
-                         const SidebarView& sidebar, const StatusBarView& statusBar) {
+                         const NavArrowsView& navArrows, const SidebarView& sidebar,
+                         const StatusBarView& statusBar) {
     SDL_SetRenderDrawColor(renderer_, static_cast<Uint8>((backgroundRGB >> 16) & 0xFF),
                            static_cast<Uint8>((backgroundRGB >> 8) & 0xFF),
                            static_cast<Uint8>(backgroundRGB & 0xFF), 255);
@@ -179,6 +209,7 @@ void RendererSdl::render(const std::shared_ptr<const DecodedImage>& image,
     // 注釈は作られない)。annotations は将来の実装のためのプレースホルダ
     (void)annotations;
     drawSelection(selection);
+    drawNavArrows(navArrows);  // 遷移用の矢印は画像の上(サイドバーの下)
     drawSidebar(sidebar);
     drawStatusBar(statusBar);
     SDL_RenderPresent(renderer_);

@@ -159,6 +159,9 @@ App::App(IAppHost& host, IFileSystem& fileSystem, ImageCache& cache, IClipboard&
 
 void App::applyConfig(const Config& config) {
     keymap_.applyConfig(config.section("keys"));
+    // [mouse] はコマンド割り当てと swap_buttons が同居する(後者はコマンド名として
+    // 解決されないので Mousemap 側では無視される)
+    mousemap_.applyConfig(config.section("mouse"));
     backgroundRGB_ = config.getColorRGB("view", "background", backgroundRGB_);
     viewport_.setFitUpscale(config.getBool("view", "fit_upscale", false));
     prefetchRadius_ = std::clamp(config.getInt("view", "prefetch_radius", prefetchRadius_), 0, 8);
@@ -168,6 +171,8 @@ void App::applyConfig(const Config& config) {
         std::clamp(config.getInt("view", "sidebar_width", static_cast<int>(sidebarWidth_)),
                    static_cast<int>(kMinSidebarWidth), static_cast<int>(kMaxSidebarWidth)));
     helpHintEnabled_ = config.getBool("view", "help_hint", helpHintEnabled_);
+    // 端に近づくと出る画像遷移用の矢印(使用感が合わなければ false で消せる)
+    navArrowsEnabled_ = config.getBool("view", "nav_arrows", navArrowsEnabled_);
     // パンと編集の左右を入れ替える(メニューは入れ替えず常に右クリック)
     swapMouseButtons_ = config.getBool("mouse", "swap_buttons", swapMouseButtons_);
     editColorRGB_ = config.getColorRGB("edit", "color", editColorRGB_);
@@ -396,7 +401,7 @@ void App::execute(Command command) {
         if (sidebarEnabled_) {
             sidebarMode_ = SidebarMode::Help;
             // ini 適用後のキーバインドから作る。開くたびに作り直すので設定変更にも追従する
-            helpLines_ = buildHelpLines(keymap_, swapMouseButtons_);
+            helpLines_ = buildHelpLines(keymap_, mousemap_, swapMouseButtons_);
             sidebarScroll_ = 0;
         }
         applyLayout();
@@ -459,18 +464,48 @@ void App::onResize(float width, float height) {
     updateTitle();  // フィット再計算でズーム率表示が変わりうる
 }
 
-void App::onWheel(float wheelNotches, Point screenPos) {
+void App::onWheel(float wheelNotches, Point screenPos, bool ctrl, bool shift, bool alt) {
     if (wheelNotches == 0) return;
     if (sidebarVisible() && screenPos.x < sidebarOffset()) {
-        // サイドバー上ではズームせず一覧をスクロール(1ノッチ = 3項目)
+        // サイドバー上ではズームも遷移もせず一覧をスクロール(1ノッチ = 3項目)
         sidebarScroll_ -= wheelNotches * 3 * kSidebarItemHeight;
         clampSidebarScroll();
         host_.requestRedraw();
         return;
     }
+    // 割り当てがあればコマンド。無ければ従来どおりカーソル位置基準のズーム
+    if (wheelCommand(wheelNotches, false, ctrl, shift, alt)) return;
+    wheelAccumV_ = 0.0f;
     viewport_.zoomAt(std::pow(Viewport::kZoomStep, wheelNotches),
                      {screenPos.x - sidebarOffset(), screenPos.y});
     onViewChanged();
+}
+
+void App::onWheelHorizontal(float wheelNotches, Point, bool ctrl, bool shift, bool alt) {
+    if (wheelNotches == 0) return;
+    // 未割り当てのときの既定動作は無い(垂直ホイールのズームに相当するものがない)
+    wheelCommand(wheelNotches, true, ctrl, shift, alt);
+}
+
+bool App::wheelCommand(float notches, bool horizontal, bool ctrl, bool shift, bool alt) {
+    const MouseInput input =
+        horizontal ? (notches > 0 ? MouseInput::WheelRight : MouseInput::WheelLeft)
+                   : (notches > 0 ? MouseInput::WheelUp : MouseInput::WheelDown);
+    const Command command = mousemap_.find({input, ctrl, shift, alt});
+    if (command == Command::None) return false;
+    // 1 ノッチに達した分だけ繰り返し実行する。向きはコマンド側で決まっているので
+    // ここでは段数の絶対値だけを使う(逆向きに回すと貯金は捨てられる)
+    float& accum = horizontal ? wheelAccumH_ : wheelAccumV_;
+    const int steps = std::abs(consumeWheelSteps(accum, notches));
+    for (int i = 0; i < steps; ++i) execute(command);
+    return true;
+}
+
+bool App::onMouseInput(const MouseChord& chord, Point) {
+    const Command command = mousemap_.find(chord);
+    if (command == Command::None) return false;
+    execute(command);
+    return true;
 }
 
 MouseRole App::mouseRole(MouseButton button) const {
@@ -487,6 +522,7 @@ bool App::inViewportArea(Point screenPos) const {
 
 bool App::onMouseDown(MouseButton button, Point screenPos) {
     lastPointerScreen_ = screenPos;
+    pointerInside_ = true;
     panning_ = false;
     menuPressed_ = false;
     // 右端を掴んだら幅の変更。項目のクリック判定より先に見る(境界際のクリックで
@@ -520,6 +556,9 @@ bool App::onMouseDown(MouseButton button, Point screenPos) {
             }
         }
     }
+    // オーバーレイ矢印はサイドバーの項目と同じ UI 部品なので、入れ替えの対象外で
+    // 常に左ボタン。図形を掴む判定より先に見る(端に図形があっても押せるように)
+    if (button == MouseButton::Left && clickNavArrow(screenPos)) return true;
     // オブジェクトを掴む操作(選択・移動・回転・サイズ変更、テキストのキャレット移動)は
     // 入れ替えの対象外で、常に左ボタン。入れ替えると左が編集役になるが、既存の図形を
     // 選ぶのに右クリックが要るのは他のペイント系ソフトと食い違って戸惑うため
@@ -662,9 +701,16 @@ void App::endObjectGrab() {
     dragUndoPushed_ = false;
 }
 
-bool App::onDoubleClick(Point screenPos) {
-    if (!current_) return false;
+bool App::onDoubleClick(Point screenPos, bool ctrl, bool shift, bool alt) {
+    // サイドバー上は 1 回目のクリックで画像が切り替わっているので何もしない
     if (sidebarVisible() && screenPos.x < sidebarOffset()) return false;
+    if (beginTextEditByDoubleClick(screenPos)) return true;
+    // テキストの再編集にならなかったダブルクリックは、割り当てがあればコマンドになる
+    return onMouseInput({MouseInput::DoubleClick, ctrl, shift, alt}, screenPos);
+}
+
+bool App::beginTextEditByDoubleClick(Point screenPos) {
+    if (!current_) return false;
     const Point imagePos = imageToScreen().inverted().apply(screenPos);
     const float tolerance = kHitTolerancePx / std::max(viewport_.zoom(), 0.001f);
     // 編集中の枠内でのダブルクリックは語の選択
@@ -1886,6 +1932,62 @@ SelectionView App::selection() const {
     return sel;
 }
 
+// --- オーバーレイ矢印(廃止しうる表示。判定の幾何は core/nav_arrows.h) ---------
+
+NavArrowsState App::navArrowsGeometry() const {
+    if (!navArrowsEnabled_ || !pointerInside_ || list_.empty()) return {};
+    // ドラッグ中とテキスト編集中は出さない(操作の途中で押せてしまうと編集が消える)
+    if (panning_ || selecting_ || sidebarResizing_ || textEditing_ || textEditMouseSelect_ ||
+        objectDrag_ != ObjectDrag::None) {
+        return {};
+    }
+    const float offset = sidebarOffset();
+    const float barHeight = statusBarVisible() ? kStatusBarHeight : 0.0f;
+    const SizeF viewport{clientSize_.w - offset, clientSize_.h - barHeight};
+    // 貼り付け画像の表示中は、前後どちらでもフォルダ一覧の表示へ戻れる
+    const bool hasPrev = clipboardImage_ || list_.index() > 0;
+    const bool hasNext = clipboardImage_ || list_.index() + 1 < list_.size();
+    NavArrowsState state = navArrowsState(
+        viewport, Point{lastPointerScreen_.x - offset, lastPointerScreen_.y}, hasPrev, hasNext);
+    // ビューポート左上原点 → スクリーン座標
+    for (NavArrow* arrow : {&state.prev, &state.next}) {
+        arrow->p1.x += offset;
+        arrow->p2.x += offset;
+    }
+    return state;
+}
+
+NavArrowsView App::navArrows() const {
+    NavArrowsView view;
+    view.arrows = navArrowsGeometry();
+    // 画像の上に重ねるので、テーマ(darkTheme_)ではなく明暗どちらの画像でも
+    // 見えるように固定色にする
+    view.backgroundRGB = 0x000000;
+    view.alpha = 96;
+    view.hoverAlpha = 176;
+    view.glyphRGB = 0xFFFFFF;
+    return view;
+}
+
+bool App::clickNavArrow(Point screenPos) {
+    const auto next = hitTestNavArrows(navArrowsGeometry(), screenPos);
+    if (!next) return false;
+    execute(*next ? Command::NextImage : Command::PrevImage);
+    return true;
+}
+
+bool App::updateNavArrowHover() {
+    const NavArrowsState state = navArrowsGeometry();
+    const auto same = [](const NavArrow& a, const NavArrow& b) {
+        return a.visible == b.visible && a.hovered == b.hovered;
+    };
+    if (same(state.prev, navArrowsShown_.prev) && same(state.next, navArrowsShown_.next)) {
+        return false;
+    }
+    navArrowsShown_ = state;
+    return true;
+}
+
 AnnotationsView App::annotations() const {
     AnnotationsView view;
     view.specs = &annotations_;
@@ -1965,6 +2067,7 @@ void App::onMouseMove(Point screenPos, bool shift) {
     const float panDx = screenPos.x - lastPointerScreen_.x;
     const float panDy = screenPos.y - lastPointerScreen_.y;
     lastPointerScreen_ = screenPos;
+    pointerInside_ = true;  // オーバーレイ矢印の表示判定(onMouseLeave で false へ戻す)
     // 幅の変更中は掴んだ位置からの総移動量で決める(クランプで取りこぼしが出ないように)
     if (sidebarResizing_) {
         setSidebarWidth(sidebarResizeStartWidth_ + screenPos.x - sidebarResizeStartX_);
@@ -2018,16 +2121,24 @@ void App::onMouseMove(Point screenPos, bool shift) {
         host_.requestRedraw();
         return;
     }
+    // 表示が変わるときだけ再描画する(オーバーレイ矢印の出入りとホバーもここで拾う)
+    bool redraw = updateNavArrowHover();
     std::string text = hoverInfoText(screenPos);
-    if (text == hoverText_) return;  // 表示が変わるときだけ再描画する
-    hoverText_ = std::move(text);
-    if (statusBarVisible()) host_.requestRedraw();
+    if (text != hoverText_) {
+        hoverText_ = std::move(text);
+        redraw = redraw || statusBarVisible();
+    }
+    if (redraw) host_.requestRedraw();
 }
 
 void App::onMouseLeave() {
-    if (hoverText_.empty()) return;
-    hoverText_.clear();
-    if (statusBarVisible()) host_.requestRedraw();
+    pointerInside_ = false;  // ウィンドウから出たらオーバーレイ矢印を消す
+    bool redraw = updateNavArrowHover();
+    if (!hoverText_.empty()) {
+        hoverText_.clear();
+        redraw = redraw || statusBarVisible();
+    }
+    if (redraw) host_.requestRedraw();
 }
 
 void App::onTimer() {

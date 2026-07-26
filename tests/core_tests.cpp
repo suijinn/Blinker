@@ -23,6 +23,8 @@
 #include "core/image_cache.h"
 #include "core/image_list.h"
 #include "core/keymap.h"
+#include "core/mousemap.h"
+#include "core/nav_arrows.h"
 #include "core/ocr_service.h"
 #include "core/ocr_text.h"
 #include "core/pixel_convert.h"
@@ -238,13 +240,155 @@ void testChordToString() {
     CHECK(km.chordsFor(Command::SelectToolArrow).empty());
 }
 
+void testMousemap() {
+    const Mousemap mm = Mousemap::defaults();
+    // 既定はサイドボタンと Ctrl+ホイール、水平ホイールで前後の画像
+    CHECK(mm.find({MouseInput::X2}) == Command::NextImage);
+    CHECK(mm.find({MouseInput::X1}) == Command::PrevImage);
+    CHECK(mm.find({MouseInput::WheelDown, true}) == Command::NextImage);
+    CHECK(mm.find({MouseInput::WheelUp, true}) == Command::PrevImage);
+    CHECK(mm.find({MouseInput::WheelRight}) == Command::NextImage);
+    CHECK(mm.find({MouseInput::WheelLeft}) == Command::PrevImage);
+    // 素のホイールは未割り当て(App::onWheel がカーソル位置基準のズームに使う)
+    CHECK(mm.find({MouseInput::WheelDown}) == Command::None);
+    CHECK(mm.find({MouseInput::WheelUp}) == Command::None);
+    // 中ボタン・ダブルクリックも既定では未割り当て
+    CHECK(mm.find({MouseInput::Middle}) == Command::None);
+    CHECK(mm.find({MouseInput::DoubleClick}) == Command::None);
+    // 修飾キーが違えば別の操作
+    CHECK(mm.find({MouseInput::X2, true}) == Command::None);
+
+    // 表記の解析と往復(表示用の表記はそのまま ini に書ける)
+    CHECK((Mousemap::parseChord("X2") == MouseChord{MouseInput::X2}));
+    CHECK((Mousemap::parseChord("ctrl+wheeldown") ==
+           MouseChord{MouseInput::WheelDown, true}));
+    CHECK((Mousemap::parseChord(" Shift+Alt+Middle ") ==
+           MouseChord{MouseInput::Middle, false, true, true}));
+    CHECK((Mousemap::parseChord("double_click") == MouseChord{MouseInput::DoubleClick}));
+    CHECK(!Mousemap::parseChord("Left"));   // 左右ボタンは割り当ての対象外
+    CHECK(!Mousemap::parseChord("Wheel"));  // 向きの無い表記は受け付けない
+    CHECK(!Mousemap::parseChord("Ctrl+"));
+    CHECK(!Mousemap::parseChord(""));
+    CHECK(Mousemap::chordToString({MouseInput::None}).empty());
+    for (const MouseInput input :
+         {MouseInput::Middle, MouseInput::X1, MouseInput::X2, MouseInput::DoubleClick,
+          MouseInput::WheelUp, MouseInput::WheelDown, MouseInput::WheelLeft,
+          MouseInput::WheelRight}) {
+        for (const bool ctrl : {false, true}) {
+            const MouseChord chord{input, ctrl};
+            const std::string text = Mousemap::chordToString(chord);
+            CHECK(!text.empty());
+            CHECK((Mousemap::parseChord(text) == chord));
+            CHECK(!Mousemap::chordToDisplayString(chord).empty());
+        }
+    }
+
+    // chordsFor の並びは修飾なしが先で、格納順(unordered_map)に依存しない
+    const std::vector<MouseChord> next = mm.chordsFor(Command::NextImage);
+    CHECK(next.size() == 3);
+    CHECK((next[0] == MouseChord{MouseInput::X2}));
+    CHECK((next[1] == MouseChord{MouseInput::WheelRight}));
+    CHECK((next[2] == MouseChord{MouseInput::WheelDown, true}));
+    CHECK(mm.chordsFor(Command::ZoomIn).empty());
+
+    // ini はコマンドごとに既存の割り当てを置き換える。コマンド名でないキー
+    // (swap_buttons)は無視する
+    Mousemap custom = Mousemap::defaults();
+    custom.applyConfig({{"next", "WheelDown, X2"},
+                        {"prev", "WheelUp"},
+                        {"fullscreen", "DoubleClick"},
+                        {"swap_buttons", "true"},
+                        {"unknown_command", "X1"}});
+    CHECK(custom.find({MouseInput::WheelDown}) == Command::NextImage);
+    CHECK(custom.find({MouseInput::X2}) == Command::NextImage);
+    CHECK(custom.find({MouseInput::WheelDown, true}) == Command::None);  // 置き換えられた
+    CHECK(custom.find({MouseInput::WheelRight}) == Command::None);
+    CHECK(custom.find({MouseInput::X1}) == Command::None);  // prev は WheelUp だけになった
+    CHECK(custom.find({MouseInput::WheelUp}) == Command::PrevImage);
+    CHECK(custom.find({MouseInput::DoubleClick}) == Command::ToggleFullscreen);
+
+    // 解析できない表記が混ざっていても、残りは割り当てられる
+    Mousemap partial = Mousemap::defaults();
+    partial.applyConfig({{"last", "Nonsense, X1"}});
+    CHECK(partial.find({MouseInput::X1}) == Command::LastImage);
+
+    // ホイールの蓄積: 1 ノッチに達するまでは何も起きず、達した分だけ段が出る
+    float accum = 0.0f;
+    CHECK(consumeWheelSteps(accum, 0.4f) == 0);
+    CHECK(consumeWheelSteps(accum, 0.4f) == 0);
+    CHECK(consumeWheelSteps(accum, 0.4f) == 1);  // 1.2 → 1 段(0.2 は残す)
+    CHECK(consumeWheelSteps(accum, 1.0f) == 1);
+    CHECK(consumeWheelSteps(accum, 3.0f) == 3);  // 一度に何段でも出る
+    CHECK(consumeWheelSteps(accum, 0.0f) == 0);
+    // 逆向きに回したら貯金は捨てる(小さく戻したときに 1 回目が飲まれない)
+    accum = 0.0f;
+    CHECK(consumeWheelSteps(accum, 0.9f) == 0);
+    CHECK(consumeWheelSteps(accum, -0.9f) == 0);
+    CHECK(consumeWheelSteps(accum, -0.9f) == -1);
+}
+
+void testNavArrows() {
+    const SizeF viewport{800, 600};
+    // 800x600 なら 左ボタン x 12-56 / 右ボタン x 744-788、y 278-322(上下中央)、帯は 110px
+    const auto state = [&viewport](std::optional<Point> pointer, bool hasPrev = true,
+                                   bool hasNext = true) {
+        return navArrowsState(viewport, pointer, hasPrev, hasNext);
+    };
+
+    // ポインタが無い(ウィンドウ外・ドラッグ中)なら出さない
+    CHECK(!state(std::nullopt).prev.visible);
+    CHECK(!state(std::nullopt).next.visible);
+    // 中央では出さない(端の帯に入ったときだけ)
+    CHECK(!state(Point{400, 300}).prev.visible);
+    CHECK(!state(Point{400, 300}).next.visible);
+    // 左の帯 → 左だけ、右の帯 → 右だけ
+    CHECK(state(Point{90, 300}).prev.visible);
+    CHECK(!state(Point{90, 300}).next.visible);
+    CHECK(state(Point{700, 300}).next.visible);
+    CHECK(!state(Point{700, 300}).prev.visible);
+    // 帯の中でもボタンの上でなければホバーしない
+    CHECK(!state(Point{90, 300}).prev.hovered);
+    CHECK(state(Point{30, 300}).prev.hovered);
+    CHECK(state(Point{760, 300}).next.hovered);
+    // ボタンは上下中央、端から kNavArrowMarginPx
+    const NavArrow prev = state(Point{30, 300}).prev;
+    CHECK(prev.p1.x == kNavArrowMarginPx);
+    CHECK(prev.p2.x == kNavArrowMarginPx + kNavArrowSizePx);
+    CHECK(prev.p1.y == (600 - kNavArrowSizePx) / 2);
+    CHECK(prev.p2.y == prev.p1.y + kNavArrowSizePx);
+    const NavArrow next = state(Point{760, 300}).next;
+    CHECK(next.p2.x == 800 - kNavArrowMarginPx);
+    CHECK(next.p1.x == next.p2.x - kNavArrowSizePx);
+    // 先頭 / 末尾では行き先が無いほうを出さない
+    CHECK(!state(Point{30, 300}, false, true).prev.visible);
+    CHECK(!state(Point{760, 300}, true, false).next.visible);
+    // ポインタがビューポートの外(サイドバー・ステータスバー上)なら出さない
+    CHECK(!state(Point{-10, 300}).prev.visible);
+    CHECK(!state(Point{30, 700}).prev.visible);
+    // ボタンが収まらない狭いビューポートでは出さない
+    CHECK(!navArrowsState({150, 600}, Point{10, 300}, true, true).prev.visible);
+    CHECK(!navArrowsState({800, 60}, Point{30, 30}, true, true).prev.visible);
+
+    // クリック判定はボタンの内側だけ(帯全体を当たりにしない)
+    const NavArrowsState both = state(Point{30, 300});
+    CHECK(hitTestNavArrows(both, Point{30, 300}) == std::optional<bool>{false});
+    CHECK(!hitTestNavArrows(both, Point{90, 300}));  // 帯の中だが枠外
+    const NavArrowsState nextShown = state(Point{760, 300});
+    CHECK(hitTestNavArrows(nextShown, Point{760, 300}) == std::optional<bool>{true});
+    // 出ていないボタンには当たらない
+    CHECK(!hitTestNavArrows(state(Point{30, 300}, false, true), Point{30, 300}));
+}
+
 void testHelpLines() {
     const Keymap km = Keymap::defaults();
+    const Mousemap mm = Mousemap::defaults();
     CHECK(keysLabel(km, Command::NextImage) == "Right Down PageDown Space");
     CHECK(keysLabel(km, Command::ToggleHelp) == "F1");
     CHECK(keysLabel(km, Command::SelectToolArrow).empty());  // 既定では未割り当て
+    CHECK(mouseLabel(mm, Command::NextImage) == "サイド(進む) チルト→ Ctrl+ホイール↓");
+    CHECK(mouseLabel(mm, Command::ZoomIn).empty());  // ズームは割り当てではない
 
-    const std::vector<HelpLine> lines = buildHelpLines(km, false);
+    const std::vector<HelpLine> lines = buildHelpLines(km, mm, false);
     const auto has = [&lines](std::string_view text) {
         return std::any_of(lines.begin(), lines.end(),
                            [text](const HelpLine& line) { return line.text == text; });
@@ -272,7 +416,12 @@ void testHelpLines() {
     CHECK(has("スクロール  左ドラッグ"));
     CHECK(has("現在のツールを実行  右ドラッグ"));
     CHECK(has("ツール・書式メニュー  余白で右クリック"));
-    const std::vector<HelpLine> swapped = buildHelpLines(km, true);
+    // マウスの割り当ては Mousemap から生成する
+    CHECK(has("次の画像  サイド(進む) チルト→ Ctrl+ホイール↓"));
+    CHECK(has("前の画像  サイド(戻る) チルト← Ctrl+ホイール↑"));
+    // 素のホイールが空いている限りズームは「ホイール」
+    CHECK(has("拡大 / 縮小  ホイール"));
+    const std::vector<HelpLine> swapped = buildHelpLines(km, mm, true);
     const auto hasSwapped = [&swapped](std::string_view text) {
         return std::any_of(swapped.begin(), swapped.end(),
                            [text](const HelpLine& line) { return line.text == text; });
@@ -289,13 +438,21 @@ void testHelpLines() {
     // ini でキーを変えたら一覧もそれに追従する(README のような固定テキストではない)
     Keymap custom = Keymap::defaults();
     custom.applyConfig({{"next", "N"}, {"tool_arrow", "A"}});
-    const std::vector<HelpLine> customLines = buildHelpLines(custom, false);
+    Mousemap customMouse = Mousemap::defaults();
+    customMouse.applyConfig({{"next", "WheelDown"}, {"prev", "WheelUp"}, {"fit", "Middle"}});
+    const std::vector<HelpLine> customLines = buildHelpLines(custom, customMouse, false);
     const auto hasCustom = [&customLines](std::string_view text) {
         return std::any_of(customLines.begin(), customLines.end(),
                            [text](const HelpLine& line) { return line.text == text; });
     };
     CHECK(hasCustom("次の画像  N"));
     CHECK(hasCustom("矢印ツール  A"));
+    // ini でマウスを変えたら一覧もそれに追従する。素のホイールを遷移で埋めたので
+    // ズームの案内は空いている Ctrl+ホイールへ移る
+    CHECK(hasCustom("次の画像  ホイール↓"));
+    CHECK(hasCustom("ウィンドウにフィット  中ボタン"));
+    CHECK(hasCustom("拡大 / 縮小  Ctrl+ホイール"));
+    CHECK(!hasCustom("拡大 / 縮小  ホイール"));
 
     // 節の中身が全部消えたら見出しも出さない
     Keymap stripped = Keymap::defaults();
@@ -306,7 +463,7 @@ void testHelpLines() {
     stripped.unbindCommand(Command::CopyFile);
     stripped.unbindCommand(Command::CopyOcrText);
     stripped.unbindCommand(Command::PasteImage);
-    const std::vector<HelpLine> strippedLines = buildHelpLines(stripped, false);
+    const std::vector<HelpLine> strippedLines = buildHelpLines(stripped, mm, false);
     CHECK(std::none_of(strippedLines.begin(), strippedLines.end(),
                        [](const HelpLine& line) { return line.text == "ファイル"; }));
 }
@@ -3831,6 +3988,8 @@ int main() {
     testViewportZoomAt();
     testKeymap();
     testChordToString();
+    testMousemap();
+    testNavArrows();
     testHelpLines();
     testConfig();
     testDib();

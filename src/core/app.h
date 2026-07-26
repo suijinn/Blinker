@@ -17,6 +17,7 @@
 #include "core/image_cache.h"
 #include "core/image_list.h"
 #include "core/keymap.h"
+#include "core/mousemap.h"
 #include "core/ocr_service.h"
 #include "core/text_edit.h"
 #include "core/viewport.h"
@@ -260,11 +261,48 @@ public:
     void onResize(float width, float height);
 
     /**
-     * @brief ホイール操作を処理する。
-     * @param[in] wheelNotches 回転量(ノッチ単位)。正で拡大。
+     * @brief 垂直ホイール操作を処理する。
+     *
+     * Mousemap に割り当てがあればそのコマンドを実行し、無ければカーソル位置基準の
+     * ズームになる(ズームは Command と等価でないため割り当ての対象外で、
+     * 「未割り当てのホイールの既定動作」という位置づけ)。
+     *
+     * @param[in] wheelNotches 回転量(ノッチ単位)。正で奥へ(既定ではズームイン)。
      * @param[in] screenPos    ポインタ位置。サイドバー上ならズームではなくスクロールする。
+     * @param[in] ctrl         Ctrl が押されているか(既定では Ctrl+ホイールが画像の遷移)。
+     * @param[in] shift        Shift が押されているか。
+     * @param[in] alt          Alt が押されているか。
+     * @note サイドバー上では割り当てより一覧のスクロールを優先する(修飾キー付きも同じ)。
      */
-    void onWheel(float wheelNotches, Point screenPos);
+    void onWheel(float wheelNotches, Point screenPos, bool ctrl = false, bool shift = false,
+                 bool alt = false);
+
+    /**
+     * @brief 水平ホイール(チルト)操作を処理する。
+     *
+     * 既定では左右が前後の画像。垂直ホイールと違い未割り当て時の既定動作は無い。
+     *
+     * @param[in] wheelNotches 回転量(ノッチ単位)。正で右へ。
+     * @param[in] screenPos    ポインタ位置(現状は未使用。将来の領域判定のために受け取る)。
+     * @param[in] ctrl         Ctrl が押されているか。
+     * @param[in] shift        Shift が押されているか。
+     * @param[in] alt          Alt が押されているか。
+     * @note サイドバー上でも同じに扱う(一覧は横スクロールしないため)。
+     */
+    void onWheelHorizontal(float wheelNotches, Point screenPos, bool ctrl = false,
+                           bool shift = false, bool alt = false);
+
+    /**
+     * @brief コマンドを割り当てられるマウス操作(中ボタン・サイドボタン等)を処理する。
+     *
+     * 左右ボタンのクリック・ドラッグはここを通らない(onMouseDown / onMouseUp が
+     * mouseRole に従って振り分ける)。
+     *
+     * @param[in] chord     入力されたマウス操作。
+     * @param[in] screenPos ポインタ位置(スクリーン座標)。
+     * @return 割り当てがあり実行したら true。未割り当てなら false。
+     */
+    bool onMouseInput(const MouseChord& chord, Point screenPos);
 
     /**
      * @brief マウスボタン押下を処理する。
@@ -300,9 +338,15 @@ public:
     /**
      * @brief ダブルクリックを処理する(左ボタン)。
      * @param[in] screenPos クリック位置(スクリーン座標)。
-     * @return Text 注釈上で編集を開始した、または編集中に語を選択したら true。
+     * @param[in] ctrl      Ctrl が押されているか(MouseInput::DoubleClick の割り当て用)。
+     * @param[in] shift     Shift が押されているか。
+     * @param[in] alt       Alt が押されているか。
+     * @return Text 注釈上で編集を開始した、編集中に語を選択した、または
+     *         MouseInput::DoubleClick に割り当てられたコマンドを実行したら true。
+     * @note テキスト注釈の再編集が優先で、そうならなかったときだけ割り当てを見る。
      */
-    bool onDoubleClick(Point screenPos);
+    bool onDoubleClick(Point screenPos, bool ctrl = false, bool shift = false,
+                       bool alt = false);
 
     /**
      * @brief 画像上でテキストを編集中かを返す。
@@ -491,6 +535,14 @@ public:
      * @return 注釈一覧と選択状態(画像座標)。
      */
     AnnotationsView annotations() const;
+
+    /**
+     * @brief 画像遷移用オーバーレイ矢印の描画内容を組み立てる。
+     * @return ボタンの位置と色(スクリーン座標)。出さない場合は visible が false。
+     * @note 使用感が合わなければ廃止しうる表示(`[view] nav_arrows = false` で消せる)。
+     *       判定の幾何は core の nav_arrows.h に閉じてある。
+     */
+    NavArrowsView navArrows() const;
 
 private:
     static constexpr float kPanStepPx = 64.0f;         ///< パンコマンド 1 回の移動量
@@ -986,6 +1038,49 @@ private:
      */
     bool applyOcrSelection();
 
+    /**
+     * @brief ダブルクリックで Text 注釈の編集に入れるかを試す。
+     * @param[in] screenPos クリック位置(スクリーン座標)。
+     * @return 編集を開始した、または編集中に語を選択したら true。
+     */
+    bool beginTextEditByDoubleClick(Point screenPos);
+
+    /**
+     * @brief ホイールの回転を割り当てられたコマンドとして実行する。
+     * @param[in] notches    回転量(ノッチ単位)。
+     * @param[in] horizontal 水平ホイールなら true。
+     * @param[in] ctrl       Ctrl が押されているか。
+     * @param[in] shift      Shift が押されているか。
+     * @param[in] alt        Alt が押されているか。
+     * @return 割り当てがあれば true(1 ノッチに達しておらず何も実行しなかった場合も
+     *         含む。呼び出し側はズームへ落とさないこと)。未割り当てなら false。
+     */
+    bool wheelCommand(float notches, bool horizontal, bool ctrl, bool shift, bool alt);
+
+    // --- オーバーレイ矢印(廃止しうる表示。消すときはこの 3 つと navArrows / メンバ) ---
+
+    /**
+     * @brief オーバーレイ矢印の現在の状態を求める(スクリーン座標)。
+     * @return 左右のボタンの位置と表示状態。出さない状況では visible が false。
+     * @note 出さない状況: `[view] nav_arrows = false`、画像なし、ポインタがウィンドウ外か
+     *       ビューポート外、ドラッグ中(パン・編集・オブジェクト・幅変更)、
+     *       テキスト編集中(端のボタンを押して編集が消えるのを防ぐ)。
+     */
+    NavArrowsState navArrowsGeometry() const;
+
+    /**
+     * @brief クリック位置がオーバーレイ矢印なら画像を送る。
+     * @param[in] screenPos クリック位置(スクリーン座標)。
+     * @return ボタンに当たって遷移したら true。
+     */
+    bool clickNavArrow(Point screenPos);
+
+    /**
+     * @brief ポインタ移動でオーバーレイ矢印の表示が変わったかを調べ、状態を更新する。
+     * @return 表示・ホバーが変わって再描画が必要なら true。
+     */
+    bool updateNavArrowHover();
+
     IAppHost& host_;
     IFileSystem& fileSystem_;
     ImageCache& cache_;
@@ -996,6 +1091,7 @@ private:
     /// 待っている認識の generation。0 なら認識中でない。古い結果を捨てるのに使う
     uint64_t ocrGeneration_ = 0;
     Keymap keymap_ = Keymap::defaults();
+    Mousemap mousemap_ = Mousemap::defaults();
     ImageList list_;
     Viewport viewport_;
     std::shared_ptr<DecodedImage> current_;
@@ -1026,6 +1122,15 @@ private:
     Point lastPointerScreen_{};  ///< 最後のポインタ位置。パンの差分と Shift 再計算に使う
     bool menuPressed_ = false;   ///< 右ボタンをメニューを開ける場所で押したか
     Point menuPressScreen_{};    ///< 上記の押下位置(ドラッグ量の閾値判定用)
+    /// ホイールでコマンドを実行するときの回転量の貯金(垂直 / 水平で別に持つ)。
+    /// 1 ノッチ未満ずつ通知される高精細ホイールでも取りこぼさないため
+    float wheelAccumV_ = 0.0f;
+    float wheelAccumH_ = 0.0f;
+    bool pointerInside_ = false;  ///< ポインタがクライアント領域内にあるか(矢印の表示判定)
+    /// オーバーレイ矢印を出すか(`[view] nav_arrows`)。使用感が合わなければ false にできる
+    bool navArrowsEnabled_ = true;
+    /// 直前に描いた矢印の状態。ポインタ移動で再描画が必要かの判定にだけ使う
+    NavArrowsState navArrowsShown_;
     bool sidebarResizing_ = false;      ///< サイドバーの右端を掴んで幅を変更中か
     float sidebarResizeStartX_ = 0;     ///< 変更開始時のポインタ X(スクリーン座標)
     float sidebarResizeStartWidth_ = 0; ///< 変更開始時のサイドバー幅(px)

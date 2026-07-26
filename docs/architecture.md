@@ -67,9 +67,9 @@ EXIF 回転が効かない、対応形式が stb_image の範囲(WebP/HEIC/AVIF/
 ## データフロー(一方向)
 
 ```
-入力 (WM_KEYDOWN / ホイール / D&D)
-  → MainWindow が KeyChord / イベントへ変換
-  → Keymap が Command を解決
+入力 (WM_KEYDOWN / ホイール / サイドボタン / D&D)
+  → MainWindow が KeyChord / MouseChord / イベントへ変換
+  → Keymap / Mousemap が Command を解決
   → App::execute が状態を更新 (ImageList / Viewport)
   → IAppHost 経由で再描画・タイトル更新を依頼
   → WM_PAINT で RendererD2D が App の状態を描画
@@ -143,10 +143,86 @@ redo は undo 側へ積み替えるだけの対称な操作 (`App::restoreFrom`)
 新しい編集を積む (`pushUndoState`) と redo 履歴は捨てる(分岐した未来は残さない)。
 保存は Ctrl+S のみで元ファイルは自動では書き換えない。
 
+### マウス操作への Command の割り当て
+
+**左右ボタン以外のマウス操作は `Mousemap` で Command に解決する**(`MouseChord` →
+`Command`。`Keymap` と同じ形で、既定表 + ini の `[mouse]` 上書き、逆引きも持つ)。
+対象は中ボタン・サイドボタン (X1/X2)・垂直/水平ホイール・左ダブルクリック
+(`MouseInput`)で、左右ボタンのクリック・ドラッグは**含めない**。パン・編集ドラッグ・
+メニューで埋まっており、割り当ての対象にすると次節の `mouseRole`(`swap_buttons`)と
+二重管理になるため。
+
+| 既定の割り当て | Command |
+|---|---|
+| `X1` / `X2`(サイドボタンの戻る / 進む) | `PrevImage` / `NextImage` |
+| `Ctrl+WheelUp` / `Ctrl+WheelDown` | `PrevImage` / `NextImage` |
+| `WheelLeft` / `WheelRight`(水平ホイール) | `PrevImage` / `NextImage` |
+| `Middle` / `DoubleClick` | なし(ini で割り当て可) |
+
+**ホイールでのズームは Mousemap に載せない**。カーソル位置を基準に拡大縮小するため
+`Command::ZoomIn` と等価にならず、「**割り当てのないホイールの既定動作**」として
+`App::onWheel` が受け持つ。この作りにすると `[mouse] next = WheelDown` と書くだけで
+素のホイールが遷移になり、既定の `Ctrl+ホイール` の割り当ては消えてズームへ落ちるので、
+`wheel = zoom|navigate` のようなモード設定が要らない。サイドバー上のホイールだけは
+割り当てより一覧のスクロールを優先する(修飾キー付きも同じ)。
+
+遷移は離散なので、ホイールの回転量は `core` の `consumeWheelSteps` で 1 ノッチに
+達するまで貯めてから消費する(1 ノッチ未満ずつ通知される高精細ホイール・
+タッチパッドで取りこぼさないため。逆向きに回したら貯金は捨てる)。垂直と水平で
+別の貯金を持つ。
+
+ウィンドウ層は `MouseChord` を組み立てて `App::onMouseInput` を呼ぶだけ
+(キー入力が `KeyChord` を組み立てるのと同じ)。win 層の注意点として、
+**`WM_XBUTTONUP` を `DefWindowProc` へ渡してはならない**(`WM_APPCOMMAND` の
+BROWSER_BACKWARD/FORWARD が生成され、サイドボタンが二重に届く)。X ボタンの
+メッセージは押下・解放とも消費して `TRUE` を返す。
+
+ダブルクリックは**テキスト注釈の再編集が優先**で、そこに当たらなかったときだけ
+`MouseInput::DoubleClick` の割り当てを見る(`App::onDoubleClick`)。
+
+### オーバーレイ矢印(画像遷移ボタン)
+
+ポインタがビューポート左右の端の帯(`kNavArrowBandPx`)に入ると、前後の画像へ移る
+ボタン(◀ ▶)を画像の上に重ねて出す。**クリックが効くのはボタンの内側だけ**で、
+帯全体を当たりにはしない(端をクリックしたつもりで画像が変わるのを防ぐ)。
+先頭・末尾では行き先の無い側を出さない。`[view] nav_arrows = false` で完全に消せる。
+
+出さない条件は `App::navArrowsGeometry` に集約してある: 設定で無効、フォルダが空、
+ポインタがウィンドウ外(`onMouseLeave`)かビューポート外、ドラッグ中(パン・編集・
+オブジェクト・サイドバー幅)、テキスト編集中(端のボタンを押して編集が消えるのを防ぐ)。
+
+クリックは**サイドバーの項目と同じ UI 部品**の扱いで、`swap_buttons` にかかわらず
+常に左ボタン。`onMouseDown` では注釈を掴む判定より先に見る(端に図形があっても
+ボタンが押せるように)。ただし SDL 版で `swap_buttons = true` にすると左ボタンが
+編集役になり、`WindowSdl` が編集役のボタンを App へ渡さないためボタンを押せない
+(SDL 版は閲覧専用で、入れ替える動機自体が無いので放置してある)。
+
+**この表示は使用感が合わなければ廃止しうる**前提で、次の 6 か所に閉じ込めてある
+(消すときはこれだけを消せばよく、既存の入力・描画の流れには手を入れていない):
+
+1. `core/nav_arrows.h` / `.cpp` — 寸法と表示・当たりの判定(純粋関数、単体テスト対象)
+2. `platform/renderer.h` の `NavArrowsView` と `render` の引数
+3. `App::navArrows` / `navArrowsGeometry` / `clickNavArrow` / `updateNavArrowHover` と
+   `pointerInside_` / `navArrowsEnabled_` / `navArrowsShown_`
+4. `RendererD2D::drawNavArrows`(+ 山形用の `navGlyphStroke_`)
+5. `RendererSdl::drawNavArrows`
+6. `[view] nav_arrows` の読み取り
+
+再描画は `onMouseMove` / `onMouseLeave` が `updateNavArrowHover` で「表示・ホバーが
+変わったときだけ」要求する(ステータスバーのホバー表示と同じ考え方。ポインタが動く
+たびに再描画しない)。`navArrowsShown_` はそのための直前の状態で、描画の正は
+毎回組み立てる `navArrows()` のほう。
+
+操作一覧 (F1) には載せていない。ボタン自体が「マウスで遷移できる」ことの案内なので、
+一覧に書いても見る人はもう知っている(廃止時に消す箇所を増やしたくないのもある)。
+
 ### マウスボタンの役割
 
 物理ボタン (`MouseButton`) と役割 (`MouseRole`) を分けてあり、対応は
 blinker.ini の `[mouse] swap_buttons` で入れ替えられる(`App::mouseRole`)。
+こちらは左右ボタンだけの話で、上記の Mousemap とは独立している
+(`[mouse]` セクションを共有するが、`swap_buttons` はコマンド名として解決されない
+ので `Mousemap::applyConfig` は無視する)。
 
 | 役割 | 既定 | 入れ替え時 | 内容 |
 |---|---|---|---|
@@ -263,7 +339,9 @@ Text 注釈は PowerPoint のテキストボックスと同じく**画像上で�
 | `OcrService` | ワーカースレッド1本で非同期に文字認識(`ImageCache` と同じ形)。予約は最後の1件だけが走り、結果は generation 付きで返るので、画像を切り替えた後に届いた古い結果を App 側で捨てられる |
 | `ocr_text.h` | 認識結果の後処理。テキストの整形(`ocrResultToText`。行の連結と、CJK 文字に挟まれた空白の除去 — Windows の OCR は日本語でも語間に空白を入れて返す)と、拡大して読み直すかの判断(`ocrRetryUpscale`)。閾値は実測で決めてあり、根拠はヘッダのコメントに残してある。純粋関数で単体テスト対象 |
 | `Keymap` | KeyChord → Command。デフォルト表 + ini 上書き。逆引き (`chordsFor` / `chordToString`) も持ち、操作一覧の生成に使う |
-| `help.h` | 現在の `Keymap` から操作一覧の表示テキストを組み立てる(`buildHelpLines`)。固定テキストを持たないので README と drift しない(単体テスト対象) |
+| `Mousemap` | MouseChord → Command(中・サイドボタン・ホイール・ダブルクリック)。`Keymap` と同じ形。ini 用の表記 (`chordToString`) と操作一覧用の日本語表記 (`chordToDisplayString`) を持つ。ホイール量の蓄積 (`consumeWheelSteps`) も同じヘッダ(いずれも単体テスト対象) |
+| `nav_arrows.h` | オーバーレイ矢印(左右の端に出る画像遷移ボタン)の寸法・表示条件・当たり判定(純粋関数、単体テスト対象)。**廃止しうる表示なので判定をここに閉じている**(上記「オーバーレイ矢印」) |
+| `help.h` | 現在の `Keymap` / `Mousemap` から操作一覧の表示テキストを組み立てる(`buildHelpLines`)。固定テキストを持たないので README と drift しない。コマンドの表示名の正はこのファイルの表 1 つで、キーの節とマウスの節が共有する(単体テスト対象) |
 | `TextEditBuffer` | インプレース編集中の文字列・キャレット・選択範囲・部分書式(`text_edit.h`。UTF-8 バイト位置の純粋ロジック、単体テスト対象)。文字列を変えるたびに書式範囲を追従させる |
 | `text_style.h` | 部分書式(色・太字・斜体・下線・フォント)の範囲リストとその編集の純関数。範囲の切り分け・正規化・編集への追従(`adjustTextStyles`)を担う(単体テスト対象) |
 | `MainWindow` | Win32 メッセージ変換、フルスクリーン、ダイアログ(開く・保存・色選択)・編集メニュー(サブメニュー対応)・テキストのインプレース編集まわり(`WM_CHAR`・IME・キャレット点滅タイマー)(IAppHost 実装) |
@@ -301,7 +379,11 @@ Text 注釈は PowerPoint のテキストボックスと同じく**画像上で�
 1. `core/command.h` の `Command` に `ToggleSlideshow` を追加
 2. `core/app.cpp` の `App::execute` にハンドラを追加(タイマーは IAppHost に API を足す)
 3. `core/keymap.cpp` の `kCommandNames`(ini 名)とデフォルトキー表に追加
-4. 必要なら `tests/core_tests.cpp` にテストを追加
+4. `core/help.cpp` の `kCommandLabels` に表示名を追加し、操作一覧の節へ `row()` を足す
+   (表示名が無いと `F1` の一覧に出ない。マウスへの割り当ても同じ表を通る)
+5. マウスにも既定で割り当てるなら `core/mousemap.cpp` の `Mousemap::defaults`
+   (ini 名は `kCommandNames` と共通なので、書けるようにするだけなら何もしなくてよい)
+6. 必要なら `tests/core_tests.cpp` にテストを追加
 
 ## v0.2 以降の候補
 

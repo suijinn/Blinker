@@ -109,7 +109,8 @@ ID2D1Bitmap* RendererD2D::bitmapFor(const std::shared_ptr<const DecodedImage>& i
 void RendererD2D::render(const std::shared_ptr<const DecodedImage>& image,
                          const Matrix3x2& imageToScreen, float zoom, uint32_t backgroundRGB,
                          const AnnotationsView& annotations, const SelectionView& selection,
-                         const SidebarView& sidebar, const StatusBarView& statusBar) {
+                         const NavArrowsView& navArrows, const SidebarView& sidebar,
+                         const StatusBarView& statusBar) {
     if (!ensureTarget()) return;
     target_->BeginDraw();
     target_->Clear(colorFromRGB(backgroundRGB));
@@ -129,6 +130,7 @@ void RendererD2D::render(const std::shared_ptr<const DecodedImage>& image,
     }
     drawAnnotations(annotations, imageToScreen);  // 注釈オブジェクトは画像の上に重ねる
     drawSelection(selection);  // 編集領域のラバーバンドは画像の上に重ねる
+    drawNavArrows(navArrows);   // 遷移用の矢印も画像の上(サイドバーの下)
     drawSidebar(sidebar);      // 画像の後に描き、ズーム時のはみ出しを覆う(不透明)
     drawStatusBar(statusBar);
     if (target_->EndDraw() == D2DERR_RECREATE_TARGET) {
@@ -249,6 +251,40 @@ void RendererD2D::drawSelection(const SelectionView& selection) {
     target_->FillRectangle(rect, brush_.Get());
     brush_->SetColor(colorFromRGB(selection.borderRGB));
     target_->DrawRectangle(rect, brush_.Get(), 1.0f);
+}
+
+void RendererD2D::drawNavArrows(const NavArrowsView& navArrows) {
+    if (!brush_) return;
+    if (!navGlyphStroke_ && factory_) {
+        // 山形の端と角を丸める。初回に矢印を描くときだけ作る(デバイス非依存)
+        factory_->CreateStrokeStyle(
+            D2D1::StrokeStyleProperties(D2D1_CAP_STYLE_ROUND, D2D1_CAP_STYLE_ROUND,
+                                        D2D1_CAP_STYLE_ROUND, D2D1_LINE_JOIN_ROUND, 10.0f,
+                                        D2D1_DASH_STYLE_SOLID, 0.0f),
+            nullptr, 0, &navGlyphStroke_);
+    }
+    for (const NavArrow* arrow : {&navArrows.arrows.prev, &navArrows.arrows.next}) {
+        if (!arrow->visible) continue;
+        const bool next = arrow == &navArrows.arrows.next;
+        // 地は角丸の半透明の板。明るい画像でも白い山形が見えるようにする
+        const auto box = D2D1::RoundedRect(
+            D2D1::RectF(arrow->p1.x, arrow->p1.y, arrow->p2.x, arrow->p2.y), 6.0f, 6.0f);
+        const uint8_t alpha = arrow->hovered ? navArrows.hoverAlpha : navArrows.alpha;
+        brush_->SetColor(
+            colorFromARGB((static_cast<uint32_t>(alpha) << 24) | navArrows.backgroundRGB));
+        target_->FillRoundedRectangle(box, brush_.Get());
+        // 山形は太線 2 本(端は丸め)。矢印の向きは次 / 前で左右反転するだけ
+        const float cx = (arrow->p1.x + arrow->p2.x) / 2;
+        const float cy = (arrow->p1.y + arrow->p2.y) / 2;
+        const float half = (arrow->p2.y - arrow->p1.y) / 6;  // 山形の高さの半分
+        const float tipX = next ? cx + half * 0.7f : cx - half * 0.7f;
+        const float tailX = next ? cx - half * 0.7f : cx + half * 0.7f;
+        brush_->SetColor(colorFromRGB(navArrows.glyphRGB));
+        target_->DrawLine(D2D1::Point2F(tailX, cy - half), D2D1::Point2F(tipX, cy), brush_.Get(),
+                          3.0f, navGlyphStroke_.Get());
+        target_->DrawLine(D2D1::Point2F(tailX, cy + half), D2D1::Point2F(tipX, cy), brush_.Get(),
+                          3.0f, navGlyphStroke_.Get());
+    }
 }
 
 void RendererD2D::drawSidebar(const SidebarView& sidebar) {

@@ -46,13 +46,15 @@ public:
      * @param[in] backgroundRGB 背景色(0xRRGGBB)。
      * @param[in] annotations   注釈オブジェクトの描画内容。
      * @param[in] selection     選択領域(ラバーバンド)の描画内容。
+     * @param[in] navArrows     画像遷移用オーバーレイ矢印の描画内容。
      * @param[in] sidebar       サイドバーの描画内容。
      * @param[in] statusBar     ステータスバーの描画内容。
      */
     void render(const std::shared_ptr<const DecodedImage>& image,
                 const Matrix3x2& imageToScreen, float zoom, uint32_t backgroundRGB,
                 const AnnotationsView& annotations, const SelectionView& selection,
-                const SidebarView& sidebar, const StatusBarView& statusBar) override;
+                const NavArrowsView& navArrows, const SidebarView& sidebar,
+                const StatusBarView& statusBar) override;
 
 private:
     /**
@@ -85,6 +87,13 @@ private:
     void drawSelection(const SelectionView& selection);
 
     /**
+     * @brief 画像遷移用オーバーレイ矢印を描く。
+     * @param[in] navArrows 描画する矢印の内容。visible なボタンだけ描く。
+     * @note 廃止しうる表示のため、必要なリソース(山形用の丸い線種)もここで遅延生成する。
+     */
+    void drawNavArrows(const NavArrowsView& navArrows);
+
+    /**
      * @brief サイドバーを描く。
      * @param[in] sidebar 描画するサイドバーの内容。
      */
@@ -101,6 +110,8 @@ private:
     Microsoft::WRL::ComPtr<IDWriteFactory> dwriteFactory_;
     Microsoft::WRL::ComPtr<IDWriteTextFormat> textFormat_;
     Microsoft::WRL::ComPtr<ID2D1StrokeStyle> dashStroke_;  ///< 選択枠の破線
+    /// オーバーレイ矢印の山形用(端と角が丸い実線)。初回描画時に作る
+    Microsoft::WRL::ComPtr<ID2D1StrokeStyle> navGlyphStroke_;
     Microsoft::WRL::ComPtr<ID2D1HwndRenderTarget> target_;
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brush_;  ///< target_ と同寿命
     /// 直近使用したデコード画像の GPU ビットマップ(小さな LRU)。

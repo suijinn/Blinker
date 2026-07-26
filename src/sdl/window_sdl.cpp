@@ -19,11 +19,26 @@ std::string joinExtensionsForFilter() {
     return out;
 }
 
-// SDL のボタン番号を MouseButton へ。中ボタン等は扱わないので nullopt
+// SDL のボタン番号を MouseButton へ。パン・編集の役割を持たないボタンは nullopt
 std::optional<MouseButton> mouseButtonFromSdl(Uint8 button) {
     if (button == SDL_BUTTON_LEFT) return MouseButton::Left;
     if (button == SDL_BUTTON_RIGHT) return MouseButton::Right;
     return std::nullopt;
+}
+
+// コマンドを割り当てられるボタン(中・サイド)。左右は役割で振り分けるので nullopt
+std::optional<MouseInput> mouseInputFromSdl(Uint8 button) {
+    if (button == SDL_BUTTON_MIDDLE) return MouseInput::Middle;
+    if (button == SDL_BUTTON_X1) return MouseInput::X1;
+    if (button == SDL_BUTTON_X2) return MouseInput::X2;
+    return std::nullopt;
+}
+
+// 現在の修飾キーの状態を載せた MouseChord を作る
+MouseChord chordFromSdl(MouseInput input) {
+    const SDL_Keymod mod = SDL_GetModState();
+    return {input, (mod & SDL_KMOD_CTRL) != 0, (mod & SDL_KMOD_SHIFT) != 0,
+            (mod & SDL_KMOD_ALT) != 0};
 }
 
 } // namespace
@@ -116,7 +131,7 @@ void WindowSdl::renderIfNeeded() {
     needsRedraw_ = false;
     renderer_->render(app_->currentImage(), app_->imageToScreen(), app_->zoom(),
                       app_->backgroundRGB(), app_->annotations(), app_->selection(),
-                      app_->sidebar(), app_->statusBar());
+                      app_->navArrows(), app_->sidebar(), app_->statusBar());
 }
 
 void WindowSdl::handleEvent(const SDL_Event& event) {
@@ -163,18 +178,34 @@ void WindowSdl::handleEvent(const SDL_Event& event) {
     case SDL_EVENT_MOUSE_WHEEL: {
         if (!app_) return;
         const Point pos = toPixels(event.wheel.mouse_x, event.wheel.mouse_y);
-        app_->onWheel(event.wheel.y, pos);
+        const SDL_Keymod mod = SDL_GetModState();
+        const bool ctrl = (mod & SDL_KMOD_CTRL) != 0;
+        const bool shift = (mod & SDL_KMOD_SHIFT) != 0;
+        const bool alt = (mod & SDL_KMOD_ALT) != 0;
+        app_->onWheel(event.wheel.y, pos, ctrl, shift, alt);
+        app_->onWheelHorizontal(event.wheel.x, pos, ctrl, shift, alt);
         return;
     }
     case SDL_EVENT_MOUSE_BUTTON_DOWN: {
         if (!app_) return;
+        // 中・サイドボタンはコマンドの割り当て(既定では前後の画像)。役割の
+        // 振り分け(パン / 編集)には関わらないので、下の絞り込みより先に見る
+        if (const auto input = mouseInputFromSdl(event.button.button)) {
+            app_->onMouseInput(chordFromSdl(*input), toPixels(event.button.x, event.button.y));
+            return;
+        }
         const auto button = mouseButtonFromSdl(event.button.button);
         // 編集ドラッグは SDL バックエンドでは扱わない。ツールの切り替えに必要な
         // ポップアップメニューも注釈の描画も未実装で、見えない注釈だけが増えてしまう。
         // パンの役割は [mouse] swap_buttons で右ボタンへ移せる
         if (!button || app_->mouseRole(*button) != MouseRole::Pan) return;
         const Point pos = toPixels(event.button.x, event.button.y);
-        if (event.button.clicks == 2 && app_->onDoubleClick(pos)) return;
+        const SDL_Keymod mod = SDL_GetModState();
+        if (event.button.clicks == 2 &&
+            app_->onDoubleClick(pos, (mod & SDL_KMOD_CTRL) != 0, (mod & SDL_KMOD_SHIFT) != 0,
+                                (mod & SDL_KMOD_ALT) != 0)) {
+            return;
+        }
         SDL_CaptureMouse(true);
         app_->onMouseDown(*button, pos);
         return;
