@@ -24,6 +24,10 @@ struct DecodedImage {
     std::vector<uint8_t> pixels;   ///< ピクセルデータ(32bpp PBGRA、上から下へ)
     uint32_t sourceWidth = 0;      ///< 縮小して取り込んだ場合の元ファイルの幅(0 = 等倍)
     uint32_t sourceHeight = 0;     ///< 縮小して取り込んだ場合の元ファイルの高さ(0 = 等倍)
+    bool colorConverted = false;   ///< 埋め込みプロファイルから sRGB へ変換したか
+    /// 変換できるプロファイルがあるが、まだ変換していない(遅延カラーマネジメント用の
+    /// 内部ヒント。これが立っていると ImageCache が後から読み直す)
+    bool colorPending = false;
 
     /**
      * @brief ピクセルデータのバイト数を返す。
@@ -63,6 +67,26 @@ public:
      */
     virtual std::shared_ptr<DecodedImage> decode(const std::filesystem::path& path,
                                                  std::string* error = nullptr) = 0;
+
+    /**
+     * @brief 埋め込みプロファイルを sRGB へ変換して読み直す(遅延カラーマネジメント)。
+     *
+     * `decode` が `DecodedImage::colorPending` を立てて返したとき、ImageCache が
+     * 手すきに一度だけ呼ぶ。色変換は 24MP の写真で 0.5 秒ほどかかるため、最初の
+     * 表示では変換せず、後からこの結果へ差し替えることで待ち時間を隠している。
+     *
+     * @param[in]  path  読み直す画像のパス。
+     * @param[out] error 非 nullptr のとき、失敗した場合に理由が入る。
+     * @return 変換済みの画像。変換が不要・未対応・失敗した場合は nullptr
+     *         (呼び出し側は最初の結果を使い続け、二度目は試さない)。
+     * @note 既定の実装は nullptr を返す(カラーマネジメント非対応のデコーダ用)。
+     */
+    virtual std::shared_ptr<DecodedImage> decodeColorManaged(const std::filesystem::path& path,
+                                                             std::string* error = nullptr) {
+        (void)path;
+        (void)error;
+        return nullptr;
+    }
 };
 
 } // namespace blinker

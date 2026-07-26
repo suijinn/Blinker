@@ -351,7 +351,7 @@ Text 注釈は PowerPoint のテキストボックスと同じく**画像上で�
 | `App` | 状態機械の中心。Command を受けて状態更新、host へ再描画依頼。ステータスバー (`StatusBarView`) とサイドバー (`SidebarView`、可視範囲の項目のみ) の表示内容もここで組み立てる。サイドバーは `SidebarMode` でファイル名一覧と操作一覧 (F1) を切り替える(レンダラからは同じ文字列リストに見える)。貼り付け画像はフォルダ一覧から独立した表示状態(`clipboardImage_`)で持ち、移動系コマンドで一覧表示へ戻る。編集(現在のツール `EditTool` と編集ドラッグでの適用、プレビュー・`SelectionView`・注釈オブジェクトの選択/移動/回転ドラッグ状態・undo 履歴)もここで管理し、画像切替で破棄する |
 | `Viewport` | ズーム/パン/フィット/回転の座標変換(純粋計算、テスト容易) |
 | `ImageList` | フォルダ内画像の一覧・現在位置・先読み候補の順序付け |
-| `ImageCache` | ワーカースレッド1本で非同期デコード。LRU で、枚数とバイト数の**両方**を上限にする(既定: 8枚 / 512MB。`[cache] max_items` / `max_memory_mb` で変更でき、読み取りは `cacheLimitsFromConfig`)。表示中の可能性が高い直近の1枚は上限を超えても捨てない |
+| `ImageCache` | ワーカースレッド1本で非同期デコード。LRU で、枚数とバイト数の**両方**を上限にする(既定: 8枚 / 512MB。`[cache] max_items` / `max_memory_mb` で変更でき、読み取りは `cacheLimitsFromConfig`)。表示中の可能性が高い直近の1枚は上限を超えても捨てない。仕事の優先順位は 表示 (`urgent_`) → 先読み (`prefetch_`) → **色変換の読み直し (`refine_`)** の順で、最後のものは `DecodedImage::colorPending` が立った画像を `decodeColorManaged` で読み直して差し替える(1 枚につき一度だけ試し、成功したときだけ完了通知を出す) |
 | `OcrService` | ワーカースレッド1本で非同期に文字認識(`ImageCache` と同じ形)。予約は最後の1件だけが走り、結果は generation 付きで返るので、画像を切り替えた後に届いた古い結果を App 側で捨てられる |
 | `ocr_text.h` | 認識結果の後処理。テキストの整形(`ocrResultToText`。行の連結と、CJK 文字に挟まれた空白の除去 — Windows の OCR は日本語でも語間に空白を入れて返す)と、拡大して読み直すかの判断(`ocrRetryUpscale`)。閾値は実測で決めてあり、根拠はヘッダのコメントに残してある。純粋関数で単体テスト対象 |
 | `Keymap` | KeyChord → Command。デフォルト表 + ini 上書き。逆引き (`chordsFor` / `chordToString`) も持ち、操作一覧の生成に使う |
@@ -362,7 +362,7 @@ Text 注釈は PowerPoint のテキストボックスと同じく**画像上で�
 | `text_style.h` | 部分書式(色・太字・斜体・下線・フォント)の範囲リストとその編集の純関数。範囲の切り分け・正規化・編集への追従(`adjustTextStyles`)を担う(単体テスト対象) |
 | `MainWindow` | Win32 メッセージ変換、フルスクリーン、ダイアログ(開く・保存・上書き確認・色選択)・編集メニュー(サブメニュー対応)・テキストのインプレース編集まわり(`WM_CHAR`・IME・キャレット点滅タイマー)(IAppHost 実装) |
 | `RendererD2D` | BGRA ピクセル → ID2D1Bitmap(±1枚をGPU側にキャッシュ。枚数とバイト数の両方で上限)して描画。**GPU が扱える大きさの上限 (`GetMaximumBitmapSize`。機種により 8192 のこともある) を超える画像は `downscaleToFit` で縮小して載せ、転送元矩形はビットマップの実寸から取る**(縮むのは GPU 側のコピーだけで、保存・コピー・文字認識は元の大きさのまま)。注釈オブジェクト(`AnnotationsView`、選択枠・回転ハンドル含む)と選択領域のラバーバンド(`SelectionView`)もここで描く。図形の描画コードは焼き込みと共通(win/annotation_draw)。サイドバー・ステータスバーの文字は DirectWrite |
-| `DecoderWic` | WIC で 32bpp PBGRA に統一デコード。EXIF 回転適用、16384px 超は縮小(**メモリのための上限**。16384<sup>2</sup> でも PBGRA で 1GB になる)。縮小したときは元の大きさを `DecodedImage::sourceWidth/sourceHeight` に残し、上書き保存の拒否とステータスバーの表示に使う。デコード失敗時は失敗した段階と HRESULT を文字列で返し、ステータスバーに出す |
+| `DecoderWic` | WIC で 32bpp PBGRA に統一デコード。EXIF 回転適用、16384px 超は縮小(**メモリのための上限**。16384<sup>2</sup> でも PBGRA で 1GB になる)。縮小したときは元の大きさを `DecodedImage::sourceWidth/sourceHeight` に残し、上書き保存の拒否とステータスバーの表示に使う。デコード失敗時は失敗した段階と HRESULT を文字列で返し、ステータスバーに出す。**カラーマネジメントは遅延式**: `decode` はプロファイルの有無だけ見て `colorPending` を立て、`decodeColorManaged`(`IWICColorTransform` で ICC → sRGB)が後から読み直す。色変換は 24MP で 0.5 秒ほどかかり、最初の表示を待たせたくないため(`[view] color_management`。既定 true)|
 | `image_scale.h` | `downscaleToFit`(箱型フィルタで縦横を上限以下に縮小)。**描画側の上限に収めるために両レンダラが呼ぶ**。純粋関数で単体テスト対象。事前乗算なのでチャンネルをそのまま平均してよい |
 | `exif.h` | EXIF Orientation の読み取り(`readExifOrientation`、JPEG の APP1 と PNG の eXIf を自前パース。SDL 版のためだが core に置く)と適用(`applyExifOrientation`、32bpp バッファの回転・反転。表示回転の焼き込みにも流用する)。いずれも純粋関数で単体テスト対象。**`IWICBitmapFlipRotator` は使わない**: コーデックへ直結すると 90/270 度回転で出力行ごとにソースを引き直し、iPhone の 12〜24MP 写真で事実上停止するため。デコード完了後の連続バッファ上で回せば画素数に比例した時間で済む |
 | `EncoderWic` | WIC で PNG/JPEG/BMP 保存 (Ctrl+S / Shift+Ctrl+S)。JPEG 品質は `EncodeOptions::jpegQuality` を ImageQuality へ渡す。`supports` は拡張子だけで可否を答える(上書き保存の可否をファイルへ手を付ける前に判断するため)。PNG は逆乗算してアルファ保持、JPEG/BMP は白背景に合成 |
@@ -373,9 +373,14 @@ Text 注釈は PowerPoint のテキストボックスと同じく**画像上で�
 ## スレッドモデル
 
 - **UI スレッド**: メッセージループ、描画、App の全状態。App はスレッド安全ではない
-- **デコードワーカー (ImageCache 内の1本)**: `IImageDecoder::decode` の実行のみ
-  - UI → ワーカー: `ImageCache::requestNow / setPrefetch`(ミューテックス保護のキュー)
+- **デコードワーカー (ImageCache 内の1本)**: `IImageDecoder::decode` と
+  `decodeColorManaged`(色変換の読み直し)の実行のみ
+  - UI → ワーカー: `ImageCache::requestNow / setPrefetch`(ミューテックス保護のキュー)。
+    読み直しの予約はワーカー自身が積む(`colorPending` を見て `refine_` へ)
   - ワーカー → UI: `onDecoded` コールバック → `PostMessage(kMsgImageDecoded)` → `App::onDecodeCompleted`
+  - 同じパスに対して**完了通知が 2 回来ることがある**(1 回目は未変換、2 回目は色変換後)。
+    2 回目は `App::adoptRefinedImage` が画素だけ差し替える(ズーム・パン・注釈は保つ)。
+    編集中は差し替えない
 - **OCR ワーカー (OcrService 内の1本)**: `IOcrEngine::recognize` の実行のみ。同じ形をなぞる
   - UI → ワーカー: `OcrService::request`(ミューテックス保護の1件だけの枠)
   - ワーカー → UI: `onCompleted` コールバック → `PostMessage(kMsgOcrCompleted)` → `App::onOcrCompleted`

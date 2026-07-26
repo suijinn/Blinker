@@ -1869,10 +1869,22 @@ void App::executeSaveOverwrite() {
                                 pathToUtf8(path.extension())));
         return;
     }
+    // カラープロファイル付きの画像は、上書きすると色の情報が失われる。
+    // 変換済みなら元の色空間が、変換前(遅延変換の待ち中)ならプロファイルが消える
+    std::string colorWarning;
+    if (current_->colorConverted) {
+        colorWarning =
+            "\nこの画像は埋め込みプロファイルから sRGB へ変換して表示しているため、"
+            "上書きすると元の色空間の情報は失われます。";
+    } else if (current_->colorPending) {
+        colorWarning =
+            "\nこの画像の埋め込みカラープロファイルは保存時に引き継がれないため、"
+            "上書きすると色の解釈が変わります。";
+    }
     if (confirmOverwrite_ &&
         !host_.showConfirm(std::format("{} を上書き保存します。\n"
-                                       "元の画像は元に戻せません。よろしいですか?",
-                                       pathToUtf8(path.filename())))) {
+                                       "元の画像は元に戻せません。{}よろしいですか?",
+                                       pathToUtf8(path.filename()), colorWarning))) {
         return;
     }
     saveImageTo(path, true);
@@ -1906,11 +1918,18 @@ void App::saveImageTo(const fs::path& path, const bool isOverwrite) {
         showMessage("保存に失敗しました: " + pathToUtf8(path));
         return;
     }
-    // 縮小して取り込んだ画像を別名で保存するのは許すが、小さくなることは伝える
-    const std::string note =
-        current_ && current_->downscaled()
-            ? std::format("(表示用に縮小した {} x {} で)", current_->width, current_->height)
-            : std::string();
+    // 表示のために変えてある点(縮小・色変換)は保存結果にも入るので伝える
+    const bool reduced = current_ && current_->downscaled();
+    const bool converted = current_ && current_->colorConverted;
+    std::string note;
+    if (reduced && converted) {
+        note = std::format("(表示用に縮小した {} x {} / sRGB へ変換した色で)", current_->width,
+                           current_->height);
+    } else if (reduced) {
+        note = std::format("(表示用に縮小した {} x {} で)", current_->width, current_->height);
+    } else if (converted) {
+        note = "(sRGB へ変換した色で)";
+    }
     showMessage(std::format("{}しました{}: {}", isOverwrite ? "上書き保存" : "保存", note,
                             pathToUtf8(path)));
     if (!isOverwrite) return;
@@ -2283,8 +2302,21 @@ void App::onDecodeCompleted() {
     if (edited_) return;          // 編集中の画像も同様
     if (list_.empty()) return;
     // 表示すべき画像がまだ画面に出ていなければ取得を再試行する
-    if (displayedPath_ == list_.current() && (current_ || loadFailed_)) return;
+    if (displayedPath_ == list_.current() && (current_ || loadFailed_)) {
+        adoptRefinedImage();  // 表示中の画像が良い版に差し替わっていれば拾う
+        return;
+    }
     refreshCurrent();
+}
+
+void App::adoptRefinedImage() {
+    if (!current_ || displayedPath_.empty()) return;
+    auto latest = cache_.tryGet(displayedPath_);
+    if (!latest || latest == current_) return;
+    // 大きさが変わる差し替えは来ない想定だが、来たら座標系が食い違うので拒む
+    if (latest->width != current_->width || latest->height != current_->height) return;
+    current_ = std::move(latest);
+    host_.requestRedraw();  // ズーム・パン・注釈はそのまま(画素だけ入れ替わる)
 }
 
 void App::refreshCurrent() {

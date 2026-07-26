@@ -1792,6 +1792,234 @@ void testAppSaveDownscaled() {
     CHECK(app.statusBar().leftText.find("上書きすると画素が失われる") != std::string::npos);
 }
 
+// 遅延カラーマネジメントを模したデコーダ。1 回目は未変換 (colorPending)、
+// decodeColorManaged で変換済みの画素を返す
+class LazyColorDecoder final : public IImageDecoder {
+public:
+    std::shared_ptr<DecodedImage> decode(const std::filesystem::path& path,
+                                         std::string* error = nullptr) override {
+        ++decodeCount;
+        if (pathToUtf8(path).find("plain") != std::string::npos) {
+            return makeImage(0, false);  // プロファイルなし: 読み直しは起きない
+        }
+        if (pathToUtf8(path).find("fail") != std::string::npos) {
+            if (error) *error = "デコード失敗";
+            return nullptr;
+        }
+        return makeImage(10, true);
+    }
+
+    std::shared_ptr<DecodedImage> decodeColorManaged(const std::filesystem::path& path,
+                                                     std::string* = nullptr) override {
+        ++managedCount;
+        // 差し替え前の状態を確かめられるよう、テストが許すまで待つ
+        {
+            std::unique_lock lock(gateMutex_);
+            gate_.wait_for(lock, std::chrono::seconds(5), [&] { return allowed_; });
+        }
+        if (pathToUtf8(path).find("noprofile_after") != std::string::npos) {
+            return nullptr;  // 変換できなかった場合(最初の結果を使い続ける)
+        }
+        auto image = makeImage(200, false);
+        image->colorConverted = true;
+        return image;
+    }
+
+    /// @brief 待たせてある読み直しを進ませる。
+    void allowManaged() {
+        {
+            std::lock_guard lock(gateMutex_);
+            allowed_ = true;
+        }
+        gate_.notify_all();
+    }
+
+    std::atomic<int> decodeCount{0};
+    std::atomic<int> managedCount{0};
+
+private:
+    static std::shared_ptr<DecodedImage> makeImage(uint8_t blue, bool pending) {
+        auto image = std::make_shared<DecodedImage>();
+        image->width = 1;
+        image->height = 1;
+        image->pixels = {blue, 0, 0, 255};
+        image->colorPending = pending;
+        return image;
+    }
+
+    std::mutex gateMutex_;
+    std::condition_variable gate_;
+    bool allowed_ = false;
+};
+
+void testImageCacheColorRefine() {
+    LazyColorDecoder decoder;
+    ImageCache cache(decoder);
+    std::mutex mutex;
+    std::condition_variable cv;
+    int notifications = 0;
+    cache.setOnDecoded([&](const std::filesystem::path&) {
+        std::lock_guard lock(mutex);
+        ++notifications;
+        cv.notify_all();
+    });
+    const auto waitFor = [&](int count) {
+        std::unique_lock lock(mutex);
+        return cv.wait_for(lock, std::chrono::seconds(5), [&] { return notifications >= count; });
+    };
+
+    // プロファイル付き: 1 回目は未変換で届き、読み直しの完了で差し替わる
+    cache.requestNow("p3.jpg");
+    CHECK(waitFor(1));
+    const auto first = cache.tryGet("p3.jpg");
+    CHECK(first != nullptr);
+    CHECK(first->pixels[0] == 10);
+    CHECK(first->colorPending);
+    decoder.allowManaged();
+    CHECK(waitFor(2));  // 読み直しの通知も来る
+    const auto refined = cache.tryGet("p3.jpg");
+    CHECK(refined != nullptr);
+    CHECK(refined != first);  // 別の画像に差し替わっている
+    CHECK(refined->pixels[0] == 200);
+    CHECK(refined->colorConverted);
+    CHECK(!refined->colorPending);
+    CHECK(decoder.managedCount == 1);
+
+    // 差し替えは一度だけ(何度も読み直さない)
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    CHECK(decoder.managedCount == 1);
+    CHECK(cache.tryGet("p3.jpg") == refined);
+
+    // プロファイルなし: 読み直しは起きない(通知も 1 回だけ)
+    cache.requestNow("plain.jpg");
+    CHECK(waitFor(3));
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    CHECK(decoder.managedCount == 1);
+    CHECK(notifications == 3);
+
+    // 変換できなかった場合は最初の結果を使い続け、二度は試さない
+    cache.requestNow("noprofile_after.jpg");
+    CHECK(waitFor(4));
+    const auto kept = cache.tryGet("noprofile_after.jpg");
+    CHECK(kept != nullptr && kept->pixels[0] == 10);
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    CHECK(decoder.managedCount == 2);   // 一度は試した
+    CHECK(notifications == 4);          // 差し替えていないので通知は増えない
+    CHECK(cache.tryGet("noprofile_after.jpg") == kept);
+
+    // デコード失敗したパスは読み直しの対象にならない
+    cache.requestNow("fail.jpg");
+    CHECK(waitFor(5));
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    CHECK(decoder.managedCount == 2);
+}
+
+void testAppAdoptsRefinedImage() {
+    LazyColorDecoder decoder;
+    ImageCache cache(decoder);
+    FakeHost host;
+    FakeFileSystem fileSystem;
+    FakeClipboard clipboard;
+    FakeEncoder encoder;
+    FakeAnnotationRasterizer rasterizer;
+    FakeOcrEngine ocrEngine;
+    OcrService ocrService(ocrEngine);
+    App app(host, fileSystem, cache, clipboard, encoder, rasterizer, ocrService);
+    app.onResize(800, 600);
+
+    std::mutex mutex;
+    std::condition_variable cv;
+    int notifications = 0;
+    cache.setOnDecoded([&](const std::filesystem::path&) {
+        std::lock_guard lock(mutex);
+        ++notifications;
+        cv.notify_all();
+    });
+    const std::filesystem::path path = "C:/pics/p3.jpg";
+    fileSystem.files = {path};
+    app.openPath(path);
+    {
+        std::unique_lock lock(mutex);
+        CHECK(cv.wait_for(lock, std::chrono::seconds(5), [&] { return notifications >= 1; }));
+    }
+    app.onDecodeCompleted();
+    CHECK(app.currentImage() != nullptr);
+    CHECK(app.currentImage()->pixels[0] == 10);  // まず未変換のまま表示する
+
+    // 読み直しが済んだら、ズーム状態を保ったまま画素だけ差し替わる
+    app.execute(Command::ZoomIn);
+    const float zoom = app.zoom();
+    decoder.allowManaged();
+    {
+        std::unique_lock lock(mutex);
+        CHECK(cv.wait_for(lock, std::chrono::seconds(5), [&] { return notifications >= 2; }));
+    }
+    app.onDecodeCompleted();
+    CHECK(app.currentImage()->pixels[0] == 200);
+    CHECK(app.currentImage()->colorConverted);
+    CHECK(app.zoom() == zoom);
+
+    // 上書き保存の確認には、色空間の情報が失われることが出る
+    encoder.supportedExtensions = {".jpg"};
+    app.execute(Command::SaveImage);
+    CHECK(host.lastConfirmMessage.find("元の色空間の情報は失われます") != std::string::npos);
+}
+
+// 埋め込みプロファイルから sRGB へ変換して取り込まれた画像を返すデコーダ
+class ColorConvertedDecoder final : public IImageDecoder {
+public:
+    std::shared_ptr<DecodedImage> decode(const std::filesystem::path&,
+                                         std::string* = nullptr) override {
+        auto image = std::make_shared<DecodedImage>();
+        image->width = 1;
+        image->height = 1;
+        image->pixels = {10, 20, 30, 255};
+        image->colorConverted = true;
+        return image;
+    }
+};
+
+void testAppSaveColorConverted() {
+    ColorConvertedDecoder decoder;
+    ImageCache cache(decoder);
+    FakeHost host;
+    FakeFileSystem fileSystem;
+    FakeClipboard clipboard;
+    FakeEncoder encoder;
+    FakeAnnotationRasterizer rasterizer;
+    FakeOcrEngine ocrEngine;
+    OcrService ocrService(ocrEngine);
+    App app(host, fileSystem, cache, clipboard, encoder, rasterizer, ocrService);
+    app.onResize(800, 600);
+
+    std::mutex mutex;
+    std::condition_variable cv;
+    bool decoded = false;
+    cache.setOnDecoded([&](const std::filesystem::path&) {
+        std::lock_guard lock(mutex);
+        decoded = true;
+        cv.notify_all();
+    });
+    const std::filesystem::path path = "C:/pics/p3.jpg";
+    fileSystem.files = {path};
+    app.openPath(path);
+    {
+        std::unique_lock lock(mutex);
+        CHECK(cv.wait_for(lock, std::chrono::seconds(5), [&] { return decoded; }));
+    }
+    app.onDecodeCompleted();
+    CHECK(app.currentImage() != nullptr);
+
+    // 上書き自体は許すが、色空間の情報が失われることを確認ダイアログで伝える
+    encoder.supportedExtensions = {".jpg"};
+    app.execute(Command::SaveImage);
+    CHECK(host.confirmCount == 1);
+    CHECK(host.lastConfirmMessage.find("元の色空間の情報は失われます") != std::string::npos);
+    CHECK(encoder.encodeCount == 1);
+    // 確認を出さない設定でも、保存後のメッセージには残る
+    CHECK(app.statusBar().leftText == "上書き保存しました(sRGB へ変換した色で): C:/pics/p3.jpg");
+}
+
 void testDownscaleToFit() {
     // 4x2。B チャンネルだけ値を変えて箱型フィルタの平均を確かめる
     DecodedImage img;
@@ -4449,6 +4677,9 @@ int main() {
     testAppPasteSave();
     testAppSaveOverwrite();
     testAppSaveDownscaled();
+    testAppSaveColorConverted();
+    testImageCacheColorRefine();
+    testAppAdoptsRefinedImage();
     testDownscaleToFit();
     testAppSidebar();
     testAppSidebarResize();

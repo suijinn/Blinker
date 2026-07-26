@@ -9,6 +9,7 @@
 #include <format>
 #include <new>
 #include <string_view>
+#include <vector>
 
 #include "core/exif.h"
 #include "win/wic_factory.h"
@@ -55,10 +56,76 @@ void setError(std::string* error, const std::string& reason) {
     if (error) *error = reason;
 }
 
+// フレームの入力カラープロファイルを取り出す。変換が不要・取れない場合は nullptr。
+//
+// 諦める条件は「プロファイルが無い」「Exif の色空間が既に sRGB」。どちらも異常では
+// ないので error は立てない(変換しないだけで、画像は問題なく表示される)
+ComPtr<IWICColorContext> inputColorContext(IWICImagingFactory* factory,
+                                           IWICBitmapFrameDecode* frame) {
+    UINT count = 0;
+    if (FAILED(frame->GetColorContexts(0, nullptr, &count)) || count == 0) return nullptr;
+
+    std::vector<ComPtr<IWICColorContext>> contexts(count);
+    std::vector<IWICColorContext*> raw(count);
+    for (UINT i = 0; i < count; ++i) {
+        if (FAILED(factory->CreateColorContext(&contexts[i]))) return nullptr;
+        raw[i] = contexts[i].Get();
+    }
+    if (FAILED(frame->GetColorContexts(count, raw.data(), &count)) || count == 0) return nullptr;
+
+    // 先頭を入力プロファイルとして使う(2 つ目以降が付くのは CMYK など特殊な場合)
+    ComPtr<IWICColorContext> input = contexts[0];
+    WICColorContextType type = WICColorContextUninitialized;
+    if (SUCCEEDED(input->GetType(&type)) && type == WICColorContextExifColorSpace) {
+        UINT space = 0;
+        // Exif の色空間指定だけがある画像。1 = sRGB なら変換しても何も変わらない
+        if (SUCCEEDED(input->GetExifColorSpace(&space)) && space == 1) return nullptr;
+    }
+    return input;
+}
+
+// 埋め込みプロファイルから sRGB へ変換する変換器を返す。変換が不要・できない場合は
+// nullptr(呼び出し側は source をそのまま使う)。
+// WIC がこの画素形式の変換に対応していない場合もここへ来るが、異常ではない
+ComPtr<IWICBitmapSource> colorTransformToSrgb(IWICImagingFactory* factory,
+                                              IWICBitmapFrameDecode* frame,
+                                              IWICBitmapSource* source) {
+    ComPtr<IWICColorContext> input = inputColorContext(factory, frame);
+    if (!input) return nullptr;
+
+    ComPtr<IWICColorContext> srgb;
+    if (FAILED(factory->CreateColorContext(&srgb))) return nullptr;
+    if (FAILED(srgb->InitializeFromExifColorSpace(1))) return nullptr;  // 1 = sRGB
+
+    ComPtr<IWICColorTransform> transform;
+    if (FAILED(factory->CreateColorTransformer(&transform))) return nullptr;
+    // 出力は事前乗算でない BGRA。この後の IWICFormatConverter が PBGRA へ直す
+    if (FAILED(transform->Initialize(source, input.Get(), srgb.Get(),
+                                     GUID_WICPixelFormat32bppBGRA))) {
+        return nullptr;
+    }
+    return transform;
+}
+
 } // namespace
 
 std::shared_ptr<DecodedImage> DecoderWic::decode(const std::filesystem::path& path,
                                                  std::string* error) {
+    return decodeInternal(path, error, false);
+}
+
+std::shared_ptr<DecodedImage> DecoderWic::decodeColorManaged(const std::filesystem::path& path,
+                                                             std::string* error) {
+    if (!colorManagement_) return nullptr;
+    std::shared_ptr<DecodedImage> image = decodeInternal(path, error, true);
+    // 変換が効かなかったなら差し替える意味がない(呼び出し側は最初の結果を使い続ける)
+    if (!image || !image->colorConverted) return nullptr;
+    return image;
+}
+
+std::shared_ptr<DecodedImage> DecoderWic::decodeInternal(const std::filesystem::path& path,
+                                                        std::string* error,
+                                                        const bool applyColorTransform) {
     IWICImagingFactory* factory = wicFactoryForThisThread();
     if (!factory) {
         setError(error, "WICファクトリ生成");
@@ -127,6 +194,21 @@ std::shared_ptr<DecodedImage> DecoderWic::decode(const std::filesystem::path& pa
         height = newHeight;
     }
 
+    // 埋め込みプロファイル → sRGB。縮小した後に掛けて変換する画素数を減らす。
+    // 最初の 1 回では変換せず、プロファイルの有無だけ見て colorPending を立てる
+    // (変換は 24MP で 0.5 秒ほどかかるので、表示を待たせずに後から差し替える)
+    bool colorConverted = false;
+    bool colorPending = false;
+    if (colorManagement_ && applyColorTransform) {
+        if (ComPtr<IWICBitmapSource> transformed =
+                colorTransformToSrgb(factory, frame.Get(), source.Get())) {
+            source = transformed;
+            colorConverted = true;
+        }
+    } else if (colorManagement_) {
+        colorPending = inputColorContext(factory, frame.Get()) != nullptr;
+    }
+
     // D2D が直接扱える 32bpp PBGRA (事前乗算) へ変換
     ComPtr<IWICFormatConverter> converter;
     hr = factory->CreateFormatConverter(&converter);
@@ -145,6 +227,8 @@ std::shared_ptr<DecodedImage> DecoderWic::decode(const std::filesystem::path& pa
         auto image = std::make_shared<DecodedImage>();
         image->width = width;
         image->height = height;
+        image->colorConverted = colorConverted;
+        image->colorPending = colorPending;
         if (width != sourceWidth || height != sourceHeight) {
             // 縮小した事実を残す。上書き保存の拒否とステータスバーの表示に使う
             image->sourceWidth = sourceWidth;

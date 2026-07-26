@@ -52,7 +52,9 @@ cmake --preset linux-release && cmake --build --preset linux-release
 - **スレッドモデル**: App/Viewport/ImageListはUIスレッド専用でスレッド安全ではない。
   ワーカースレッドは2本だけで、どちらも同じ形(キュー投入 → 完了をPostMessage):
   デコードは `ImageCache` 内の1本(UI→ワーカーは `requestNow`/`setPrefetch`、
-  ワーカー→UIは `onDecoded` → `PostMessage(kMsgImageDecoded)` → `App::onDecodeCompleted`)、
+  ワーカー→UIは `onDecoded` → `PostMessage(kMsgImageDecoded)` → `App::onDecodeCompleted`。
+  **同じパスで通知が2回来ることがある**: カラーマネジメントは遅延式で、1回目は未変換、
+  2回目が sRGB 変換後。2回目は `App::adoptRefinedImage` が画素だけ差し替える)、
   文字認識は `OcrService` 内の1本(`request` → `onCompleted` →
   `PostMessage(kMsgOcrCompleted)` → `App::onOcrCompleted`)。
   `DecoderWic` はthread_localでCOM初期化するためどのスレッドからでも呼べるが、

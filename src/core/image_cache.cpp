@@ -65,6 +65,7 @@ void ImageCache::invalidate(const fs::path& path) {
     if (it->second.image) totalBytes_ -= it->second.image->byteSize();
     lru_.erase(it->second.lruIt);
     entries_.erase(it);
+    std::erase(refine_, path);  // 捨てた画像を読み直す意味はない
 }
 
 void ImageCache::setPrefetch(std::vector<fs::path> paths) {
@@ -82,40 +83,69 @@ void ImageCache::setOnDecoded(std::function<void(const fs::path&)> callback) {
 
 void ImageCache::workerLoop() {
     for (;;) {
-        fs::path task;
+        Task task;
         {
             std::unique_lock lock(mutex_);
             for (;;) {
                 if (stop_) return;
                 task = nextTaskLocked();
-                if (!task.empty()) break;
+                if (!task.path.empty()) break;
                 wake_.wait(lock);
             }
-            // 取り出した urgent タスクをキューから除去(先読みは prefetch_ に残っていてよい)
-            std::erase(urgent_, task);
+            // 取り出したタスクをキューから除去(先読みは prefetch_ に残っていてよい)
+            std::erase(urgent_, task.path);
+            std::erase(refine_, task.path);
         }
 
+        bool notify = true;
+        std::shared_ptr<DecodedImage> image;
         std::string error;
-        std::shared_ptr<DecodedImage> image = decoder_.decode(task, &error);
+        if (task.refine) {
+            image = decoder_.decodeColorManaged(task.path, &error);
+        } else {
+            image = decoder_.decode(task.path, &error);
+        }
 
         std::function<void(const fs::path&)> callback;
         {
             std::lock_guard lock(mutex_);
-            storeLocked(task, std::move(image), std::move(error));
+            if (task.refine) {
+                notify = storeRefinedLocked(task.path, std::move(image));
+            } else {
+                storeLocked(task.path, std::move(image), std::move(error));
+            }
             callback = onDecoded_;
         }
-        if (callback) callback(task);
+        if (notify && callback) callback(task.path);
     }
 }
 
-std::filesystem::path ImageCache::nextTaskLocked() const {
+ImageCache::Task ImageCache::nextTaskLocked() const {
     for (const auto& p : urgent_) {
-        if (!entries_.contains(p)) return p;
+        if (!entries_.contains(p)) return Task{p, false};
     }
     for (const auto& p : prefetch_) {
-        if (!entries_.contains(p)) return p;
+        if (!entries_.contains(p)) return Task{p, false};
+    }
+    // 色変換の読み直しは最後。表示も先読みも待っていないときだけ進める
+    for (const auto& p : refine_) {
+        const auto it = entries_.find(p);
+        if (it != entries_.end() && !it->second.refined) return Task{p, true};
     }
     return {};
+}
+
+bool ImageCache::storeRefinedLocked(const fs::path& path, std::shared_ptr<DecodedImage> image) {
+    const auto it = entries_.find(path);
+    // 読み直している間に捨てられた・別の結果で埋まった場合は何もしない
+    if (it == entries_.end() || it->second.refined) return false;
+    it->second.refined = true;  // 変換できなかった場合も二度は試さない
+    if (!image) return false;
+    if (it->second.image) totalBytes_ -= it->second.image->byteSize();
+    totalBytes_ += image->byteSize();
+    it->second.image = std::move(image);
+    evictLocked();
+    return true;
 }
 
 void ImageCache::storeLocked(const fs::path& path, std::shared_ptr<DecodedImage> image,
@@ -128,6 +158,11 @@ void ImageCache::storeLocked(const fs::path& path, std::shared_ptr<DecodedImage>
     entry.image = std::move(image);
     entry.lruIt = lru_.begin();
     if (entry.image) totalBytes_ += entry.image->byteSize();
+    // 色変換が残っている画像は、手すきになってから読み直して差し替える
+    if (entry.image && entry.image->colorPending) {
+        entry.refined = false;
+        refine_.push_back(path);
+    }
     entries_.emplace(path, std::move(entry));
     evictLocked();
 }
@@ -141,6 +176,7 @@ void ImageCache::evictLocked() {
             if (it->second.image) totalBytes_ -= it->second.image->byteSize();
             entries_.erase(it);
         }
+        std::erase(refine_, victim);
         lru_.pop_back();
     }
 }

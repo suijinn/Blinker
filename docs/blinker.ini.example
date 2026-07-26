@@ -26,6 +26,13 @@ nav_arrows = true
 fit_upscale = false
 # 前後何枚を先読みするか (0-8)
 prefetch_radius = 2
+# 埋め込みカラープロファイル (ICC) を sRGB へ変換して表示するか。
+# Display P3 で撮った写真(最近のスマートフォンの既定)などが正しい色で出る。
+# 変換自体は 2400万画素で 0.5 秒ほどかかるので、まず変換せずに表示して、
+# 裏で変換が終わったら差し替える(待たされない代わりに、開いた直後の一瞬だけ
+# 変換前の色が見える)。false にすると変換せず、数値をそのまま表示する
+# ([Linux/macOS (SDL版)] は未対応で、常に変換しない)
+color_management = true
 # [Linux/macOS (SDL版) のみ] UI フォントのファイルパス (.ttf/.ttc/.otf)。
 # 未指定なら Noto CJK 等の既知のシステムフォントを自動探索する
 # font_path = /usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc
