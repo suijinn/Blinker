@@ -50,7 +50,7 @@
 | コンポーネント | 対応する win 実装 | 備考 |
 |---|---|---|
 | `WindowSdl` | `MainWindow` | SDL イベント→App 変換、IAppHost 実装。ファイルダイアログは SDL3 の非同期 API を同期待ちで包む |
-| `RendererSdl` | `RendererD2D` | SDL_Renderer。画像はテクスチャ化して ±1 枚キャッシュ、UI 文字は FontStb で CPU 合成 |
+| `RendererSdl` | `RendererD2D` | SDL_Renderer。画像はテクスチャ化して ±1 枚キャッシュ(D2D 版と同じく枚数とバイト数の両方で上限)、UI 文字は FontStb で CPU 合成。レンダラの最大テクスチャサイズを超える画像は `downscaleToFit` で縮小して載せる(テクスチャ座標は 0〜1 なので描画側は影響を受けない) |
 | `FontStb` | (DirectWrite) | stb_truetype。Noto CJK 等の候補パスを自動探索(ini の `[view] font_path` で上書き可) |
 | `DecoderStb` | `DecoderWic` | stb_image。EXIF Orientation は core の `readExifOrientation` で自前に解析して適用(JPEG の APP1 / PNG の eXIf) |
 | `EncoderStb` | `EncoderWic` | stb_image_write。PNG/JPEG/BMP(JPEG 品質は `EncodeOptions`) |
@@ -62,7 +62,10 @@
 SDL 版の既知の制限: 注釈編集ができない(`WindowSdl` は編集役のボタン
 (`App::mouseRole` が `MouseRole::Edit` を返すほう)のイベントを App へ渡さない。
 ツールメニューも注釈の描画も無いため、繋ぐと見えない注釈だけが増える)、
-対応形式が stb_image の範囲(WebP/HEIC/AVIF/TIFF 等は不可)。
+対応形式が stb_image の範囲(WebP/HEIC/AVIF/TIFF 等は不可)、
+取り込み時の大きさに上限が無い(Win 版の 16384px 相当のガードが無いので、巨大画像では
+stb_image のメモリ確保が失敗して「読み込み失敗」になる。描画時のテクスチャ上限は
+`RendererSdl` が縮小して吸収するので、確保できた画像は必ず表示される)。
 
 ## データフロー(一方向)
 
@@ -149,6 +152,9 @@ redo は undo 側へ積み替えるだけの対称な操作 (`App::restoreFrom`)
 ファイルを置き換えるため既定で確認ダイアログ (`IAppHost::showConfirm`) を出し
 (`[save] confirm_overwrite`)、成功したら `ImageCache::invalidate` でその 1 件を捨てる
 (捨てないと戻ってきたときに保存前のピクセルが出る)。名前を付けて保存は Shift+Ctrl+S。
+**縮小して取り込まれた画像 (`DecodedImage::downscaled`) の上書きは断る**(確認ダイアログを
+出す前に断る)。表示できる大きさへ縮めたピクセルで元ファイルを潰すと画素が戻らないため。
+名前を付けて保存は許し、縮小した大きさをメッセージに出す。
 **表示回転 (Viewport) は `current_` のピクセルには入っていない**ので、保存・コピー・
 文字認識では `App::compositeImage` / `requestOcr` が注釈の後に回転を焼き込む
 (画面で見えているとおりに外へ出す)。
@@ -355,8 +361,9 @@ Text 注釈は PowerPoint のテキストボックスと同じく**画像上で�
 | `TextEditBuffer` | インプレース編集中の文字列・キャレット・選択範囲・部分書式(`text_edit.h`。UTF-8 バイト位置の純粋ロジック、単体テスト対象)。文字列を変えるたびに書式範囲を追従させる |
 | `text_style.h` | 部分書式(色・太字・斜体・下線・フォント)の範囲リストとその編集の純関数。範囲の切り分け・正規化・編集への追従(`adjustTextStyles`)を担う(単体テスト対象) |
 | `MainWindow` | Win32 メッセージ変換、フルスクリーン、ダイアログ(開く・保存・上書き確認・色選択)・編集メニュー(サブメニュー対応)・テキストのインプレース編集まわり(`WM_CHAR`・IME・キャレット点滅タイマー)(IAppHost 実装) |
-| `RendererD2D` | BGRA ピクセル → ID2D1Bitmap(±1枚をGPU側にキャッシュ)して描画。注釈オブジェクト(`AnnotationsView`、選択枠・回転ハンドル含む)と選択領域のラバーバンド(`SelectionView`)もここで描く。図形の描画コードは焼き込みと共通(win/annotation_draw)。サイドバー・ステータスバーの文字は DirectWrite |
-| `DecoderWic` | WIC で 32bpp PBGRA に統一デコード。EXIF 回転適用、16384px 超は縮小。デコード失敗時は失敗した段階と HRESULT を文字列で返し、ステータスバーに出す |
+| `RendererD2D` | BGRA ピクセル → ID2D1Bitmap(±1枚をGPU側にキャッシュ。枚数とバイト数の両方で上限)して描画。**GPU が扱える大きさの上限 (`GetMaximumBitmapSize`。機種により 8192 のこともある) を超える画像は `downscaleToFit` で縮小して載せ、転送元矩形はビットマップの実寸から取る**(縮むのは GPU 側のコピーだけで、保存・コピー・文字認識は元の大きさのまま)。注釈オブジェクト(`AnnotationsView`、選択枠・回転ハンドル含む)と選択領域のラバーバンド(`SelectionView`)もここで描く。図形の描画コードは焼き込みと共通(win/annotation_draw)。サイドバー・ステータスバーの文字は DirectWrite |
+| `DecoderWic` | WIC で 32bpp PBGRA に統一デコード。EXIF 回転適用、16384px 超は縮小(**メモリのための上限**。16384<sup>2</sup> でも PBGRA で 1GB になる)。縮小したときは元の大きさを `DecodedImage::sourceWidth/sourceHeight` に残し、上書き保存の拒否とステータスバーの表示に使う。デコード失敗時は失敗した段階と HRESULT を文字列で返し、ステータスバーに出す |
+| `image_scale.h` | `downscaleToFit`(箱型フィルタで縦横を上限以下に縮小)。**描画側の上限に収めるために両レンダラが呼ぶ**。純粋関数で単体テスト対象。事前乗算なのでチャンネルをそのまま平均してよい |
 | `exif.h` | EXIF Orientation の読み取り(`readExifOrientation`、JPEG の APP1 と PNG の eXIf を自前パース。SDL 版のためだが core に置く)と適用(`applyExifOrientation`、32bpp バッファの回転・反転。表示回転の焼き込みにも流用する)。いずれも純粋関数で単体テスト対象。**`IWICBitmapFlipRotator` は使わない**: コーデックへ直結すると 90/270 度回転で出力行ごとにソースを引き直し、iPhone の 12〜24MP 写真で事実上停止するため。デコード完了後の連続バッファ上で回せば画素数に比例した時間で済む |
 | `EncoderWic` | WIC で PNG/JPEG/BMP 保存 (Ctrl+S / Shift+Ctrl+S)。JPEG 品質は `EncodeOptions::jpegQuality` を ImageQuality へ渡す。`supports` は拡張子だけで可否を答える(上書き保存の可否をファイルへ手を付ける前に判断するため)。PNG は逆乗算してアルファ保持、JPEG/BMP は白背景に合成 |
 | `ClipboardWin` | クリップボード読み書き。書き込みは CF_DIBV5(アルファ)+ CF_DIB(白合成24bpp)の2形式。読み取り (Ctrl+V) は CF_DIBV5 優先で、DIB → PBGRA 変換は core の `imageFromDib`(純粋関数、単体テスト対象) |

@@ -33,6 +33,16 @@ bool samePath(const fs::path& a, const fs::path& b) {
     return toLower(pathToUtf8(a)) == toLower(pathToUtf8(b));
 }
 
+// 上書き保存を断る理由を返す(断らないなら空文字列)。
+// 巨大画像は表示できる大きさへ縮小して取り込まれるので、それで元ファイルを潰すと
+// 失った画素は取り戻せない。名前を付けて保存なら許す
+std::string overwriteBlockedReason(const DecodedImage& image) {
+    if (!image.downscaled()) return {};
+    return std::format("元が大きい({} x {})ため表示用に {} x {} へ縮小してあります。"
+                       "上書きすると画素が失われるので、名前を付けて保存を使ってください",
+                       image.sourceWidth, image.sourceHeight, image.width, image.height);
+}
+
 // Viewport の表示回転を画素へ焼き込む(保存・コピー・文字認識用)。回転は表示状態で
 // current_ のピクセルには入っていないため、外へ出すときにここで反映する。
 // EXIF Orientation の 6 / 3 / 8 が時計回り 90 / 180 / 270 度に一致するので流用する
@@ -1848,6 +1858,10 @@ void App::executeSaveOverwrite() {
         executeSaveAs();
         return;
     }
+    if (const std::string reason = overwriteBlockedReason(*current_); !reason.empty()) {
+        showMessage(reason);  // 確認ダイアログを出す前に断る
+        return;
+    }
     const fs::path path = list_.current();
     if (!encoder_.supports(path)) {
         showMessage(std::format("{} は上書き保存に対応していない形式です"
@@ -1881,11 +1895,24 @@ void App::executeSaveAs() {
 }
 
 void App::saveImageTo(const fs::path& path, const bool isOverwrite) {
+    // 名前を付けて保存で現在のファイルを選び直した場合もここへ来るので、同じ理由で断る
+    if (isOverwrite && current_) {
+        if (const std::string reason = overwriteBlockedReason(*current_); !reason.empty()) {
+            showMessage(reason);
+            return;
+        }
+    }
     if (!encoder_.encode(*compositeImage(), path, encodeOptions_)) {
         showMessage("保存に失敗しました: " + pathToUtf8(path));
         return;
     }
-    showMessage((isOverwrite ? "上書き保存しました: " : "保存しました: ") + pathToUtf8(path));
+    // 縮小して取り込んだ画像を別名で保存するのは許すが、小さくなることは伝える
+    const std::string note =
+        current_ && current_->downscaled()
+            ? std::format("(表示用に縮小した {} x {} で)", current_->width, current_->height)
+            : std::string();
+    showMessage(std::format("{}しました{}: {}", isOverwrite ? "上書き保存" : "保存", note,
+                            pathToUtf8(path)));
     if (!isOverwrite) return;
     // ディスクの内容が表示に一致したので、未保存マークを消してキャッシュを捨てる
     // (捨てないと戻ってきたときに保存前のピクセルが出る)
@@ -2433,9 +2460,15 @@ StatusBarView App::statusBar() const {
     if (!message_.empty()) {
         bar.leftText = message_;
     } else if (current_) {
-        // 編集ドラッグが何をするかは見た目に出ないので、現在のツールをここに出す
-        bar.leftText = std::format("{} x {} px  |  ツール: {}", current_->width,
-                                   current_->height, toolLabel(tool_));
+        // 編集ドラッグが何をするかは見た目に出ないので、現在のツールをここに出す。
+        // 縮小して取り込んだ画像は、ズーム率が元の大きさに対する比でなくなるので明示する
+        bar.leftText =
+            current_->downscaled()
+                ? std::format("{} x {} px (元 {} x {} を縮小表示)  |  ツール: {}",
+                              current_->width, current_->height, current_->sourceWidth,
+                              current_->sourceHeight, toolLabel(tool_))
+                : std::format("{} x {} px  |  ツール: {}", current_->width, current_->height,
+                              toolLabel(tool_));
     } else if (loadFailed_) {
         // 失敗した段階とコードまで出す(現物が手元にない不具合を切り分けられるように)
         bar.leftText = loadError_.empty() ? "読み込み失敗"

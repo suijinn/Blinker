@@ -65,14 +65,28 @@ public:
 
 private:
     static constexpr size_t kTextureCacheSize = 3;  ///< 表示中 + 前後の先読み分
+    /// GPU 側のコピーに使うバイト数の上限(RendererD2D と同じ 256MB)
+    static constexpr size_t kTextureCacheBytes = size_t{256} << 20;
     static constexpr float kUiFontHeight = 13.0f;   ///< RendererD2D の 13px と同じ
 
     /**
      * @brief デコード画像に対応するテクスチャを取得する(なければ生成)。
+     *
+     * レンダラが扱えるテクスチャの大きさには上限があり(`SDL_PROP_RENDERER_MAX_
+     * TEXTURE_SIZE_NUMBER`)、超える画像は縮小したものを載せる。縮小するのは GPU 側の
+     * コピーだけで、保存・コピーは元の大きさで行われる。テクスチャ座標は 0〜1 で
+     * 指定しているので、描画側は大きさの違いを気にしなくてよい。
+     *
      * @param[in] image 元になるデコード画像。
      * @return テクスチャ。所有権は cache_ 側に残る。生成失敗時は nullptr。
      */
     SDL_Texture* textureFor(const std::shared_ptr<const DecodedImage>& image);
+
+    /**
+     * @brief レンダラが扱えるテクスチャの最大辺を返す。
+     * @return 最大辺(ピクセル)。問い合わせられない場合は保守的な 2048。
+     */
+    uint32_t maxTextureSize() const;
 
     /**
      * @brief 画像を描く。
@@ -138,6 +152,7 @@ private:
     struct CacheEntry {
         std::shared_ptr<const DecodedImage> image;  ///< 元のデコード画像(キーを兼ねる)
         SDL_Texture* texture = nullptr;             ///< 対応する GPU テクスチャ
+        size_t bytes = 0;                           ///< texture のおおよそのバイト数
     };
     std::vector<CacheEntry> cache_;  ///< 先頭が最近使用(LRU)
 };

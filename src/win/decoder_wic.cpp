@@ -18,7 +18,9 @@ namespace {
 
 using Microsoft::WRL::ComPtr;
 
-// D2D の ID2D1Bitmap が確実に扱える上限に収める
+// 取り込む大きさの上限。これはメモリのための制限で、16384 x 16384 でも PBGRA で 1GB になる。
+// 描画側 (GPU) の上限は機種によって更に低いことがあり、そちらは RendererD2D が
+// GetMaximumBitmapSize を見て描画時に縮小する(元のピクセルは保存・コピー用に残す)
 constexpr UINT kMaxDimension = 16384;
 
 UINT16 readOrientation(IWICBitmapFrameDecode* frame) {
@@ -100,7 +102,9 @@ std::shared_ptr<DecodedImage> DecoderWic::decode(const std::filesystem::path& pa
         return nullptr;
     }
 
-    // 巨大画像は描画側の上限に収まるよう縮小してから取り込む
+    // 巨大画像は上限に収まるよう縮小してから取り込む
+    const UINT sourceWidth = width;
+    const UINT sourceHeight = height;
     if (width > kMaxDimension || height > kMaxDimension) {
         const double scale = std::min(static_cast<double>(kMaxDimension) / width,
                                       static_cast<double>(kMaxDimension) / height);
@@ -141,6 +145,11 @@ std::shared_ptr<DecodedImage> DecoderWic::decode(const std::filesystem::path& pa
         auto image = std::make_shared<DecodedImage>();
         image->width = width;
         image->height = height;
+        if (width != sourceWidth || height != sourceHeight) {
+            // 縮小した事実を残す。上書き保存の拒否とステータスバーの表示に使う
+            image->sourceWidth = sourceWidth;
+            image->sourceHeight = sourceHeight;
+        }
         const UINT stride = width * 4;
         image->pixels.resize(byteSize);
         hr = converter->CopyPixels(nullptr, stride, static_cast<UINT>(image->pixels.size()),

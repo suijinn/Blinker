@@ -67,6 +67,11 @@ cmake --preset linux-release && cmake --build --preset linux-release
 
 - 画像ピクセルは常に 32bpp PBGRA(事前乗算)。`DecodedImage` 参照は `shared_ptr` で持ち回る
   (RendererD2DのGPUビットマップキャッシュはshared_ptrをキーにしてアドレス再利用の取り違えを防いでいる)
+- **GPU 側のコピーは `DecodedImage` より小さいことがある**。描画側の上限
+  (D2D の `GetMaximumBitmapSize` / SDL の最大テクスチャサイズ)を超える画像は
+  `downscaleToFit` で縮めて載せるため、転送元の矩形は画像の寸法ではなく
+  ビットマップの実寸(`GetSize` 等)から取ること。逆に**取り込み時に縮小された画像**
+  (`DecodedImage::downscaled()`)は元ファイルより小さいので、上書き保存してはならない
 - 座標はすべて物理ピクセル(D2DはDPI 96固定でDIP=px)。DPI対応はmanifestのPerMonitorV2
 - パス比較は大文字小文字を無視(Windows準拠)。フォルダ内ソートは Win版が `StrCmpLogicalW`、
   SDL版が core の `naturalCompare`(いずれもエクスプローラと同じ自然順)

@@ -18,6 +18,7 @@
 #include "core/dib.h"
 #include "core/edit.h"
 #include "core/exif.h"
+#include "core/image_scale.h"
 #include "core/geometry.h"
 #include "core/help.h"
 #include "core/image_cache.h"
@@ -1718,6 +1719,120 @@ void testAppSaveOverwrite() {
     app.execute(Command::CopyImage);
     CHECK(clipboard.lastWidth == 2 && clipboard.lastHeight == 1);
     CHECK(clipboard.lastPixels == pasted->pixels);
+}
+
+// 元が大きすぎて縮小して取り込まれた画像を返すデコーダ(巨大画像の扱いを試す)
+class DownscaledDecoder final : public IImageDecoder {
+public:
+    std::shared_ptr<DecodedImage> decode(const std::filesystem::path&,
+                                         std::string* = nullptr) override {
+        auto image = std::make_shared<DecodedImage>();
+        image->width = 2;
+        image->height = 1;
+        image->pixels = {0, 0, 0, 255, 255, 255, 255, 255};
+        image->sourceWidth = 40000;
+        image->sourceHeight = 20000;
+        return image;
+    }
+};
+
+void testAppSaveDownscaled() {
+    DownscaledDecoder decoder;
+    ImageCache cache(decoder);
+    FakeHost host;
+    FakeFileSystem fileSystem;
+    FakeClipboard clipboard;
+    FakeEncoder encoder;
+    FakeAnnotationRasterizer rasterizer;
+    FakeOcrEngine ocrEngine;
+    OcrService ocrService(ocrEngine);
+    App app(host, fileSystem, cache, clipboard, encoder, rasterizer, ocrService);
+    app.onResize(800, 600);
+
+    std::mutex mutex;
+    std::condition_variable cv;
+    bool decoded = false;
+    cache.setOnDecoded([&](const std::filesystem::path&) {
+        std::lock_guard lock(mutex);
+        decoded = true;
+        cv.notify_all();
+    });
+    const std::filesystem::path path = "C:/pics/huge.png";
+    fileSystem.files = {path};
+    app.openPath(path);
+    {
+        std::unique_lock lock(mutex);
+        CHECK(cv.wait_for(lock, std::chrono::seconds(5), [&] { return decoded; }));
+    }
+    app.onDecodeCompleted();
+    CHECK(app.currentImage() != nullptr);
+    CHECK(app.currentImage()->downscaled());
+
+    // 縮小表示中であることが分かる(ズーム率が元の大きさに対する比ではなくなるため)
+    CHECK(app.statusBar().leftText.find("元 40000 x 20000 を縮小表示") != std::string::npos);
+
+    // 上書き保存は断る。確認ダイアログを出す前に断ること(聞いてから断るのは不親切)
+    app.execute(Command::SaveImage);
+    CHECK(host.confirmCount == 0);
+    CHECK(encoder.encodeCount == 0);
+    CHECK(app.statusBar().leftText.find("上書きすると画素が失われる") != std::string::npos);
+    CHECK(app.statusBar().leftText.find("40000 x 20000") != std::string::npos);
+
+    // 名前を付けて保存は許すが、小さくなることを伝える
+    host.savePath = std::filesystem::path("C:/out/huge.png");
+    app.execute(Command::SaveImageAs);
+    CHECK(encoder.encodeCount == 1);
+    CHECK(encoder.lastPath == std::filesystem::path("C:/out/huge.png"));
+    CHECK(app.statusBar().leftText == "保存しました(表示用に縮小した 2 x 1 で): C:/out/huge.png");
+
+    // 名前を付けて保存で元のファイルを選び直した場合も、結果は上書きなので断る
+    host.savePath = path;
+    app.execute(Command::SaveImageAs);
+    CHECK(encoder.encodeCount == 1);
+    CHECK(app.statusBar().leftText.find("上書きすると画素が失われる") != std::string::npos);
+}
+
+void testDownscaleToFit() {
+    // 4x2。B チャンネルだけ値を変えて箱型フィルタの平均を確かめる
+    DecodedImage img;
+    img.width = 4;
+    img.height = 2;
+    const uint8_t blues[8] = {0, 100, 200, 255, 8, 108, 208, 255};
+    for (uint8_t b : blues) {
+        img.pixels.insert(img.pixels.end(), {b, 255, 255, 255});
+    }
+
+    CHECK(downscaleToFit(img, 4) == nullptr);  // 既に収まっているなら何もしない
+    CHECK(downscaleToFit(img, 0) == nullptr);
+    CHECK(downscaleToFit(DecodedImage{}, 8) == nullptr);  // 空の画像でも落ちない
+
+    // 4x2 → 2x1: 出力 1 画素が入力 2x2 を平均する
+    const auto half = downscaleToFit(img, 2);
+    CHECK(half != nullptr);
+    CHECK(half->width == 2 && half->height == 1);
+    CHECK(half->pixels.size() == 8);
+    CHECK(half->pixels[0] == (0 + 100 + 8 + 108) / 4);      // 54
+    CHECK(half->pixels[4] == (200 + 255 + 208 + 255) / 4);  // 229
+    CHECK(half->pixels[1] == 255 && half->pixels[3] == 255);
+    // 縮小したことと元の大きさが残る(上書き保存の拒否とステータスバーに使う)
+    CHECK(half->downscaled());
+    CHECK(half->sourceWidth == 4 && half->sourceHeight == 2);
+
+    // 縦横比は保つ(長い辺を上限に合わせる)
+    DecodedImage wide;
+    wide.width = 8;
+    wide.height = 2;
+    wide.pixels.assign(8 * 2 * 4, 128);
+    const auto fitted = downscaleToFit(wide, 4);
+    CHECK(fitted != nullptr);
+    CHECK(fitted->width == 4 && fitted->height == 1);
+    CHECK(fitted->pixels == std::vector<uint8_t>(4 * 4, 128));  // 一様な画像は値が変わらない
+
+    // 更に縮めても、記録されている元の大きさは最初のものが残る
+    const auto tiny = downscaleToFit(*half, 1);
+    CHECK(tiny != nullptr);
+    CHECK(tiny->width == 1 && tiny->height == 1);
+    CHECK(tiny->sourceWidth == 4 && tiny->sourceHeight == 2);
 }
 
 void testAppSidebar() {
@@ -4333,6 +4448,8 @@ int main() {
     testAppStatusBar();
     testAppPasteSave();
     testAppSaveOverwrite();
+    testAppSaveDownscaled();
+    testDownscaleToFit();
     testAppSidebar();
     testAppSidebarResize();
     testAppHelpSidebar();

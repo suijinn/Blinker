@@ -68,8 +68,15 @@ private:
 
     /**
      * @brief デコード画像に対応する GPU ビットマップを取得する(なければ生成)。
+     *
+     * GPU が扱えるビットマップの大きさには上限があり(`GetMaximumBitmapSize`。
+     * 機種によって 8192 のこともある)、超える画像は縮小したものを載せる。
+     * 縮小するのは GPU 側のコピーだけで、保存・コピー・文字認識は元の大きさで行われる。
+     *
      * @param[in] image 元になるデコード画像。
      * @return GPU ビットマップ。所有権は bitmaps_ 側に残る。生成失敗時は nullptr。
+     *         画像より小さいことがあるので、描画時の転送元矩形はこのビットマップの
+     *         大きさ (`GetSize`) から取ること。
      */
     ID2D1Bitmap* bitmapFor(const std::shared_ptr<const DecodedImage>& image);
 
@@ -114,10 +121,16 @@ private:
     Microsoft::WRL::ComPtr<ID2D1StrokeStyle> navGlyphStroke_;
     Microsoft::WRL::ComPtr<ID2D1HwndRenderTarget> target_;
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brush_;  ///< target_ と同寿命
+    /// @brief GPU ビットマップキャッシュ 1 件分。
+    struct BitmapEntry {
+        std::shared_ptr<const DecodedImage> image;      ///< キー(内容ではなく同一性で照合)
+        Microsoft::WRL::ComPtr<ID2D1Bitmap> bitmap;     ///< GPU 側のコピー
+        size_t bytes = 0;                               ///< bitmap のおおよそのバイト数
+    };
     /// 直近使用したデコード画像の GPU ビットマップ(小さな LRU)。
-    /// shared_ptr をキーに持つことで CPU 側画像の解放とアドレス再利用による取り違えを防ぐ
-    std::list<std::pair<std::shared_ptr<const DecodedImage>, Microsoft::WRL::ComPtr<ID2D1Bitmap>>>
-        bitmaps_;
+    /// shared_ptr をキーに持つことで CPU 側画像の解放とアドレス再利用による取り違えを防ぐ。
+    /// 枚数とバイト数の両方で上限を設ける(巨大画像 3 枚で GPU メモリを使い切らないため)
+    std::list<BitmapEntry> bitmaps_;
 };
 
 } // namespace blinker

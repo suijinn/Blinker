@@ -22,12 +22,24 @@ struct DecodedImage {
     uint32_t width = 0;            ///< 幅(ピクセル)
     uint32_t height = 0;           ///< 高さ(ピクセル)
     std::vector<uint8_t> pixels;   ///< ピクセルデータ(32bpp PBGRA、上から下へ)
+    uint32_t sourceWidth = 0;      ///< 縮小して取り込んだ場合の元ファイルの幅(0 = 等倍)
+    uint32_t sourceHeight = 0;     ///< 縮小して取り込んだ場合の元ファイルの高さ(0 = 等倍)
 
     /**
      * @brief ピクセルデータのバイト数を返す。
      * @return pixels のサイズ(バイト)。
      */
     size_t byteSize() const { return pixels.size(); }
+
+    /**
+     * @brief 元ファイルより小さく取り込まれた画像かを返す。
+     *
+     * true のとき、このピクセルを保存すると元より小さい画像になる。上書き保存は
+     * 元データを失うので拒否する(App::executeSaveOverwrite)。
+     *
+     * @return 縮小して取り込まれていれば true。
+     */
+    bool downscaled() const { return sourceWidth != 0 || sourceHeight != 0; }
 };
 
 /**
