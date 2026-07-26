@@ -280,7 +280,7 @@ void testHelpLines() {
     CHECK(hasSwapped("スクロール  右ドラッグ"));
     CHECK(hasSwapped("現在のツールを実行  左ドラッグ"));
     CHECK(hasSwapped("正方形 / 真円で描く  Shift+左ドラッグ"));
-    CHECK(hasSwapped("直線・矢印を水平 / 垂直に  Shift+左ドラッグ"));
+    CHECK(hasSwapped("直線・矢印・手書きをまっすぐ  Shift+左ドラッグ"));
     // オブジェクトを掴む操作は入れ替えの対象外なので、入れ替えても左のまま
     CHECK(hasSwapped("図形・テキストを選択  左クリック"));
     CHECK(hasSwapped("選択中のオブジェクトを移動  左ドラッグ"));
@@ -3333,6 +3333,39 @@ void testAppPenTools() {
     app.onMouseUp(MouseButton::Right, screenOf(5, 5));
     CHECK(countMenuLeaves(host.lastMenuItems) == 33);
     CHECK(app.annotations().specs->back().number == 7);
+
+    // Shift ドラッグ: 手書きも矢印と同じく水平 / 垂直 / 45 度へ寄せてまっすぐ引ける
+    app.execute(Command::SelectToolPen);
+    app.onMouseDown(MouseButton::Right, screenOf(0, 0));
+    app.onMouseMove(screenOf(10, 2), true);  // 11 度 → 水平
+    CHECK(app.annotations().preview->points.size() == 2);  // 通過点ではなく直線 1 本
+    CHECK(nearly(app.annotations().preview->points.back().x, 10));
+    CHECK(nearly(app.annotations().preview->points.back().y, 0));
+    app.onMouseUp(MouseButton::Right, screenOf(30, 5), true);
+    {
+        const AnnotationSpec& spec = app.annotations().specs->back();
+        CHECK(spec.points.size() == 2);
+        CHECK(nearly(spec.points.back().x, 30) && nearly(spec.points.back().y, 0));
+    }
+    app.execute(Command::Undo);
+
+    // 途中から Shift を押すと、そこまでの軌跡は残したまま以降だけがまっすぐになる。
+    // 離せばまた自由に描ける(アンカーは押し直すたびに取り直す)
+    app.onMouseDown(MouseButton::Right, screenOf(0, 0));
+    app.onMouseMove(screenOf(0, 10));
+    app.onMouseMove(screenOf(30, 12), true);  // (0,10) から水平へ
+    CHECK(app.annotations().preview->points.size() == 3);
+    CHECK(nearly(app.annotations().preview->points.back().x, 30));
+    CHECK(nearly(app.annotations().preview->points.back().y, 10));
+    app.onMouseMove(screenOf(32, 20));  // Shift を離した後は素通し
+    app.onMouseUp(MouseButton::Right, screenOf(32, 20));
+    {
+        const AnnotationSpec& spec = app.annotations().specs->back();
+        CHECK(spec.points.size() == 4);
+        CHECK(nearly(spec.points[2].x, 30) && nearly(spec.points[2].y, 10));
+        CHECK(nearly(spec.points.back().x, 32) && nearly(spec.points.back().y, 20));
+    }
+    app.execute(Command::Undo);
 
     // ini からもツールを選べる
     app.applyConfig(Config::parse("[edit]\ntool = marker\n"));
