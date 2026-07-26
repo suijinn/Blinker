@@ -25,6 +25,7 @@
 #include "platform/clipboard.h"
 #include "platform/encoder.h"
 #include "platform/file_system.h"
+#include "platform/printer.h"
 #include "platform/renderer.h"
 
 /**
@@ -213,9 +214,11 @@ public:
      * @param[in] encoder    画像保存の実装。
      * @param[in] rasterizer 注釈ラスタライズの実装。
      * @param[in] ocr        文字認識の非同期実行。本オブジェクトより長生きすること。
+     * @param[in] printer    印刷の実装。
      */
     App(IAppHost& host, IFileSystem& fileSystem, ImageCache& cache, IClipboard& clipboard,
-        IImageEncoder& encoder, IAnnotationRasterizer& rasterizer, OcrService& ocr);
+        IImageEncoder& encoder, IAnnotationRasterizer& rasterizer, OcrService& ocr,
+        IPrinter& printer);
 
     /**
      * @brief blinker.ini の設定を適用する。
@@ -1038,6 +1041,15 @@ private:
     void executeSaveAs();
 
     /**
+     * @brief 表示中の画像を印刷する(Command::PrintImage)。
+     *
+     * 印刷するのは保存・コピーと同じ compositeImage()(注釈と表示回転を焼き込んだもの)。
+     * 紙は白なので、半透明を含む画像は白へ焼き込んでから渡す。
+     * 結果はステータスバーへ出す(利用者が取りやめたときは何も出さない)。
+     */
+    void executePrint();
+
+    /**
      * @brief compositeImage をファイルへ書き出し、結果をステータスバーへ出す。
      * @param[in] path        保存先のパス。
      * @param[in] isOverwrite 表示中のファイル自身への上書きなら true。成功時に
@@ -1145,6 +1157,7 @@ private:
     IImageEncoder& encoder_;
     IAnnotationRasterizer& rasterizer_;
     OcrService& ocr_;
+    IPrinter& printer_;
     /// 待っている認識の generation。0 なら認識中でない。古い結果を捨てるのに使う
     uint64_t ocrGeneration_ = 0;
     Keymap keymap_ = Keymap::defaults();
@@ -1158,6 +1171,7 @@ private:
     std::string loadError_;  ///< デコード失敗の理由(段階と HRESULT)。ステータスバーに出す
     uint32_t backgroundRGB_ = 0x202020;
     EncodeOptions encodeOptions_;   ///< 保存時のエンコード設定([save] jpeg_quality)
+    PrintOptions printOptions_;     ///< 印刷時の余白・自動回転([print] セクション)
     bool confirmOverwrite_ = true;  ///< 上書き保存の前に確認を取るか([save] confirm_overwrite)
     int prefetchRadius_ = 2;
     SizeF clientSize_{};  ///< クライアント領域全体(サイドバー + ビューポート + ステータスバー)

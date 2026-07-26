@@ -41,6 +41,7 @@ add_library(blinker_core STATIC
     src/core/ocr_service.cpp
     src/core/ocr_text.cpp
     src/core/pixel_convert.cpp
+    src/core/print_layout.cpp
     src/core/text_edit.cpp
     src/core/text_style.cpp
     src/core/unicode.cpp
@@ -79,6 +80,7 @@ if(WIN32)
         src/win/file_system_win.cpp
         src/win/clipboard_win.cpp
         src/win/ocr_winrt.cpp
+        src/win/printer_win.cpp
         ${CMAKE_BINARY_DIR}/generated/win/blinker.rc
         src/win/blinker.manifest
     )

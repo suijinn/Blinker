@@ -42,6 +42,7 @@ enum class Command {
     PasteImage,        ///< クリップボードの画像を表示(次/前でフォルダ一覧に戻る)
     SaveImage,         ///< 表示中の画像を元のファイルへ上書き保存(確認あり)
     SaveImageAs,       ///< 表示中の画像を名前を付けて保存 (PNG/JPEG/BMP)
+    PrintImage,        ///< 表示中の画像を印刷する(印刷ダイアログを出す)
     Undo,              ///< 直前の編集(トリミング・図形・テキスト)を取り消す
     Redo,              ///< 取り消した編集をやり直す
     DeleteAnnotation,  ///< 選択中の注釈オブジェクトを削除

@@ -20,6 +20,7 @@
 #include "sdl/file_system_posix.h"
 #include "sdl/font_stb.h"
 #include "sdl/ocr_stub.h"
+#include "sdl/printer_stub.h"
 #include "sdl/window_sdl.h"
 
 namespace {
@@ -78,8 +79,10 @@ int main(int argc, char** argv) {
         // 文字認識は未対応(OcrStub が理由を返す)。経路だけは win 版と同型にしておく
         OcrStub ocrEngine;
         OcrService ocrService(ocrEngine);
+        PrinterStub printer;  // 印刷も未対応(PrinterStub が理由を返す)
 
-        App app(window, fileSystem, cache, clipboard, encoder, annotationRasterizer, ocrService);
+        App app(window, fileSystem, cache, clipboard, encoder, annotationRasterizer, ocrService,
+                printer);
         app.setDarkTheme(resolveDarkTheme(config));
         app.applyConfig(config);
         window.attachApp(&app);
