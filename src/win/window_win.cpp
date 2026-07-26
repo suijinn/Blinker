@@ -20,6 +20,25 @@ constexpr int kIconResourceId = 101;  // blinker.rc の IDI_APPICON
 constexpr UINT_PTR kMessageTimerId = 1;
 constexpr UINT_PTR kCaretTimerId = 2;
 
+struct Modifiers {
+    bool ctrl = false;
+    bool shift = false;
+    bool alt = false;
+};
+
+// マウスメッセージの wParam から修飾キーを取り出す。
+// Alt だけは MK_* に無いのでキー状態を直接見る
+Modifiers modifiersFrom(WPARAM wp) {
+    const WORD keys = GET_KEYSTATE_WPARAM(wp);
+    return {(keys & MK_CONTROL) != 0, (keys & MK_SHIFT) != 0,
+            (GetKeyState(VK_MENU) & 0x8000) != 0};
+}
+
+MouseChord chordFrom(MouseInput input, WPARAM wp) {
+    const Modifiers m = modifiersFrom(wp);
+    return {input, m.ctrl, m.shift, m.alt};
+}
+
 } // namespace
 
 bool MainWindow::create(HINSTANCE hinstance, int showCommand, bool darkTitleBar) {
@@ -112,23 +131,52 @@ LRESULT MainWindow::handleMessage(UINT msg, WPARAM wp, LPARAM lp) {
         return 0;
     case WM_IME_CHAR:
         return 0;  // 確定文字列は handleImeResult で挿入済み
-    case WM_MOUSEWHEEL: {
+    case WM_MOUSEWHEEL:
+    case WM_MOUSEHWHEEL: {
+        // ホイールの座標はスクリーン座標で来る(他のマウスメッセージと違う)
         POINT pt{GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
         ScreenToClient(hwnd_, &pt);
         const float notches = static_cast<float>(GET_WHEEL_DELTA_WPARAM(wp)) / WHEEL_DELTA;
+        const Point pos{static_cast<float>(pt.x), static_cast<float>(pt.y)};
+        const Modifiers m = modifiersFrom(wp);
         if (app_) {
-            app_->onWheel(notches,
-                          {static_cast<float>(pt.x), static_cast<float>(pt.y)});
+            if (msg == WM_MOUSEWHEEL) {
+                app_->onWheel(notches, pos, m.ctrl, m.shift, m.alt);
+            } else {
+                app_->onWheelHorizontal(notches, pos, m.ctrl, m.shift, m.alt);
+            }
         }
         return 0;
     }
+    case WM_MBUTTONDOWN:
+        if (app_) {
+            app_->onMouseInput(chordFrom(MouseInput::Middle, wp),
+                               {static_cast<float>(GET_X_LPARAM(lp)),
+                                static_cast<float>(GET_Y_LPARAM(lp))});
+        }
+        return 0;
+    case WM_XBUTTONDOWN: {
+        // サイドボタン。押下で実行し、解放も自分で消費して TRUE を返す
+        // (WM_XBUTTONUP を DefWindowProc へ流すと WM_APPCOMMAND が生成され、
+        //  ブラウザの戻る / 進むとして二重に届く)
+        const MouseInput input = GET_XBUTTON_WPARAM(wp) == XBUTTON1 ? MouseInput::X1
+                                                                   : MouseInput::X2;
+        if (app_) {
+            app_->onMouseInput(chordFrom(input, wp), {static_cast<float>(GET_X_LPARAM(lp)),
+                                                      static_cast<float>(GET_Y_LPARAM(lp))});
+        }
+        return TRUE;  // X ボタンのメッセージは処理したら 0 ではなく TRUE を返す
+    }
+    case WM_XBUTTONUP:
+        return TRUE;  // 上記のとおり DefWindowProc へ渡さない
     case WM_LBUTTONDOWN:
         handleButtonDown(MouseButton::Left, {GET_X_LPARAM(lp), GET_Y_LPARAM(lp)});
         return 0;
     case WM_LBUTTONDBLCLK: {
         const POINT pt{GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
-        if (app_ &&
-            app_->onDoubleClick({static_cast<float>(pt.x), static_cast<float>(pt.y)})) {
+        const Modifiers m = modifiersFrom(wp);
+        if (app_ && app_->onDoubleClick({static_cast<float>(pt.x), static_cast<float>(pt.y)},
+                                        m.ctrl, m.shift, m.alt)) {
             return 0;
         }
         // テキスト注釈以外の上では通常のクリックとして扱う

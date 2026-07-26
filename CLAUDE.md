@@ -58,7 +58,9 @@ cmake --preset linux-release && cmake --build --preset linux-release
   `DecoderWic` はthread_localでCOM初期化するためどのスレッドからでも呼べるが、
   `OcrEngineWinrt` はMTA必須(非同期完了をブロック待ちするためSTAだと詰む)
 - **機能追加は定型手順に従う**: `Command` enum追加 → `App::execute` にハンドラ →
-  `keymap.cpp`(`kCommandNames` とデフォルトキー表)→ `tests/core_tests.cpp` にテスト。
+  `keymap.cpp`(`kCommandNames` とデフォルトキー表)→ `help.cpp`(`kCommandLabels` の
+  表示名と操作一覧の `row()`。無いと F1 の一覧に出ない)→ `tests/core_tests.cpp` にテスト。
+  マウス(中・サイドボタン・ホイール・ダブルクリック)の既定割り当ては `mousemap.cpp`。
   詳細は architecture.md「機能追加の手順」
 
 ## 規約・注意点

@@ -159,6 +159,9 @@ App::App(IAppHost& host, IFileSystem& fileSystem, ImageCache& cache, IClipboard&
 
 void App::applyConfig(const Config& config) {
     keymap_.applyConfig(config.section("keys"));
+    // [mouse] はコマンド割り当てと swap_buttons が同居する(後者はコマンド名として
+    // 解決されないので Mousemap 側では無視される)
+    mousemap_.applyConfig(config.section("mouse"));
     backgroundRGB_ = config.getColorRGB("view", "background", backgroundRGB_);
     viewport_.setFitUpscale(config.getBool("view", "fit_upscale", false));
     prefetchRadius_ = std::clamp(config.getInt("view", "prefetch_radius", prefetchRadius_), 0, 8);
@@ -396,7 +399,7 @@ void App::execute(Command command) {
         if (sidebarEnabled_) {
             sidebarMode_ = SidebarMode::Help;
             // ini 適用後のキーバインドから作る。開くたびに作り直すので設定変更にも追従する
-            helpLines_ = buildHelpLines(keymap_, swapMouseButtons_);
+            helpLines_ = buildHelpLines(keymap_, mousemap_, swapMouseButtons_);
             sidebarScroll_ = 0;
         }
         applyLayout();
@@ -459,18 +462,48 @@ void App::onResize(float width, float height) {
     updateTitle();  // フィット再計算でズーム率表示が変わりうる
 }
 
-void App::onWheel(float wheelNotches, Point screenPos) {
+void App::onWheel(float wheelNotches, Point screenPos, bool ctrl, bool shift, bool alt) {
     if (wheelNotches == 0) return;
     if (sidebarVisible() && screenPos.x < sidebarOffset()) {
-        // サイドバー上ではズームせず一覧をスクロール(1ノッチ = 3項目)
+        // サイドバー上ではズームも遷移もせず一覧をスクロール(1ノッチ = 3項目)
         sidebarScroll_ -= wheelNotches * 3 * kSidebarItemHeight;
         clampSidebarScroll();
         host_.requestRedraw();
         return;
     }
+    // 割り当てがあればコマンド。無ければ従来どおりカーソル位置基準のズーム
+    if (wheelCommand(wheelNotches, false, ctrl, shift, alt)) return;
+    wheelAccumV_ = 0.0f;
     viewport_.zoomAt(std::pow(Viewport::kZoomStep, wheelNotches),
                      {screenPos.x - sidebarOffset(), screenPos.y});
     onViewChanged();
+}
+
+void App::onWheelHorizontal(float wheelNotches, Point, bool ctrl, bool shift, bool alt) {
+    if (wheelNotches == 0) return;
+    // 未割り当てのときの既定動作は無い(垂直ホイールのズームに相当するものがない)
+    wheelCommand(wheelNotches, true, ctrl, shift, alt);
+}
+
+bool App::wheelCommand(float notches, bool horizontal, bool ctrl, bool shift, bool alt) {
+    const MouseInput input =
+        horizontal ? (notches > 0 ? MouseInput::WheelRight : MouseInput::WheelLeft)
+                   : (notches > 0 ? MouseInput::WheelUp : MouseInput::WheelDown);
+    const Command command = mousemap_.find({input, ctrl, shift, alt});
+    if (command == Command::None) return false;
+    // 1 ノッチに達した分だけ繰り返し実行する。向きはコマンド側で決まっているので
+    // ここでは段数の絶対値だけを使う(逆向きに回すと貯金は捨てられる)
+    float& accum = horizontal ? wheelAccumH_ : wheelAccumV_;
+    const int steps = std::abs(consumeWheelSteps(accum, notches));
+    for (int i = 0; i < steps; ++i) execute(command);
+    return true;
+}
+
+bool App::onMouseInput(const MouseChord& chord, Point) {
+    const Command command = mousemap_.find(chord);
+    if (command == Command::None) return false;
+    execute(command);
+    return true;
 }
 
 MouseRole App::mouseRole(MouseButton button) const {
@@ -662,9 +695,16 @@ void App::endObjectGrab() {
     dragUndoPushed_ = false;
 }
 
-bool App::onDoubleClick(Point screenPos) {
-    if (!current_) return false;
+bool App::onDoubleClick(Point screenPos, bool ctrl, bool shift, bool alt) {
+    // サイドバー上は 1 回目のクリックで画像が切り替わっているので何もしない
     if (sidebarVisible() && screenPos.x < sidebarOffset()) return false;
+    if (beginTextEditByDoubleClick(screenPos)) return true;
+    // テキストの再編集にならなかったダブルクリックは、割り当てがあればコマンドになる
+    return onMouseInput({MouseInput::DoubleClick, ctrl, shift, alt}, screenPos);
+}
+
+bool App::beginTextEditByDoubleClick(Point screenPos) {
+    if (!current_) return false;
     const Point imagePos = imageToScreen().inverted().apply(screenPos);
     const float tolerance = kHitTolerancePx / std::max(viewport_.zoom(), 0.001f);
     // 編集中の枠内でのダブルクリックは語の選択
