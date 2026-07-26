@@ -1,13 +1,30 @@
 #include "sdl/decoder_stb.h"
 
-#include <cstdio>
 #include <format>
+#include <fstream>
+#include <limits>
+#include <system_error>
+#include <vector>
 
-#include "core/unicode.h"
+#include "core/exif.h"
 #include "stb/stb_image.h"
 
 namespace blinker {
 namespace {
+
+// ファイル全体をメモリへ読む。EXIF を読むために先頭のバイト列が必要で、
+// 同じバッファをそのままデコードにも使う(ファイルを二度開かない)
+std::vector<uint8_t> readAllBytes(const std::filesystem::path& path) {
+    std::error_code ec;
+    const auto size = std::filesystem::file_size(path, ec);
+    if (ec || size == 0 || size > std::numeric_limits<int>::max()) return {};
+    std::ifstream in(path, std::ios::binary);
+    if (!in) return {};
+    std::vector<uint8_t> bytes(static_cast<size_t>(size));
+    in.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(size));
+    bytes.resize(static_cast<size_t>(in.gcount()));  // 途中まで読めた分で続ける
+    return bytes;
+}
 
 // RGBA(ストレート)→ BGRA(事前乗算)へ変換して DecodedImage を作る
 std::shared_ptr<DecodedImage> imageFromRgba(const stbi_uc* data, int w, int h) {
@@ -33,9 +50,14 @@ std::shared_ptr<DecodedImage> imageFromRgba(const stbi_uc* data, int w, int h) {
 
 std::shared_ptr<DecodedImage> DecoderStb::decode(const std::filesystem::path& path,
                                                  std::string* error) {
-    // POSIX のパスはネイティブが UTF-8 のためそのまま fopen できる
+    const std::vector<uint8_t> bytes = readAllBytes(path);
+    if (bytes.empty()) {
+        if (error) *error = "ファイル読み込み失敗";
+        return nullptr;
+    }
     int w = 0, h = 0, comp = 0;
-    stbi_uc* data = stbi_load(pathToUtf8(path).c_str(), &w, &h, &comp, 4);
+    stbi_uc* data =
+        stbi_load_from_memory(bytes.data(), static_cast<int>(bytes.size()), &w, &h, &comp, 4);
     if (!data) {
         if (error) {
             const char* reason = stbi_failure_reason();
@@ -45,7 +67,12 @@ std::shared_ptr<DecodedImage> DecoderStb::decode(const std::filesystem::path& pa
     }
     auto image = imageFromRgba(data, w, h);
     stbi_image_free(data);
-    if (!image && error) *error = std::format("PBGRA変換 ({} x {})", w, h);
+    if (!image) {
+        if (error) *error = std::format("PBGRA変換 ({} x {})", w, h);
+        return nullptr;
+    }
+    // stb_image は EXIF を読まないので、向きは自前で解析して適用する
+    applyExifOrientation(*image, readExifOrientation(bytes.data(), bytes.size()));
     return image;
 }
 

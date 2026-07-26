@@ -1,5 +1,6 @@
 #include "sdl/encoder_stb.h"
 
+#include <algorithm>
 #include <string>
 
 #include "core/pixel_convert.h"
@@ -45,7 +46,13 @@ void appendToVector(void* context, void* data, int size) {
 
 } // namespace
 
-bool EncoderStb::encode(const DecodedImage& image, const std::filesystem::path& path) {
+bool EncoderStb::supports(const std::filesystem::path& path) const {
+    const std::string ext = toLower(pathToUtf8(path.extension()));
+    return ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".bmp";
+}
+
+bool EncoderStb::encode(const DecodedImage& image, const std::filesystem::path& path,
+                        const EncodeOptions& options) {
     if (image.width == 0 || image.height == 0) return false;
     const std::string ext = toLower(pathToUtf8(path.extension()));
     const std::string file = pathToUtf8(path);
@@ -57,7 +64,8 @@ bool EncoderStb::encode(const DecodedImage& image, const std::filesystem::path& 
     }
     if (ext == ".jpg" || ext == ".jpeg") {
         const std::vector<uint8_t> rgb = toOpaqueRGB(image);
-        return stbi_write_jpg(file.c_str(), w, h, 3, rgb.data(), 90) != 0;
+        return stbi_write_jpg(file.c_str(), w, h, 3, rgb.data(),
+                              std::clamp(options.jpegQuality, 1, 100)) != 0;
     }
     if (ext == ".bmp") {
         const std::vector<uint8_t> rgb = toOpaqueRGB(image);

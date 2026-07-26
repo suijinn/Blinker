@@ -15,16 +15,16 @@ namespace blinker {
  * JPEG/PNG/BMP/GIF/TGA/PSD 等に対応し、32bpp PBGRA へ統一する。
  * 状態を持たないためスレッド安全(ワーカースレッドから呼ばれる)。
  *
- * @todo EXIF 回転に未対応(stb_image が EXIF を読まないため)。スマートフォンで
- *       撮影した JPEG が横倒しで表示される。EXIF Orientation を自前で読んで
- *       core/exif の `applyExifOrientation` に渡す必要がある。
+ * stb_image は EXIF を読まないため、向きは core/exif の `readExifOrientation` で
+ * 自前に解析して `applyExifOrientation` で適用する(JPEG の APP1 と PNG の eXIf)。
  */
 class DecoderStb final : public IImageDecoder {
 public:
     /**
-     * @brief 画像ファイルを stb_image でデコードする。
+     * @brief 画像ファイルを stb_image でデコードし、EXIF Orientation を適用する。
      * @param[in]  path  デコードする画像のパス。
-     * @param[out] error 非 nullptr のとき、失敗時に stb_image の失敗理由が入る。
+     * @param[out] error 非 nullptr のとき、失敗時に理由が入る(読み込み失敗、
+     *                   または stb_image の失敗理由)。
      * @return デコード結果(32bpp PBGRA)。非対応形式・不正データなら nullptr。
      */
     std::shared_ptr<DecodedImage> decode(const std::filesystem::path& path,

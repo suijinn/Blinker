@@ -148,6 +148,14 @@ public:
         const std::string& defaultFileName) = 0;
 
     /**
+     * @brief 取り消せない操作の確認を求める(モーダル。応答されるまで返らない)。
+     * @param[in] message 確認したい内容(UTF-8)。
+     * @return 続行してよければ true。取りやめなら false。
+     * @note 現状の用途は上書き保存の確認だけ(元の画像が失われるため)。
+     */
+    virtual bool showConfirm(const std::string& message) = 0;
+
+    /**
      * @brief ポップアップメニューを表示する(モーダル。選択されるまで返らない)。
      * @param[in] items     メニュー構造。
      * @param[in] screenPos 表示位置(クライアント座標)。
@@ -1001,10 +1009,33 @@ private:
     void deleteSelectedAnnotation();
 
     /**
-     * @brief 注釈を合成した保存・コピー用の画像を作る。
-     * @return 注釈を焼き込んだ画像。注釈がなければ current_ をそのまま返す。
+     * @brief 注釈と表示回転を焼き込んだ保存・コピー用の画像を作る。
+     * @return 焼き込んだ画像。注釈も回転もなければ current_ をそのまま返す。
+     * @note 回転は Viewport が持つ表示状態で current_ のピクセルには入っていないため、
+     *       外へ出す(保存・コピー)ときにここで反映する。
      */
     std::shared_ptr<DecodedImage> compositeImage() const;
+
+    /**
+     * @brief 表示中の画像を元のファイルへ上書き保存する(Command::SaveImage)。
+     *
+     * 上書き先が無い(貼り付け画像・一覧が空)ときは名前を付けて保存へ回す。
+     * 元の画像が失われるため、`[save] confirm_overwrite` が真なら
+     * IAppHost::showConfirm で確認を取る。
+     */
+    void executeSaveOverwrite();
+
+    /// @brief 保存先を選んで保存する(Command::SaveImageAs)。
+    void executeSaveAs();
+
+    /**
+     * @brief compositeImage をファイルへ書き出し、結果をステータスバーへ出す。
+     * @param[in] path        保存先のパス。
+     * @param[in] isOverwrite 表示中のファイル自身への上書きなら true。成功時に
+     *                        未保存マークを消し、キャッシュを無効化する。
+     * @pre current_ != nullptr
+     */
+    void saveImageTo(const std::filesystem::path& path, bool isOverwrite);
 
     /// @brief 未保存の編集ありとして記録し、タイトルを更新する。
     void markEdited();
@@ -1117,6 +1148,8 @@ private:
     bool loadFailed_ = false;
     std::string loadError_;  ///< デコード失敗の理由(段階と HRESULT)。ステータスバーに出す
     uint32_t backgroundRGB_ = 0x202020;
+    EncodeOptions encodeOptions_;   ///< 保存時のエンコード設定([save] jpeg_quality)
+    bool confirmOverwrite_ = true;  ///< 上書き保存の前に確認を取るか([save] confirm_overwrite)
     int prefetchRadius_ = 2;
     SizeF clientSize_{};  ///< クライアント領域全体(サイドバー + ビューポート + ステータスバー)
     bool statusBarEnabled_ = true;

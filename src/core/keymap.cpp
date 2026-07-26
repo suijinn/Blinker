@@ -38,6 +38,7 @@ constexpr std::array kCommandNames = {
     CommandName{"copy_file", Command::CopyFile},
     CommandName{"copy_ocr_text", Command::CopyOcrText},
     CommandName{"paste", Command::PasteImage},
+    CommandName{"save", Command::SaveImage},
     CommandName{"save_as", Command::SaveImageAs},
     CommandName{"undo", Command::Undo},
     CommandName{"redo", Command::Redo},
@@ -160,7 +161,8 @@ Keymap Keymap::defaults() {
     b(KeyCode{'C'}, Command::CopyFile, false, true);  // Shift+C
     b(KeyCode{'T'}, Command::CopyOcrText, true);      // Ctrl+T (Text)
     b(KeyCode{'V'}, Command::PasteImage, true);
-    b(KeyCode{'S'}, Command::SaveImageAs, true);
+    b(KeyCode{'S'}, Command::SaveImage, true);              // Ctrl+S
+    b(KeyCode{'S'}, Command::SaveImageAs, true, true);      // Shift+Ctrl+S
     b(KeyCode{'Z'}, Command::Undo, true);
     b(KeyCode{'Y'}, Command::Redo, true);              // Ctrl+Y
     b(KeyCode{'Z'}, Command::Redo, true, true);        // Shift+Ctrl+Z

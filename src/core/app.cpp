@@ -11,6 +11,7 @@
 
 #include "core/annotation_edit.h"
 #include "core/edit.h"
+#include "core/exif.h"
 #include "core/help.h"
 #include "core/ocr_text.h"
 #include "core/pixel_convert.h"
@@ -25,6 +26,24 @@ namespace fs = std::filesystem;
 namespace {
 
 constexpr unsigned kMessageDurationMs = 3000;
+
+// 2 つのパスが同じファイルを指すかを見る(Windows に合わせて大文字小文字を無視する)。
+// 畳むのは ASCII だけだが、日本語のファイル名は大小の区別を持たないので実用上足りる
+bool samePath(const fs::path& a, const fs::path& b) {
+    return toLower(pathToUtf8(a)) == toLower(pathToUtf8(b));
+}
+
+// Viewport の表示回転を画素へ焼き込む(保存・コピー・文字認識用)。回転は表示状態で
+// current_ のピクセルには入っていないため、外へ出すときにここで反映する。
+// EXIF Orientation の 6 / 3 / 8 が時計回り 90 / 180 / 270 度に一致するので流用する
+bool bakeRotation(DecodedImage& image, int rotationDegrees) {
+    switch (((rotationDegrees / 90) % 4 + 4) % 4) {
+    case 1: return applyExifOrientation(image, 6);
+    case 2: return applyExifOrientation(image, 3);
+    case 3: return applyExifOrientation(image, 8);
+    default: return false;
+    }
+}
 
 // 区切り線のメニュー項目({.separator = true} は gcc の
 // -Wmissing-field-initializers 警告になるため関数にする)
@@ -171,6 +190,10 @@ void App::applyConfig(const Config& config) {
         std::clamp(config.getInt("view", "sidebar_width", static_cast<int>(sidebarWidth_)),
                    static_cast<int>(kMinSidebarWidth), static_cast<int>(kMaxSidebarWidth)));
     helpHintEnabled_ = config.getBool("view", "help_hint", helpHintEnabled_);
+    encodeOptions_.jpegQuality =
+        std::clamp(config.getInt("save", "jpeg_quality", encodeOptions_.jpegQuality), 1, 100);
+    // 上書き保存(Ctrl+S)は元の画像を失うので既定では確認する
+    confirmOverwrite_ = config.getBool("save", "confirm_overwrite", confirmOverwrite_);
     // 端に近づくと出る画像遷移用の矢印(使用感が合わなければ false で消せる)
     navArrowsEnabled_ = config.getBool("view", "nav_arrows", navArrowsEnabled_);
     // パンと編集の左右を入れ替える(メニューは入れ替えず常に右クリック)
@@ -332,23 +355,12 @@ void App::execute(Command command) {
             showMessage("クリップボードに画像がありません");
         }
         break;
-    case Command::SaveImageAs: {
-        if (!current_) {
-            showMessage("保存する画像がありません");
-            break;
-        }
-        const std::string defaultName = clipboardImage_ || list_.empty()
-                                            ? "クリップボード.png"
-                                            : pathToUtf8(list_.current().stem()) + ".png";
-        if (const auto path = host_.showSaveDialog(defaultName)) {
-            if (encoder_.encode(*compositeImage(), *path)) {
-                showMessage("保存しました: " + pathToUtf8(*path));
-            } else {
-                showMessage("保存に失敗しました: " + pathToUtf8(*path));
-            }
-        }
+    case Command::SaveImage:
+        executeSaveOverwrite();
         break;
-    }
+    case Command::SaveImageAs:
+        executeSaveAs();
+        break;
     case Command::Undo:
         executeUndo();
         break;
@@ -1357,11 +1369,16 @@ void App::requestOcr(const std::shared_ptr<DecodedImage>& image) {
         showMessage("文字を認識する画像がありません");
         return;
     }
+    std::shared_ptr<const DecodedImage> source = image;
+    // 表示回転は認識にも効かせる(横倒しのままでは文字として認識されない)
+    if (const int rotation = viewport_.rotationDegrees(); rotation != 0) {
+        auto rotated = std::make_shared<DecodedImage>(*image);
+        if (bakeRotation(*rotated, rotation)) source = std::move(rotated);
+    }
     // 認識器はアルファを見ない。事前乗算のまま渡すと透明部分が黒になり、
     // 透過 PNG の黒い文字が背景に沈むので白へ焼き込んでおく
-    std::shared_ptr<const DecodedImage> source = image;
-    if (hasTransparency(*image)) {
-        if (auto flattened = flattenOnBackground(*image, 0xFFFFFF)) source = std::move(flattened);
+    if (hasTransparency(*source)) {
+        if (auto flattened = flattenOnBackground(*source, 0xFFFFFF)) source = std::move(flattened);
     }
     ocrGeneration_ = ocr_.request(std::move(source));
     showMessage("文字を認識しています...");
@@ -1821,13 +1838,74 @@ void App::deleteSelectedAnnotation() {
     host_.requestRedraw();
 }
 
+void App::executeSaveOverwrite() {
+    if (!current_) {
+        showMessage("保存する画像がありません");
+        return;
+    }
+    // 貼り付け画像には上書き先のファイルが無いので、保存先を尋ねる方へ回す
+    if (clipboardImage_ || list_.empty()) {
+        executeSaveAs();
+        return;
+    }
+    const fs::path path = list_.current();
+    if (!encoder_.supports(path)) {
+        showMessage(std::format("{} は上書き保存に対応していない形式です"
+                                "(PNG / JPEG / BMP のみ)。名前を付けて保存を使ってください",
+                                pathToUtf8(path.extension())));
+        return;
+    }
+    if (confirmOverwrite_ &&
+        !host_.showConfirm(std::format("{} を上書き保存します。\n"
+                                       "元の画像は元に戻せません。よろしいですか?",
+                                       pathToUtf8(path.filename())))) {
+        return;
+    }
+    saveImageTo(path, true);
+}
+
+void App::executeSaveAs() {
+    if (!current_) {
+        showMessage("保存する画像がありません");
+        return;
+    }
+    const std::string defaultName = clipboardImage_ || list_.empty()
+                                        ? "クリップボード.png"
+                                        : pathToUtf8(list_.current().stem()) + ".png";
+    if (const auto path = host_.showSaveDialog(defaultName)) {
+        // 一覧の現在のファイルを選び直した場合も上書きなので同じ後始末をする
+        const bool isOverwrite =
+            !clipboardImage_ && !list_.empty() && samePath(*path, list_.current());
+        saveImageTo(*path, isOverwrite);
+    }
+}
+
+void App::saveImageTo(const fs::path& path, const bool isOverwrite) {
+    if (!encoder_.encode(*compositeImage(), path, encodeOptions_)) {
+        showMessage("保存に失敗しました: " + pathToUtf8(path));
+        return;
+    }
+    showMessage((isOverwrite ? "上書き保存しました: " : "保存しました: ") + pathToUtf8(path));
+    if (!isOverwrite) return;
+    // ディスクの内容が表示に一致したので、未保存マークを消してキャッシュを捨てる
+    // (捨てないと戻ってきたときに保存前のピクセルが出る)
+    cache_.invalidate(path);
+    if (edited_) {
+        edited_ = false;
+        updateTitle();
+    }
+}
+
 std::shared_ptr<DecodedImage> App::compositeImage() const {
-    if (!current_ || annotations_.empty()) return current_;
+    const int rotation = viewport_.rotationDegrees();
+    if (!current_ || (annotations_.empty() && rotation == 0)) return current_;
     auto out = std::make_shared<DecodedImage>(*current_);  // キャッシュ共有のためコピー
     for (const AnnotationSpec& spec : annotations_) {
         const AnnotationOverlay overlay = rasterizer_.rasterize(spec);
         if (overlay.image) blendOverlay(*out, *overlay.image, overlay.x, overlay.y);
     }
+    // 注釈は画像座標なので、焼き込んでから回す(画面で見えているとおりに出る)
+    bakeRotation(*out, rotation);
     return out;
 }
 

@@ -100,7 +100,7 @@ cmake --preset linux-release && cmake --build --preset linux-release
 - `@pre` … 事前条件(`ImageList::current()` の `!empty()` など)
 - `@note` … スレッド制約や呼び出し順の注意
 - `@todo` … 既知の未対応・制限。**憶測で書かず、実際に未実装な箇所だけに書く**
-  (現状: `DecoderStb` のEXIF回転、SDL版の注釈編集まわり)
+  (現状: SDL版の注釈編集まわり)
 
 書式の見本は `src/core/viewport.h` と `src/platform/renderer.h`。
 

@@ -1,15 +1,31 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 
 #include "platform/decoder.h"
 
 /**
  * @file exif.h
- * @brief EXIF Orientation を画像へ適用する純 C++ 実装。
+ * @brief EXIF Orientation の読み取りと画像への適用(純 C++ 実装)。
  */
 
 namespace blinker {
+
+/**
+ * @brief 画像ファイルのバイト列から EXIF Orientation を読む。
+ *
+ * JPEG の APP1 (Exif) セグメントと PNG の eXIf チャンクに対応する。
+ * WIC のようにメタデータを読めるデコーダを持たない SDL バックエンド
+ * (`DecoderStb`)のために自前で解析する。壊れたデータに対しては失敗させず
+ * 「回転なし」を返す(表示できる画像を回転のためだけに捨てないため)。
+ *
+ * @param[in] data ファイル先頭からのバイト列。nullptr なら 1 を返す。
+ * @param[in] size data の長さ(バイト)。ファイル全体でなくてもよいが、
+ *                 Exif セグメントが途中で切れていれば 1 を返す。
+ * @return Orientation 値 (1〜8)。見つからない・解析できない場合は 1(回転なし)。
+ */
+uint16_t readExifOrientation(const uint8_t* data, size_t size);
 
 /**
  * @brief EXIF Orientation に従って画像を回転・反転する(32bpp ピクセル用)。
