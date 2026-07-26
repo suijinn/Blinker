@@ -1277,17 +1277,17 @@ AnnotationSpec App::makeAnnotationSpec(AnnotationSpec::Kind kind) const {
     spec.fillAlpha = editFillAlpha_;
     spec.borderRGB = editBorderRGB_;
     spec.fontFamily = editFontFamily_;
-    // 線幅・文字サイズ・枠線幅は「画面上での見た目」基準で画像座標へ換算する
-    const float zoom = std::max(viewport_.zoom(), 0.001f);
-    spec.strokeWidth = std::max(1.0f, editStrokeWidth_ / zoom);
-    spec.fontSize = std::max(4.0f, editFontSize_ / zoom);
-    spec.borderWidth = editBorderWidth_ > 0 ? std::max(1.0f, editBorderWidth_ / zoom) : 0.0f;
+    // 線幅・文字サイズ・枠線幅は画像座標そのまま。表示倍率では変えない
+    // (同じ設定で描いたものが、描いたときのズームによらず同じ太さになるように)
+    spec.strokeWidth = editStrokeWidth_;
+    spec.fontSize = editFontSize_;
+    spec.borderWidth = editBorderWidth_;
     if (kind == AnnotationSpec::Kind::Pen) {
         // 軌跡そのものが図形。p1/p2 は選択領域ではなく点列の bbox に合わせる
         spec.points = penPoints_;
         updatePenBounds(spec);
         if (tool_ == EditTool::Marker) {
-            spec.strokeWidth = std::max(1.0f, editStrokeWidth_ * kMarkerWidthScale / zoom);
+            spec.strokeWidth = editStrokeWidth_ * kMarkerWidthScale;
             spec.strokeAlpha = kMarkerAlpha;
         }
     } else if (kind == AnnotationSpec::Kind::Number) {
@@ -1296,7 +1296,7 @@ AnnotationSpec App::makeAnnotationSpec(AnnotationSpec::Kind kind) const {
         spec.fillRGB = editColorRGB_;
         spec.fillAlpha = 255;
         // 小さすぎる円は数字が潰れるだけなので、始点側を固定して最小の大きさまで広げる
-        const float minSize = std::max(8.0f, editFontSize_ * 1.8f / zoom);
+        const float minSize = std::max(8.0f, editFontSize_ * 1.8f);
         if (std::abs(spec.p2.x - spec.p1.x) < minSize) {
             spec.p2.x = spec.p1.x + (spec.p2.x < spec.p1.x ? -minSize : minSize);
         }
