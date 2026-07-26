@@ -56,7 +56,8 @@
 | `EncoderStb` | `EncoderWic` | stb_image_write。PNG/JPEG/BMP |
 | `FileSystemPosix` | `FileSystemWin` | `std::filesystem` + core の `naturalCompare`(自然順) |
 | `ClipboardSdl` | `ClipboardWin` | テキストは SDL、画像は "image/png" MIME で PNG 受け渡し |
-| `AnnotationStub` | `AnnotationD2D` | **未実装**(ラスタライズ・テキスト計測とも)。ツールメニュー(コンテキストメニュー・色選択)やテキストのインプレース編集も未対応のため、SDL 版は閲覧専用 |
+| `AnnotationStub` | `OcrEngineWinrt` | Windows.Media.Ocr による文字認識(`IOcrEngine` 実装)。**WinRT を C++/WinRT ではなく ABI で直接呼び、`combase.dll` は `LoadLibrary` で遅延解決する**。`windowsapp.lib` を静的リンクすると exe のインポートが増え、OCR を使わない起動でも DLL が読まれるため。認識器の生成も最初の実行まで遅延する。上限を超える画像は WIC で縮小し、座標は元のスケールへ戻す。文字が小さいときは 1 回目の行高から拡大率を決めて読み直す 2 パス構成(判断は core の `ocrRetryUpscale`)|
+| `AnnotationD2D` | **未実装**(ラスタライズ・テキスト計測とも)。ツールメニュー(コンテキストメニュー・色選択)やテキストのインプレース編集も未対応のため、SDL 版は閲覧専用 |
 
 SDL 版の既知の制限: 注釈編集ができない(`WindowSdl` は編集役のボタン
 (`App::mouseRole` が `MouseRole::Edit` を返すほう)のイベントを App へ渡さない。
@@ -259,6 +260,8 @@ Text 注釈は PowerPoint のテキストボックスと同じく**画像上で�
 | `Viewport` | ズーム/パン/フィット/回転の座標変換(純粋計算、テスト容易) |
 | `ImageList` | フォルダ内画像の一覧・現在位置・先読み候補の順序付け |
 | `ImageCache` | ワーカースレッド1本で非同期デコード。LRU(既定: 8枚 or 512MB) |
+| `OcrService` | ワーカースレッド1本で非同期に文字認識(`ImageCache` と同じ形)。予約は最後の1件だけが走り、結果は generation 付きで返るので、画像を切り替えた後に届いた古い結果を App 側で捨てられる |
+| `ocr_text.h` | 認識結果の後処理。テキストの整形(`ocrResultToText`。行の連結と、CJK 文字に挟まれた空白の除去 — Windows の OCR は日本語でも語間に空白を入れて返す)と、拡大して読み直すかの判断(`ocrRetryUpscale`)。閾値は実測で決めてあり、根拠はヘッダのコメントに残してある。純粋関数で単体テスト対象 |
 | `Keymap` | KeyChord → Command。デフォルト表 + ini 上書き。逆引き (`chordsFor` / `chordToString`) も持ち、操作一覧の生成に使う |
 | `help.h` | 現在の `Keymap` から操作一覧の表示テキストを組み立てる(`buildHelpLines`)。固定テキストを持たないので README と drift しない(単体テスト対象) |
 | `TextEditBuffer` | インプレース編集中の文字列・キャレット・選択範囲・部分書式(`text_edit.h`。UTF-8 バイト位置の純粋ロジック、単体テスト対象)。文字列を変えるたびに書式範囲を追従させる |
@@ -269,15 +272,22 @@ Text 注釈は PowerPoint のテキストボックスと同じく**画像上で�
 | `exif.h` | EXIF Orientation の適用(`applyExifOrientation`、32bpp バッファの回転・反転。純粋関数で単体テスト対象)。**`IWICBitmapFlipRotator` は使わない**: コーデックへ直結すると 90/270 度回転で出力行ごとにソースを引き直し、iPhone の 12〜24MP 写真で事実上停止するため。デコード完了後の連続バッファ上で回せば画素数に比例した時間で済む |
 | `EncoderWic` | WIC で PNG/JPEG/BMP 保存 (Ctrl+S)。PNG は逆乗算してアルファ保持、JPEG/BMP は白背景に合成 |
 | `ClipboardWin` | クリップボード読み書き。書き込みは CF_DIBV5(アルファ)+ CF_DIB(白合成24bpp)の2形式。読み取り (Ctrl+V) は CF_DIBV5 優先で、DIB → PBGRA 変換は core の `imageFromDib`(純粋関数、単体テスト対象) |
+| `OcrEngineWinrt` | Windows.Media.Ocr による文字認識(`IOcrEngine` 実装)。**WinRT を C++/WinRT ではなく ABI で直接呼び、`combase.dll` は `LoadLibrary` で遅延解決する**。`windowsapp.lib` を静的リンクすると exe のインポートが増え、OCR を使わない起動でも DLL が読まれるため。認識器の生成も最初の実行まで遅延する。上限を超える画像は WIC で縮小し、座標は元のスケールへ戻す。文字が小さいときは 1 回目の行高から拡大率を決めて読み直す 2 パス構成(判断は core の `ocrRetryUpscale`)|
 | `AnnotationD2D` | 図形(矩形・楕円・矢印・直線・手書き・連番マーカー)とテキスト(複数行可)を D2D/DirectWrite で WIC ビットマップへ AA 描画し、PBGRA overlay として返す(`IAnnotationRasterizer` 実装)。描画コードはライブ表示と共通の `win/annotation_draw` を使い、`AnnotationSpec::angleDeg` によるバウンディングボックス中心周りの回転にも対応。テキスト注釈の実測サイズ取得(`App::measureTextExtent`)にも使われる。トリミング・合成は core の `edit.cpp`(`cropImage` / `blendOverlay`)、注釈のヒットテスト・回転幾何は core の `annotation_edit.cpp`(いずれも純粋関数、単体テスト対象) |
 
 ## スレッドモデル
 
 - **UI スレッド**: メッセージループ、描画、App の全状態。App はスレッド安全ではない
 - **デコードワーカー (ImageCache 内の1本)**: `IImageDecoder::decode` の実行のみ
-- 境界は 2 箇所だけ:
   - UI → ワーカー: `ImageCache::requestNow / setPrefetch`(ミューテックス保護のキュー)
   - ワーカー → UI: `onDecoded` コールバック → `PostMessage(kMsgImageDecoded)` → `App::onDecodeCompleted`
+- **OCR ワーカー (OcrService 内の1本)**: `IOcrEngine::recognize` の実行のみ。同じ形をなぞる
+  - UI → ワーカー: `OcrService::request`(ミューテックス保護の1件だけの枠)
+  - ワーカー → UI: `onCompleted` コールバック → `PostMessage(kMsgOcrCompleted)` → `App::onOcrCompleted`
+  - このスレッドは WinRT の MTA として初期化される。`OcrEngineWinrt` は非同期完了を
+    ブロックして待つため、STA のスレッド(UI スレッド)から呼ぶとデッドロックする。
+    そうなる前に失敗を返すようにしてあるが、呼ぶ側がこの経路を守ること
+- 上記以外にワーカーは無く、境界はどちらも「キュー投入」と「完了を PostMessage」の2箇所だけ
 
 ## 起動シーケンス(高速化の要)
 

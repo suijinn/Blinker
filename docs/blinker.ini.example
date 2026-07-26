@@ -43,8 +43,9 @@ swap_buttons = false
 # 以下は新規作成時の初期値で、同じメニュー(線の太さ・文字サイズ・色の変更)から
 # その場で変更できる。追加済みオブジェクトは左クリック(swap_buttons によらず左)で
 # 選択して移動・回転・右クリックメニューで個別に変更できる
-# 起動時のツール: crop / rect / ellipse / arrow / line / pen / marker / number / text
-# (pen = 手書き、marker = 半透明の太い手書き、number = 連番の数字入りマーカー)
+# 起動時のツール: crop / ocr / rect / ellipse / arrow / line / pen / marker / number / text
+# (pen = 手書き、marker = 半透明の太い手書き、number = 連番の数字入りマーカー、
+#  ocr = 選んだ範囲の文字を認識してコピー。画像は変えない)
 tool = rect
 # 図形・テキストの色 (RRGGBB)
 color = FF3B30
@@ -74,9 +75,10 @@ border_width = 0
 # 使えるコマンド:
 #   next prev first last zoom_in zoom_out fit actual_size
 #   pan_left pan_right pan_up pan_down rotate_cw rotate_ccw
-#   fullscreen open copy_image copy_path copy_file paste save_as undo redo delete_annotation
+#   fullscreen open copy_image copy_path copy_file copy_ocr_text paste save_as
+#   undo redo delete_annotation
 #   sidebar statusbar help escape quit
-#   tool_crop tool_rect tool_ellipse tool_arrow tool_line tool_pen tool_marker
+#   tool_crop tool_ocr tool_rect tool_ellipse tool_arrow tool_line tool_pen tool_marker
 #   tool_number tool_text
 #     (右ドラッグで実行するツールの切り替え。既定のキーは割り当てていない)
 #
@@ -90,3 +92,14 @@ border_width = 0
 #tool_arrow = A
 #tool_pen = P
 #tool_text = T
+
+[ocr]
+# 文字認識 (Ctrl+T、または ocr ツールで範囲を選ぶ) に使う言語 (BCP-47)。
+# 空ならユーザーの表示言語から自動で選び、その認識器が無ければ入っている
+# 言語のどれかで動く。例: ja / en-US / zh-Hans
+#
+# Windows 内蔵の文字認識を使うため追加のインストールは不要だが、言語ごとの
+# 認識器が入っている必要がある(設定 → 時刻と言語 → 言語と地域 で、言語の
+# 「オプション」から追加できる)。入っていない場合は、使える言語の一覧が
+# ステータスバーに出る。SDL 版 (Linux/macOS) は未対応
+#language = ja

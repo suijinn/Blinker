@@ -10,6 +10,7 @@
 #include "core/app.h"
 #include "core/config.h"
 #include "core/image_cache.h"
+#include "core/ocr_service.h"
 #include "core/str_util.h"
 #include "core/unicode.h"
 #include "sdl/annotation_stub.h"
@@ -18,6 +19,7 @@
 #include "sdl/encoder_stb.h"
 #include "sdl/file_system_posix.h"
 #include "sdl/font_stb.h"
+#include "sdl/ocr_stub.h"
 #include "sdl/window_sdl.h"
 
 namespace {
@@ -73,14 +75,18 @@ int main(int argc, char** argv) {
         ClipboardSdl clipboard;
         EncoderStb encoder;
         AnnotationStub annotationRasterizer;
+        // 文字認識は未対応(OcrStub が理由を返す)。経路だけは win 版と同型にしておく
+        OcrStub ocrEngine;
+        OcrService ocrService(ocrEngine);
 
-        App app(window, fileSystem, cache, clipboard, encoder, annotationRasterizer);
+        App app(window, fileSystem, cache, clipboard, encoder, annotationRasterizer, ocrService);
         app.setDarkTheme(resolveDarkTheme(config));
         app.applyConfig(config);
         window.attachApp(&app);
 
         cache.setOnDecoded(
             [&window](const std::filesystem::path&) { window.postDecodedEvent(); });
+        ocrService.setOnCompleted([&window] { window.postOcrCompletedEvent(); });
 
         // POSIX の argv はバイト列。ロケールは UTF-8 前提(現代の Linux/macOS 標準)
         if (argc >= 2 && argv[1] && argv[1][0] != '\0') {

@@ -2,6 +2,7 @@
 // 実行: build/<preset>/tests/core_tests.exe (ctest からも起動される)
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <condition_variable>
@@ -22,6 +23,8 @@
 #include "core/image_cache.h"
 #include "core/image_list.h"
 #include "core/keymap.h"
+#include "core/ocr_service.h"
+#include "core/ocr_text.h"
 #include "core/pixel_convert.h"
 #include "core/str_util.h"
 #include "core/text_edit.h"
@@ -301,6 +304,7 @@ void testHelpLines() {
     stripped.unbindCommand(Command::CopyImage);
     stripped.unbindCommand(Command::CopyPath);
     stripped.unbindCommand(Command::CopyFile);
+    stripped.unbindCommand(Command::CopyOcrText);
     stripped.unbindCommand(Command::PasteImage);
     const std::vector<HelpLine> strippedLines = buildHelpLines(stripped, false);
     CHECK(std::none_of(strippedLines.begin(), strippedLines.end(),
@@ -807,12 +811,12 @@ const MenuItem* findMenuItem(const std::vector<MenuItem>& items, std::string_vie
 }
 
 // 注釈のない場所での右クリック(ドラッグなし)= ツール切り替えメニュー。
-// leafIndex はメニューの末端項目: 0 トリミング, 1 矩形, 2 楕円, 3 矢印, 4 直線,
-// 5 ペン, 6 マーカー, 7 連番マーカー, 8 テキスト,
-// 9-15 太さ {1,2,3,5,8,12,20}, 16-22 文字サイズ {12,14,18,24,36,48,72},
-// 23-31 フォント(候補9種。FakeAnnotationRasterizer は全て入っていることにする), 32 色,
-// 33-37 塗りつぶし {0,64,128,191,255}, 38 塗りつぶしの色,
-// 39-44 テキストの枠線 {0,1,2,3,5,8}, 45 枠線の色
+// leafIndex はメニューの末端項目: 0 トリミング, 1 文字認識, 2 矩形, 3 楕円, 4 矢印,
+// 5 直線, 6 ペン, 7 マーカー, 8 連番マーカー, 9 テキスト,
+// 10-16 太さ {1,2,3,5,8,12,20}, 17-23 文字サイズ {12,14,18,24,36,48,72},
+// 24-32 フォント(候補9種。FakeAnnotationRasterizer は全て入っていることにする), 33 色,
+// 34-38 塗りつぶし {0,64,128,191,255}, 39 塗りつぶしの色,
+// 40-45 テキストの枠線 {0,1,2,3,5,8}, 46 枠線の色
 constexpr Point kEmptySpot{600, 450};  // 画像・注釈の外(ツールメニューが開く位置)
 
 // ツールメニューで末端項目を順に選ぶ。設定系(太さ・色など)を選ぶとメニューは
@@ -881,6 +885,37 @@ public:
 };
 
 // 指定サイズの不透明単色 overlay を返すテスト用ラスタライザ
+// 決まった行を返す OCR エンジン。App から見た振る舞い(整形・クリップボード投入・
+// 世代の食い違い)を検証するために使う
+class FakeOcrEngine final : public IOcrEngine {
+public:
+    bool recognize(const DecodedImage& image, OcrResult* result, std::string* error) override {
+        ++recognizeCount;
+        lastWidth = image.width;
+        lastHeight = image.height;
+        lastFirstPixel = image.pixels.size() >= 4
+                             ? std::array<uint8_t, 4>{image.pixels[0], image.pixels[1],
+                                                      image.pixels[2], image.pixels[3]}
+                             : std::array<uint8_t, 4>{};
+        if (!ok) {
+            if (error) *error = failureReason;
+            return false;
+        }
+        result->lines = lines;
+        result->language = language;
+        return true;
+    }
+
+    bool ok = true;
+    std::string failureReason = "テストの失敗理由";
+    std::vector<OcrLine> lines;
+    std::string language = "ja";
+    int recognizeCount = 0;
+    uint32_t lastWidth = 0;
+    uint32_t lastHeight = 0;
+    std::array<uint8_t, 4> lastFirstPixel{};
+};
+
 class FakeAnnotationRasterizer final : public IAnnotationRasterizer {
 public:
     AnnotationOverlay rasterize(const AnnotationSpec& spec) override {
@@ -949,7 +984,9 @@ void testAppClipboard() {
     FakeClipboard clipboard;
     FakeEncoder encoder;
     FakeAnnotationRasterizer rasterizer;
-    App app(host, fileSystem, cache, clipboard, encoder, rasterizer);
+    FakeOcrEngine ocrEngine;
+    OcrService ocrService(ocrEngine);
+    App app(host, fileSystem, cache, clipboard, encoder, rasterizer, ocrService);
 
     // 画像を開いていない状態では何もコピーされない
     app.execute(Command::CopyImage);
@@ -1006,6 +1043,8 @@ void testAppSlowDecode() {
     FakeClipboard clipboard;
     FakeEncoder encoder;
     FakeAnnotationRasterizer rasterizer;
+    FakeOcrEngine ocrEngine;
+    OcrService ocrService(ocrEngine);
 
     std::mutex mutex;
     std::condition_variable cv;
@@ -1016,7 +1055,7 @@ void testAppSlowDecode() {
         cv.notify_all();
     });
 
-    App app(host, fileSystem, cache, clipboard, encoder, rasterizer);
+    App app(host, fileSystem, cache, clipboard, encoder, rasterizer, ocrService);
     app.onResize(800, 600);
     const std::filesystem::path path = "C:/pics/huge.jpeg";
     fileSystem.files = {path};
@@ -1044,7 +1083,9 @@ void testAppStatusBar() {
     FakeClipboard clipboard;
     FakeEncoder encoder;
     FakeAnnotationRasterizer rasterizer;
-    App app(host, fileSystem, cache, clipboard, encoder, rasterizer);
+    FakeOcrEngine ocrEngine;
+    OcrService ocrService(ocrEngine);
+    App app(host, fileSystem, cache, clipboard, encoder, rasterizer, ocrService);
     app.onResize(800, 600);
 
     // 画像なし: バーは表示されるが左右とも空
@@ -1132,7 +1173,9 @@ void testAppPasteSave() {
     FakeClipboard clipboard;
     FakeEncoder encoder;
     FakeAnnotationRasterizer rasterizer;
-    App app(host, fileSystem, cache, clipboard, encoder, rasterizer);
+    FakeOcrEngine ocrEngine;
+    OcrService ocrService(ocrEngine);
+    App app(host, fileSystem, cache, clipboard, encoder, rasterizer, ocrService);
     app.onResize(800, 600);
 
     // 画像なしでの保存: ダイアログは開かずメッセージ
@@ -1232,7 +1275,9 @@ void testAppSidebar() {
     FakeClipboard clipboard;
     FakeEncoder encoder;
     FakeAnnotationRasterizer rasterizer;
-    App app(host, fileSystem, cache, clipboard, encoder, rasterizer);
+    FakeOcrEngine ocrEngine;
+    OcrService ocrService(ocrEngine);
+    App app(host, fileSystem, cache, clipboard, encoder, rasterizer, ocrService);
     app.onResize(800, 600);
 
     // 既定では非表示
@@ -1349,7 +1394,9 @@ void testAppSidebarResize() {
     FakeClipboard clipboard;
     FakeEncoder encoder;
     FakeAnnotationRasterizer rasterizer;
-    App app(host, fileSystem, cache, clipboard, encoder, rasterizer);
+    FakeOcrEngine ocrEngine;
+    OcrService ocrService(ocrEngine);
+    App app(host, fileSystem, cache, clipboard, encoder, rasterizer, ocrService);
     app.onResize(800, 600);
     std::mutex mutex;
     std::condition_variable cv;
@@ -1432,7 +1479,9 @@ void testAppHelpSidebar() {
     FakeClipboard clipboard;
     FakeEncoder encoder;
     FakeAnnotationRasterizer rasterizer;
-    App app(host, fileSystem, cache, clipboard, encoder, rasterizer);
+    FakeOcrEngine ocrEngine;
+    OcrService ocrService(ocrEngine);
+    App app(host, fileSystem, cache, clipboard, encoder, rasterizer, ocrService);
     app.onResize(800, 600);
     for (int i = 1; i <= 30; ++i) {
         fileSystem.files.push_back(std::format("C:/pics/f{:02}.png", i));
@@ -1515,14 +1564,14 @@ void testAppHelpSidebar() {
     CHECK(sb.items[1].text == "次の画像  N");
 
     // 起動時の案内はステータスバーに出る(未割り当てキーの案内に次ぐ2つ目の導線)
-    App fresh(host, fileSystem, cache, clipboard, encoder, rasterizer);
+    App fresh(host, fileSystem, cache, clipboard, encoder, rasterizer, ocrService);
     fresh.onResize(800, 600);
     fresh.showStartupHint();
     CHECK(fresh.statusBar().leftText == "F1 で操作一覧");
     CHECK(host.lastTimerMs > 0);  // 一定時間で消える
 
     // ini で無効にできる
-    App quiet(host, fileSystem, cache, clipboard, encoder, rasterizer);
+    App quiet(host, fileSystem, cache, clipboard, encoder, rasterizer, ocrService);
     quiet.onResize(800, 600);
     quiet.applyConfig(Config::parse("[view]\nhelp_hint = false\n"));
     quiet.showStartupHint();
@@ -1540,7 +1589,9 @@ void testAppHelpHint() {
     FakeClipboard clipboard;
     FakeEncoder encoder;
     FakeAnnotationRasterizer rasterizer;
-    App app(host, fileSystem, cache, clipboard, encoder, rasterizer);
+    FakeOcrEngine ocrEngine;
+    OcrService ocrService(ocrEngine);
+    App app(host, fileSystem, cache, clipboard, encoder, rasterizer, ocrService);
     app.onResize(800, 600);
 
     // 何も割り当てられていないキー → 消費はしないが案内を出す
@@ -1568,7 +1619,7 @@ void testAppHelpHint() {
     CHECK(app.statusBar().leftText == "F1 で操作一覧");
 
     // ini でキーを変えれば案内の文面も変わる
-    App rebound(host, fileSystem, cache, clipboard, encoder, rasterizer);
+    App rebound(host, fileSystem, cache, clipboard, encoder, rasterizer, ocrService);
     rebound.onResize(800, 600);
     rebound.applyConfig(Config::parse("[keys]\nhelp = H\n"));
     CHECK(!rebound.onKey({KeyCode{'J'}}));
@@ -1577,7 +1628,7 @@ void testAppHelpHint() {
     CHECK(rebound.sidebarMode() == SidebarMode::Help);
 
     // ヘルプ自体を無効化(未割り当て)にしたら、案内する先がないので黙る
-    App unbound(host, fileSystem, cache, clipboard, encoder, rasterizer);
+    App unbound(host, fileSystem, cache, clipboard, encoder, rasterizer, ocrService);
     unbound.onResize(800, 600);
     unbound.applyConfig(Config::parse("[keys]\nhelp =\n"));
     CHECK(!unbound.onKey({KeyCode::F1}));
@@ -1885,7 +1936,9 @@ void testAppAnnotationObjects() {
     FakeClipboard clipboard;
     FakeEncoder encoder;
     FakeAnnotationRasterizer rasterizer;
-    App app(host, fileSystem, cache, clipboard, encoder, rasterizer);
+    FakeOcrEngine ocrEngine;
+    OcrService ocrService(ocrEngine);
+    App app(host, fileSystem, cache, clipboard, encoder, rasterizer, ocrService);
     app.onResize(800, 600);
 
     // 8x8 画像を貼り付け、矩形注釈 (0,0)-(4,4) を追加(画像左上はスクリーン (396,283))
@@ -1981,7 +2034,7 @@ void testAppAnnotationObjects() {
     CHECK(app.annotations().specs->front().colorRGB == 0x123456);
 
     // テキスト注釈はその場で入力して追加し、ダブルクリックで再編集する
-    chooseInToolMenu(app, host, {8});  // テキスト
+    chooseInToolMenu(app, host, {9});  // テキスト
     CHECK(app.currentTool() == EditTool::Text);
     rasterizer.overlayWidth = 24;
     rasterizer.overlayHeight = 44;  // 実測境界 20x40(リサイズテストでハンドルを離すため縦長)
@@ -2061,7 +2114,9 @@ void testAppEdit() {
     FakeClipboard clipboard;
     FakeEncoder encoder;
     FakeAnnotationRasterizer rasterizer;
-    App app(host, fileSystem, cache, clipboard, encoder, rasterizer);
+    FakeOcrEngine ocrEngine;
+    OcrService ocrService(ocrEngine);
+    App app(host, fileSystem, cache, clipboard, encoder, rasterizer, ocrService);
     app.onResize(800, 600);
 
     // 画像がないときは選択を開始しない
@@ -2188,13 +2243,13 @@ void testAppEdit() {
     CHECK(app.annotations().specs->empty());
 
     // 閾値未満の右ドラッグ(ただの右クリック)はツール切り替えメニューを開く。
-    // 末端項目: ツール9種 + 太さ7 + 文字サイズ7 + フォント9 + 色1 + 塗りつぶし(5+色1)
-    // + 枠線(6+色1) = 46(回転角度はオブジェクト側にある)
+    // 末端項目: ツール10種 + 太さ7 + 文字サイズ7 + フォント9 + 色1 + 塗りつぶし(5+色1)
+    // + 枠線(6+色1) = 47(回転角度はオブジェクト側にある)
     host.menuChoice = std::nullopt;  // キャンセルするので何も起きない
     app.onMouseDown(MouseButton::Right, {400, 300});
     app.onMouseUp(MouseButton::Right, {402, 301});
     CHECK(host.menuCount == 1);
-    CHECK(countMenuLeaves(host.lastMenuItems) == 46);
+    CHECK(countMenuLeaves(host.lastMenuItems) == 47);
     CHECK(app.currentTool() == EditTool::Rect);
     CHECK(app.annotations().specs->empty());
     CHECK(app.currentImage()->width == 8);
@@ -2262,7 +2317,7 @@ void testAppEdit() {
     CHECK(source->pixels[(1 * 8 + 1) * 4 + 2] == 0);
 
     // テキスト: 空のまま確定すると追加されない。入力があれば実測して追加される
-    chooseInToolMenu(app, host, {8});
+    chooseInToolMenu(app, host, {9});
     app.onMouseDown(MouseButton::Right, {396, 283});
     app.onMouseUp(MouseButton::Right, {400, 287});
     CHECK(app.isTextEditing());
@@ -2290,14 +2345,14 @@ void testAppEdit() {
     // 設定変更を選ぶとメニューが再表示され、続けてツールを選べる。
     // 末端 index: 0-5 ツール, 6-12 太さ {1,2,3,5,8,12,20}, 13-19 文字サイズ
     // {12,14,18,24,36,48,72}, 20-27 フォント, 28 色
-    chooseInToolMenu(app, host, {13 /*太さ8px*/, 1 /*矩形*/});
+    chooseInToolMenu(app, host, {14 /*太さ8px*/, 2 /*矩形*/});
     CHECK(host.menuQueue.empty());
     app.onMouseDown(MouseButton::Right, {396, 283});
     app.onMouseUp(MouseButton::Right, {400, 287});
     CHECK(nearly(app.annotations().specs->back().strokeWidth, 8));
 
     // 文字サイズ 24px + 複数行テキスト。変更済みの設定も引き継がれる
-    chooseInToolMenu(app, host, {19 /*文字24px*/, 8 /*テキスト*/});
+    chooseInToolMenu(app, host, {20 /*文字24px*/, 9 /*テキスト*/});
     app.onMouseDown(MouseButton::Right, {396, 283});
     app.onMouseUp(MouseButton::Right, {400, 287});
     app.insertText("1行目");
@@ -2309,14 +2364,14 @@ void testAppEdit() {
 
     // 色の変更: ダイアログの結果が以降の編集に使われる。キャンセルなら元のまま
     host.colorChoice = 0x00CC66;
-    chooseInToolMenu(app, host, {32 /*色*/, 4 /*直線*/});
+    chooseInToolMenu(app, host, {33 /*色*/, 5 /*直線*/});
     app.onMouseDown(MouseButton::Right, {396, 283});
     app.onMouseUp(MouseButton::Right, {400, 287});
     CHECK(host.colorPickerCount == 1);
     CHECK(host.lastColorPickerInitial == 0xFF3B30);
     CHECK(app.annotations().specs->back().colorRGB == 0x00CC66);
     host.colorChoice = std::nullopt;
-    chooseInToolMenu(app, host, {32 /*色 (キャンセル)*/, 4 /*直線*/});
+    chooseInToolMenu(app, host, {33 /*色 (キャンセル)*/, 5 /*直線*/});
     app.onMouseDown(MouseButton::Right, {396, 283});
     app.onMouseUp(MouseButton::Right, {400, 287});
     CHECK(host.colorPickerCount == 2);
@@ -2324,24 +2379,24 @@ void testAppEdit() {
 
     // 設定変更だけしてメニューを閉じる → 何も追加されず設定だけ残る
     const size_t annotationCountBefore = app.annotations().specs->size();
-    chooseInToolMenu(app, host, {11 /*太さ3px*/});  // ツールは選ばずに閉じる
+    chooseInToolMenu(app, host, {12 /*太さ3px*/});  // ツールは選ばずに閉じる
     CHECK(app.annotations().specs->size() == annotationCountBefore);
     CHECK(!app.selection().visible);
     CHECK(app.currentTool() == EditTool::Line);  // 直前のツールのまま
-    chooseInToolMenu(app, host, {1 /*矩形*/});
+    chooseInToolMenu(app, host, {2 /*矩形*/});
     app.onMouseDown(MouseButton::Right, {396, 283});
     app.onMouseUp(MouseButton::Right, {400, 287});
     CHECK(nearly(app.annotations().specs->back().strokeWidth, 3));  // 3px に戻っている
 
     // 塗りつぶし: 末端 index 33-37 が不透明度 {0,64,128,191,255}、38 が塗りつぶしの色。
     // 色を選ぶと塗りなしのままにならないよう不透明で塗り始める
-    chooseInToolMenu(app, host, {35 /*不透明度 128*/, 1 /*矩形*/});
+    chooseInToolMenu(app, host, {36 /*不透明度 128*/, 2 /*矩形*/});
     app.onMouseDown(MouseButton::Right, {396, 283});
     app.onMouseUp(MouseButton::Right, {400, 287});
     CHECK(app.annotations().specs->back().fillAlpha == 128);
     CHECK(app.annotations().specs->back().fillRGB == 0xFFFFFF);  // 既定は白
     host.colorChoice = 0x3366FF;
-    chooseInToolMenu(app, host, {33 /*塗りなしへ戻す*/, 38 /*塗りつぶしの色*/, 2 /*楕円*/});
+    chooseInToolMenu(app, host, {34 /*塗りなしへ戻す*/, 39 /*塗りつぶしの色*/, 3 /*楕円*/});
     app.onMouseDown(MouseButton::Right, {396, 283});
     app.onMouseUp(MouseButton::Right, {400, 287});
     {
@@ -2365,7 +2420,7 @@ void testAppEdit() {
 
     // テキストの枠線: 末端 index 39-44 が太さ {0,1,2,3,5,8}、45 が枠線の色。
     // 枠線ぶん余白が広がるので実測境界も縮む (24x12 の overlay - 余白 (2+太さ/2)*2)
-    chooseInToolMenu(app, host, {41 /*枠線 2px*/, 8 /*テキスト*/});
+    chooseInToolMenu(app, host, {42 /*枠線 2px*/, 9 /*テキスト*/});
     rasterizer.overlayWidth = 24;
     rasterizer.overlayHeight = 12;
     app.onMouseDown(MouseButton::Right, {396, 283});
@@ -2377,11 +2432,11 @@ void testAppEdit() {
         CHECK(nearly(spec.borderWidth, 2));
         CHECK(nearly(spec.p2.x - spec.p1.x, 18) && nearly(spec.p2.y - spec.p1.y, 6));
     }
-    chooseInToolMenu(app, host, {39 /*枠線なしへ戻す*/});
+    chooseInToolMenu(app, host, {40 /*枠線なしへ戻す*/});
 
     // 確定時の実測(ラスタライズ)失敗はメッセージを出す。入力済みの内容は残す
     rasterizer.ok = false;
-    chooseInToolMenu(app, host, {8 /*テキスト*/});
+    chooseInToolMenu(app, host, {9 /*テキスト*/});
     const size_t countBeforeFail = app.annotations().specs->size();
     app.onMouseDown(MouseButton::Right, {396, 283});
     app.onMouseUp(MouseButton::Right, {400, 287});
@@ -2733,7 +2788,9 @@ void testAppTextEditing() {
     FakeClipboard clipboard;
     FakeEncoder encoder;
     FakeAnnotationRasterizer rasterizer;
-    App app(host, fs, cache, clipboard, encoder, rasterizer);
+    FakeOcrEngine ocrEngine;
+    OcrService ocrService(ocrEngine);
+    App app(host, fs, cache, clipboard, encoder, rasterizer, ocrService);
 
     app.onResize(800, 600);
     // 100x100 の画像を貼り付け、等倍表示にしてスクリーン座標を素直にする
@@ -2751,7 +2808,7 @@ void testAppTextEditing() {
     const auto screenOf = [&toScreen](float x, float y) { return toScreen.apply({x, y}); };
 
     // テキストボックスを作って入力する
-    chooseInToolMenu(app, host, {8});  // テキストツールへ切り替える
+    chooseInToolMenu(app, host, {9});  // テキストツールへ切り替える
     app.onMouseDown(MouseButton::Right, screenOf(10, 10));
     app.onMouseUp(MouseButton::Right, screenOf(50, 30));
     CHECK(app.isTextEditing());
@@ -2909,7 +2966,9 @@ void testAppTextStyles() {
     FakeClipboard clipboard;
     FakeEncoder encoder;
     FakeAnnotationRasterizer rasterizer;
-    App app(host, fs, cache, clipboard, encoder, rasterizer);
+    FakeOcrEngine ocrEngine;
+    OcrService ocrService(ocrEngine);
+    App app(host, fs, cache, clipboard, encoder, rasterizer, ocrService);
 
     app.onResize(800, 600);
     auto source = std::make_shared<DecodedImage>();
@@ -2927,7 +2986,7 @@ void testAppTextStyles() {
         return KeyChord{static_cast<KeyCode>(c), true, false, false};
     };
 
-    chooseInToolMenu(app, host, {8});  // テキストツールへ切り替える
+    chooseInToolMenu(app, host, {9});  // テキストツールへ切り替える
     app.onMouseDown(MouseButton::Right, screenOf(10, 10));
     app.onMouseUp(MouseButton::Right, screenOf(50, 30));
     app.insertText("abcdef");
@@ -3075,7 +3134,9 @@ void testAppFontFamily() {
     FakeClipboard clipboard;
     FakeEncoder encoder;
     FakeAnnotationRasterizer rasterizer;
-    App app(host, fs, cache, clipboard, encoder, rasterizer);
+    FakeOcrEngine ocrEngine;
+    OcrService ocrService(ocrEngine);
+    App app(host, fs, cache, clipboard, encoder, rasterizer, ocrService);
 
     app.onResize(800, 600);
     auto source = std::make_shared<DecodedImage>();
@@ -3102,13 +3163,13 @@ void testAppFontFamily() {
     CHECK(rasterizer.hasFontFamilyCount == 0);
 
     // 既定のフォントは新規テキストへそのまま載る
-    chooseInToolMenu(app, host, {8 /*テキスト*/});
+    chooseInToolMenu(app, host, {9 /*テキスト*/});
     CHECK(rasterizer.hasFontFamilyCount > 0);
     addText("あ");
     CHECK(app.annotations().specs->back().fontFamily == kDefaultFontFamily);
 
     // ツールメニューのフォント(末端 index 23-31)から選ぶと以降の新規テキストへ効く
-    chooseInToolMenu(app, host, {26 /*メイリオ*/});
+    chooseInToolMenu(app, host, {27 /*メイリオ*/});
     addText("い");
     CHECK(app.annotations().specs->back().fontFamily == "Meiryo");
     CHECK(app.annotations().specs->front().fontFamily == kDefaultFontFamily);  // 既存は不変
@@ -3157,7 +3218,9 @@ void testAppPenTools() {
     FakeClipboard clipboard;
     FakeEncoder encoder;
     FakeAnnotationRasterizer rasterizer;
-    App app(host, fileSystem, cache, clipboard, encoder, rasterizer);
+    FakeOcrEngine ocrEngine;
+    OcrService ocrService(ocrEngine);
+    App app(host, fileSystem, cache, clipboard, encoder, rasterizer, ocrService);
     app.onResize(800, 600);
 
     auto source = std::make_shared<DecodedImage>();
@@ -3289,7 +3352,9 @@ void testAnnotationSizeIsImageBased() {
     FakeClipboard clipboard;
     FakeEncoder encoder;
     FakeAnnotationRasterizer rasterizer;
-    App app(host, fileSystem, cache, clipboard, encoder, rasterizer);
+    FakeOcrEngine ocrEngine;
+    OcrService ocrService(ocrEngine);
+    App app(host, fileSystem, cache, clipboard, encoder, rasterizer, ocrService);
     app.onResize(800, 600);
 
     // 画面中央付近で描いても縁に当たらないよう、余裕のある大きさにする
@@ -3351,7 +3416,9 @@ void testAppSwapMouseButtons() {
     FakeClipboard clipboard;
     FakeEncoder encoder;
     FakeAnnotationRasterizer rasterizer;
-    App app(host, fileSystem, cache, clipboard, encoder, rasterizer);
+    FakeOcrEngine ocrEngine;
+    OcrService ocrService(ocrEngine);
+    App app(host, fileSystem, cache, clipboard, encoder, rasterizer, ocrService);
     app.onResize(800, 600);
 
     // 既定では左がパン・右が編集
@@ -3464,6 +3531,291 @@ void testNaturalCompare() {
     CHECK(naturalCompare("あ", "い") < 0);
 }
 
+void testOcrText() {
+    // 両隣が CJK の空白だけを落とす。和欧の境目や欧文どうしの語間は残す
+    CHECK(removeSpacesBetweenCjk("これ は 文字 認識 です") == "これは文字認識です");
+    CHECK(removeSpacesBetweenCjk("ABC あいう") == "ABC あいう");
+    CHECK(removeSpacesBetweenCjk("あいう ABC") == "あいう ABC");
+    CHECK(removeSpacesBetweenCjk("hello world") == "hello world");
+    CHECK(removeSpacesBetweenCjk("漢字   漢字") == "漢字漢字");  // 連続する空白もまとめて
+    CHECK(removeSpacesBetweenCjk("あ\tい") == "あい");           // タブも同じ扱い
+    CHECK(removeSpacesBetweenCjk(" あ ") == " あ ");             // 片側しか無い空白は残す
+    CHECK(removeSpacesBetweenCjk("") == "");
+    CHECK(removeSpacesBetweenCjk("ハングル 한글 です") == "ハングル한글です");
+
+    // 改行はまたがない(行の連結は ocrResultToText が先に済ませる)
+    CHECK(removeSpacesBetweenCjk("あ\n い") == "あ\n い");
+
+    OcrResult result;
+    result.lines.push_back({"  こんにちは 世界  ", {}});
+    result.lines.push_back({"   ", {}});  // 空白だけの行は落ちる
+    result.lines.push_back({"second line", {}});
+    CHECK(ocrResultToText(result) == "こんにちは世界\nsecond line");
+
+    CHECK(ocrResultToText(OcrResult{}).empty());
+}
+
+void testOcrRetryUpscale() {
+    constexpr double kNoLimit = 1e9;
+    const auto same = [](double a, double b) { return std::abs(a - b) < 1e-9; };
+
+    // 行が無い / 既に十分大きいときは読み直さない
+    CHECK(same(ocrRetryUpscale(0, kNoLimit), 1.0));
+    CHECK(same(ocrRetryUpscale(-5, kNoLimit), 1.0));
+    CHECK(same(ocrRetryUpscale(20, kNoLimit), 1.0));
+    CHECK(same(ocrRetryUpscale(100, kNoLimit), 1.0));
+
+    // 小さい行は目標 30px になる倍率で読み直す
+    CHECK(same(ocrRetryUpscale(10, kNoLimit), 3.0));
+    CHECK(same(ocrRetryUpscale(15, kNoLimit), 2.0));
+
+    // 伸びしろが小さい(1.3 倍未満)なら 1 回分の時間に見合わないので読み直さない
+    CHECK(ocrRetryUpscale(19, kNoLimit) > 1.0);   // 30/19 = 1.58 なので読み直す
+    CHECK(same(ocrRetryUpscale(10, 1.2), 1.0));   // 上限に阻まれて 1.3 倍に届かない
+
+    // 拡大しすぎは精度が落ちるので 4 倍で頭打ち
+    CHECK(same(ocrRetryUpscale(1, kNoLimit), 4.0));
+    CHECK(same(ocrRetryUpscale(2, kNoLimit), 4.0));
+
+    // 認識器のサイズ上限は目標より優先される
+    CHECK(same(ocrRetryUpscale(10, 2.0), 2.0));
+    CHECK(same(ocrRetryUpscale(10, 5.0), 3.0));  // 上限が緩ければ目標どおり
+}
+
+void testFlattenOnBackground() {
+    // 半透明を含まない画像はそのまま(検出だけで判断できる)
+    DecodedImage opaque;
+    opaque.width = 1;
+    opaque.height = 1;
+    opaque.pixels = {10, 20, 30, 255};
+    CHECK(!hasTransparency(opaque));
+
+    DecodedImage src;
+    src.width = 3;
+    src.height = 1;
+    // 完全透明・半透明(事前乗算で 50%)・不透明
+    src.pixels = {0, 0, 0, 0, 64, 64, 64, 128, 1, 2, 3, 255};
+    CHECK(hasTransparency(src));
+
+    const auto white = flattenOnBackground(src, 0xFFFFFF);
+    CHECK(white != nullptr);
+    CHECK(white->width == 3 && white->height == 1);
+    // 完全透明は背景色そのもの
+    CHECK(white->pixels[0] == 255 && white->pixels[1] == 255 && white->pixels[2] == 255);
+    CHECK(white->pixels[3] == 255);
+    // 半透明は 64 + 255 * (127/255) = 191
+    CHECK(white->pixels[4] == 191 && white->pixels[7] == 255);
+    // 不透明は元のまま
+    CHECK(white->pixels[8] == 1 && white->pixels[9] == 2 && white->pixels[10] == 3);
+    CHECK(white->pixels[11] == 255);
+    // 元の画像は壊さない
+    CHECK(src.pixels[3] == 0);
+
+    // 黒背景なら透明部分は黒(= 焼き込まないときと同じ)になる
+    const auto black = flattenOnBackground(src, 0x000000);
+    CHECK(black != nullptr);
+    CHECK(black->pixels[0] == 0 && black->pixels[3] == 255);
+
+    CHECK(flattenOnBackground(DecodedImage{}, 0xFFFFFF) == nullptr);
+}
+
+void testOcrService() {
+    FakeOcrEngine engine;
+    engine.lines.push_back({"認識 した 行", {1, 2, 3, 4}});
+    OcrService service(engine);
+
+    std::mutex mutex;
+    std::condition_variable cv;
+    int completions = 0;
+    service.setOnCompleted([&] {
+        std::lock_guard lock(mutex);
+        ++completions;
+        cv.notify_all();
+    });
+    const auto waitForCompletion = [&](int count) {
+        std::unique_lock lock(mutex);
+        return cv.wait_for(lock, std::chrono::seconds(5), [&] { return completions >= count; });
+    };
+
+    // 結果を取り出す前は空
+    CHECK(!service.takeResult().has_value());
+
+    auto image = std::make_shared<DecodedImage>();
+    image->width = 2;
+    image->height = 1;
+    image->pixels.assign(8, 255);
+    const uint64_t generation = service.request(image);
+    CHECK(generation != 0);
+    CHECK(waitForCompletion(1));
+
+    const auto done = service.takeResult();
+    CHECK(done.has_value());
+    CHECK(done->generation == generation);
+    CHECK(done->ok);
+    CHECK(done->result.lines.size() == 1);
+    CHECK(done->result.lines[0].bounds.w == 3);
+    CHECK(done->result.language == "ja");
+    CHECK(engine.lastWidth == 2 && engine.lastHeight == 1);
+    // 取り出した結果は消える
+    CHECK(!service.takeResult().has_value());
+
+    // 予約ごとに generation が進む
+    const uint64_t second = service.request(image);
+    CHECK(second > generation);
+    CHECK(waitForCompletion(2));
+    CHECK(service.takeResult()->generation == second);
+
+    // 失敗は ok = false と理由で返る
+    engine.ok = false;
+    engine.failureReason = "言語パックがありません";
+    service.request(image);
+    CHECK(waitForCompletion(3));
+    const auto failed = service.takeResult();
+    CHECK(failed.has_value());
+    CHECK(!failed->ok);
+    CHECK(failed->error == "言語パックがありません");
+
+    // 画像が無い予約はエンジンを呼ばずに失敗する
+    const int before = engine.recognizeCount;
+    service.request(nullptr);
+    CHECK(waitForCompletion(4));
+    CHECK(engine.recognizeCount == before);
+    CHECK(!service.takeResult()->ok);
+}
+
+void testAppOcr() {
+    FakeDecoder decoder;
+    ImageCache cache(decoder);
+    FakeHost host;
+    FakeFileSystem fileSystem;
+    FakeClipboard clipboard;
+    FakeEncoder encoder;
+    FakeAnnotationRasterizer rasterizer;
+    FakeOcrEngine ocrEngine;
+    OcrService ocrService(ocrEngine);
+
+    std::mutex mutex;
+    std::condition_variable cv;
+    int completions = 0;
+    ocrService.setOnCompleted([&] {
+        std::lock_guard lock(mutex);
+        ++completions;
+        cv.notify_all();
+    });
+    const auto waitForCompletion = [&](int count) {
+        std::unique_lock lock(mutex);
+        return cv.wait_for(lock, std::chrono::seconds(5), [&] { return completions >= count; });
+    };
+
+    App app(host, fileSystem, cache, clipboard, encoder, rasterizer, ocrService);
+    app.onResize(800, 600);
+
+    // 画像が無いときは予約せず通知だけ
+    app.execute(Command::CopyOcrText);
+    CHECK(app.statusBar().leftText == "文字を認識する画像がありません");
+    CHECK(ocrEngine.recognizeCount == 0);
+
+    // 4x4 の不透明な画像を貼り付けて表示中にする
+    auto pasted = std::make_shared<DecodedImage>();
+    pasted->width = 4;
+    pasted->height = 4;
+    pasted->pixels.assign(static_cast<size_t>(4) * 4 * 4, 255);
+    clipboard.pasteImage = pasted;
+    app.execute(Command::PasteImage);
+    CHECK(app.currentImage() != nullptr);
+
+    ocrEngine.lines.push_back({"これ は テスト", {0, 0, 4, 2}});
+    ocrEngine.lines.push_back({"second", {0, 2, 4, 2}});
+    app.execute(Command::CopyOcrText);
+    CHECK(app.statusBar().leftText == "文字を認識しています...");
+    CHECK(waitForCompletion(1));
+    app.onOcrCompleted();
+    CHECK(ocrEngine.recognizeCount == 1);
+    CHECK(ocrEngine.lastWidth == 4 && ocrEngine.lastHeight == 4);
+    // CJK の語間が詰まり、行は改行で連結されてクリップボードへ入る
+    CHECK(clipboard.lastText == "これはテスト\nsecond");
+    CHECK(app.statusBar().leftText == "2 行をコピーしました (ja)");
+
+    // 1 行も認識できなければクリップボードは触らない
+    clipboard.lastText.clear();
+    ocrEngine.lines.clear();
+    app.execute(Command::CopyOcrText);
+    CHECK(waitForCompletion(2));
+    app.onOcrCompleted();
+    CHECK(clipboard.lastText.empty());
+    CHECK(app.statusBar().leftText == "文字を認識できませんでした");
+
+    // 失敗理由はそのままステータスバーへ出る
+    ocrEngine.ok = false;
+    ocrEngine.failureReason = "言語パックが入っていません";
+    app.execute(Command::CopyOcrText);
+    CHECK(waitForCompletion(3));
+    app.onOcrCompleted();
+    CHECK(app.statusBar().leftText == "言語パックが入っていません");
+
+    // 予約し直した後に届いた古い結果は捨てる(前の画像の文字が紛れ込まない)
+    ocrEngine.ok = true;
+    ocrEngine.lines.push_back({"新しい結果", {}});
+    clipboard.lastText.clear();
+    app.execute(Command::CopyOcrText);
+    CHECK(waitForCompletion(4));
+    app.execute(Command::CopyOcrText);  // 世代を進めてから古い結果を流し込む
+    CHECK(waitForCompletion(5));
+    app.onOcrCompleted();  // 最新の 1 件だけが残っているので採用される
+    CHECK(clipboard.lastText == "新しい結果");
+    // 2 回目の onOcrCompleted は取り出す結果が無く、状態を変えない
+    const std::string after = app.statusBar().leftText;
+    app.onOcrCompleted();
+    CHECK(app.statusBar().leftText == after);
+
+    // 文字認識ツールの編集ドラッグは、選んだ範囲だけを切り出して渡す。
+    // 8x8 の画像を貼り直し、ビューポート中央 (400, 287) を基準に (0,0)-(4,4) を選ぶ
+    auto wide = std::make_shared<DecodedImage>();
+    wide->width = 8;
+    wide->height = 8;
+    wide->pixels.assign(static_cast<size_t>(8) * 8 * 4, 255);
+    clipboard.pasteImage = wide;
+    app.execute(Command::PasteImage);
+    app.execute(Command::SelectToolOcr);
+    CHECK(app.currentTool() == EditTool::Ocr);
+
+    app.onMouseDown(MouseButton::Right, {396, 283});
+    app.onMouseMove({400, 287});
+    // トリミングと同じくラバーバンドを出す(図形のプレビューは出ない)
+    CHECK(app.selection().visible);
+    CHECK(app.annotations().preview == nullptr);
+    app.onMouseUp(MouseButton::Right, {400, 287});
+    CHECK(waitForCompletion(6));
+    app.onOcrCompleted();
+    // 切り出した 4x4 だけが渡り、画像そのものは変わらない(トリミングと違う点)
+    CHECK(ocrEngine.lastWidth == 4 && ocrEngine.lastHeight == 4);
+    CHECK(app.currentImage()->width == 8 && app.currentImage()->height == 8);
+    // 続けて別の範囲を読めるようツールは維持される(トリミングは矩形へ戻る)
+    CHECK(app.currentTool() == EditTool::Ocr);
+
+    // 画像の外だけを選んだドラッグは予約せず通知だけ
+    const int beforeOutside = ocrEngine.recognizeCount;
+    app.onMouseDown(MouseButton::Right, {600, 450});
+    app.onMouseMove({640, 490});
+    app.onMouseUp(MouseButton::Right, {640, 490});
+    CHECK(app.statusBar().leftText == "選択した範囲が画像の外です");
+    CHECK(ocrEngine.recognizeCount == beforeOutside);
+
+    app.execute(Command::SelectToolRect);
+
+    // 透明部分を持つ画像は白へ焼き込んでから渡す(黒い文字が沈まないように)
+    auto transparent = std::make_shared<DecodedImage>();
+    transparent->width = 1;
+    transparent->height = 1;
+    transparent->pixels = {0, 0, 0, 0};
+    clipboard.pasteImage = transparent;
+    app.execute(Command::PasteImage);
+    app.execute(Command::CopyOcrText);
+    CHECK(waitForCompletion(7));
+    app.onOcrCompleted();
+    CHECK(ocrEngine.lastFirstPixel == (std::array<uint8_t, 4>{255, 255, 255, 255}));
+}
+
 } // namespace
 
 int main() {
@@ -3505,6 +3857,11 @@ int main() {
     testAppPenTools();
     testAnnotationSizeIsImageBased();
     testAppSwapMouseButtons();
+    testOcrText();
+    testOcrRetryUpscale();
+    testFlattenOnBackground();
+    testOcrService();
+    testAppOcr();
 
     if (g_failures == 0) {
         std::cout << "all tests passed\n";

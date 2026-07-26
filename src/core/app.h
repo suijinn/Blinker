@@ -17,6 +17,7 @@
 #include "core/image_cache.h"
 #include "core/image_list.h"
 #include "core/keymap.h"
+#include "core/ocr_service.h"
 #include "core/text_edit.h"
 #include "core/viewport.h"
 #include "platform/annotation.h"
@@ -98,6 +99,7 @@ enum class EditTool {
     Marker,   ///< 手書きの半透明・太線版(蛍光ペン)
     Number,   ///< 連番の数字入りマーカーを置く(番号は自動で増える)
     Text,     ///< テキストボックスを作り、その場で入力を始める
+    Ocr,      ///< 選択した範囲の文字を認識してクリップボードへコピーする(画像は変えない)
 };
 
 /**
@@ -201,9 +203,10 @@ public:
      * @param[in] clipboard  クリップボードの実装。
      * @param[in] encoder    画像保存の実装。
      * @param[in] rasterizer 注釈ラスタライズの実装。
+     * @param[in] ocr        文字認識の非同期実行。本オブジェクトより長生きすること。
      */
     App(IAppHost& host, IFileSystem& fileSystem, ImageCache& cache, IClipboard& clipboard,
-        IImageEncoder& encoder, IAnnotationRasterizer& rasterizer);
+        IImageEncoder& encoder, IAnnotationRasterizer& rasterizer, OcrService& ocr);
 
     /**
      * @brief blinker.ini の設定を適用する。
@@ -422,6 +425,18 @@ public:
      * @note UI スレッドで呼ぶこと(ワーカースレッドから直接呼んではならない)。
      */
     void onDecodeCompleted();
+
+    /**
+     * @brief 文字認識の完了を通知する。
+     *
+     * 認識できた文字列をクリップボードへ入れ、結果をステータスバーへ出す。
+     * 予約し直された後に届いた古い結果(generation の食い違い)は捨てる。
+     *
+     * @note 認識中に別の画像へ移っても結果は捨てない。利用者が明示的に頼んだ
+     *       認識であり、対象はそのとき表示していた画像で正しいため。
+     * @note UI スレッドで呼ぶこと(ワーカースレッドから直接呼んではならない)。
+     */
+    void onOcrCompleted();
 
     /**
      * @brief 表示中の画像を返す(描画用スナップショット)。
@@ -954,12 +969,32 @@ private:
     /// @brief 画像切替時に編集を破棄する(編集があれば通知を出す)。
     void discardEdits();
 
+    /**
+     * @brief 文字認識を予約する。
+     *
+     * 透明部分を持つ画像は白へ焼き込んでから渡す(認識器はアルファを見ないため、
+     * 事前乗算のままだと透明部分が黒になって文字が沈む)。
+     *
+     * @param[in] image 認識対象の画像。nullptr なら通知だけ出して何もしない。
+     * @note 予約するだけで、結果は onOcrCompleted で受け取る。
+     */
+    void requestOcr(const std::shared_ptr<DecodedImage>& image);
+
+    /**
+     * @brief 選択領域の文字認識を予約する(EditTool::Ocr の編集ドラッグ確定時)。
+     * @return 予約できたら true。領域が画像の外で切り出せなければ false。
+     */
+    bool applyOcrSelection();
+
     IAppHost& host_;
     IFileSystem& fileSystem_;
     ImageCache& cache_;
     IClipboard& clipboard_;
     IImageEncoder& encoder_;
     IAnnotationRasterizer& rasterizer_;
+    OcrService& ocr_;
+    /// 待っている認識の generation。0 なら認識中でない。古い結果を捨てるのに使う
+    uint64_t ocrGeneration_ = 0;
     Keymap keymap_ = Keymap::defaults();
     ImageList list_;
     Viewport viewport_;

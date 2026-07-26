@@ -8,12 +8,14 @@
 #include "core/app.h"
 #include "core/config.h"
 #include "core/image_cache.h"
+#include "core/ocr_service.h"
 #include "core/str_util.h"
 #include "win/annotation_d2d.h"
 #include "win/clipboard_win.h"
 #include "win/decoder_wic.h"
 #include "win/encoder_wic.h"
 #include "win/file_system_win.h"
+#include "win/ocr_winrt.h"
 #include "win/window_win.h"
 
 namespace {
@@ -78,14 +80,24 @@ int WINAPI wWinMain(HINSTANCE hinstance, HINSTANCE, PWSTR, int showCommand) {
         clipboard.setOwner(window.hwnd());
         EncoderWic encoder;
         AnnotationD2D annotationRasterizer;
+        // [ocr] language が空ならユーザーの表示言語から自動で選ぶ。
+        // 認識器の生成は最初の実行まで遅延するので、ここでは何も起きない
+        const std::string ocrLanguage(trim(config.get("ocr", "language", "")));
+        OcrEngineWinrt ocrEngine(ocrLanguage);
+        // ocrService より後に ocrEngine が壊れるよう、宣言順はこの通りにすること
+        // (~OcrService がワーカーを join し終えるまでエンジンは生きている必要がある)
+        OcrService ocrService(ocrEngine);
 
-        App app(window, fileSystem, cache, clipboard, encoder, annotationRasterizer);
+        App app(window, fileSystem, cache, clipboard, encoder, annotationRasterizer, ocrService);
         app.setDarkTheme(darkTheme);
         app.applyConfig(config);
         window.attachApp(&app);
 
         cache.setOnDecoded([hwnd = window.hwnd()](const std::filesystem::path&) {
             PostMessageW(hwnd, MainWindow::kMsgImageDecoded, 0, 0);
+        });
+        ocrService.setOnCompleted([hwnd = window.hwnd()] {
+            PostMessageW(hwnd, MainWindow::kMsgOcrCompleted, 0, 0);
         });
 
         if (const auto initialPath = pathFromCommandLine(); !initialPath.empty()) {

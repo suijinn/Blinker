@@ -12,6 +12,7 @@
 #include "core/annotation_edit.h"
 #include "core/edit.h"
 #include "core/help.h"
+#include "core/ocr_text.h"
 #include "core/pixel_convert.h"
 #include "core/str_util.h"
 #include "core/unicode.h"
@@ -88,6 +89,7 @@ std::string_view toolLabel(EditTool tool) {
     case EditTool::Marker:  return "マーカー";
     case EditTool::Number:  return "連番マーカー";
     case EditTool::Text:    return "テキスト";
+    case EditTool::Ocr:     return "文字認識";
     }
     return "";
 }
@@ -104,6 +106,7 @@ std::optional<EditTool> toolFromName(std::string_view name) {
     if (lower == "marker") return EditTool::Marker;
     if (lower == "number") return EditTool::Number;
     if (lower == "text") return EditTool::Text;
+    if (lower == "ocr") return EditTool::Ocr;
     return std::nullopt;
 }
 
@@ -119,6 +122,7 @@ Command commandOfTool(EditTool tool) {
     case EditTool::Marker:  return Command::SelectToolMarker;
     case EditTool::Number:  return Command::SelectToolNumber;
     case EditTool::Text:    return Command::SelectToolText;
+    case EditTool::Ocr:     return Command::SelectToolOcr;
     }
     return Command::None;
 }
@@ -135,6 +139,7 @@ AnnotationSpec::Kind kindOfTool(EditTool tool) {
     case EditTool::Number:  return AnnotationSpec::Kind::Number;
     case EditTool::Text:    return AnnotationSpec::Kind::Text;
     case EditTool::Crop:
+    case EditTool::Ocr:
     case EditTool::Rect:    break;
     }
     return AnnotationSpec::Kind::Rect;
@@ -143,13 +148,14 @@ AnnotationSpec::Kind kindOfTool(EditTool tool) {
 } // namespace
 
 App::App(IAppHost& host, IFileSystem& fileSystem, ImageCache& cache, IClipboard& clipboard,
-         IImageEncoder& encoder, IAnnotationRasterizer& rasterizer)
+         IImageEncoder& encoder, IAnnotationRasterizer& rasterizer, OcrService& ocr)
     : host_(host),
       fileSystem_(fileSystem),
       cache_(cache),
       clipboard_(clipboard),
       encoder_(encoder),
-      rasterizer_(rasterizer) {}
+      rasterizer_(rasterizer),
+      ocr_(ocr) {}
 
 void App::applyConfig(const Config& config) {
     keymap_.applyConfig(config.section("keys"));
@@ -301,6 +307,10 @@ void App::execute(Command command) {
             showMessage("ファイルのコピーに失敗しました");
         }
         break;
+    case Command::CopyOcrText:
+        // 注釈は焼き込まない。読みたいのは元画像の文字で、上に描いた図形ではない
+        requestOcr(current_);
+        break;
     case Command::PasteImage:
         if (auto image = clipboard_.getImage(); image && image->width > 0 && image->height > 0) {
             discardEdits();
@@ -369,6 +379,9 @@ void App::execute(Command command) {
         break;
     case Command::SelectToolText:
         setTool(EditTool::Text);
+        break;
+    case Command::SelectToolOcr:
+        setTool(EditTool::Ocr);
         break;
     case Command::ToggleSidebar:
         // 操作一覧が出ている間は、閉じるのではなくファイル名一覧へ切り替える
@@ -761,6 +774,11 @@ void App::applyCurrentTool() {
         if (applyCrop()) setTool(toolAfterCrop_);  // 切り出せたら図形ツールへ戻る
         return;
     }
+    if (tool_ == EditTool::Ocr) {
+        // トリミングと違い画像を変えないので、続けて別の範囲を読めるようツールは維持する
+        applyOcrSelection();
+        return;
+    }
     applyAnnotation(kindOfTool(tool_));
 }
 
@@ -815,6 +833,7 @@ std::vector<MenuItem> App::buildEditMenu(std::vector<EditMenuEntry>& entries) co
 
     std::vector<MenuItem> items;
     items.push_back(tool(EditTool::Crop));
+    items.push_back(tool(EditTool::Ocr));
     items.push_back(menuSeparator());
     items.push_back(tool(EditTool::Rect));
     items.push_back(tool(EditTool::Ellipse));
@@ -1267,6 +1286,60 @@ bool App::applyCrop() {
     return true;
 }
 
+void App::requestOcr(const std::shared_ptr<DecodedImage>& image) {
+    if (!image) {
+        showMessage("文字を認識する画像がありません");
+        return;
+    }
+    // 認識器はアルファを見ない。事前乗算のまま渡すと透明部分が黒になり、
+    // 透過 PNG の黒い文字が背景に沈むので白へ焼き込んでおく
+    std::shared_ptr<const DecodedImage> source = image;
+    if (hasTransparency(*image)) {
+        if (auto flattened = flattenOnBackground(*image, 0xFFFFFF)) source = std::move(flattened);
+    }
+    ocrGeneration_ = ocr_.request(std::move(source));
+    showMessage("文字を認識しています...");
+}
+
+bool App::applyOcrSelection() {
+    if (!current_) return false;
+    // トリミングと同じ丸め方(部分的にかかったピクセルも含める)
+    const int x0 = static_cast<int>(std::floor(std::min(selStartImage_.x, selEndImage_.x)));
+    const int y0 = static_cast<int>(std::floor(std::min(selStartImage_.y, selEndImage_.y)));
+    const int x1 = static_cast<int>(std::ceil(std::max(selStartImage_.x, selEndImage_.x)));
+    const int y1 = static_cast<int>(std::ceil(std::max(selStartImage_.y, selEndImage_.y)));
+    auto region = cropImage(*current_, {x0, y0, x1 - x0, y1 - y0});
+    if (!region) {
+        showMessage("選択した範囲が画像の外です");
+        return false;
+    }
+    requestOcr(region);
+    return true;
+}
+
+void App::onOcrCompleted() {
+    const auto done = ocr_.takeResult();
+    if (!done) return;
+    if (done->generation != ocrGeneration_) return;  // 予約し直された後の古い結果
+    ocrGeneration_ = 0;
+
+    if (!done->ok) {
+        showMessage(done->error.empty() ? "文字認識に失敗しました" : done->error);
+        return;
+    }
+    const std::string text = ocrResultToText(done->result);
+    if (text.empty()) {
+        showMessage("文字を認識できませんでした");
+        return;
+    }
+    if (!clipboard_.setText(text)) {
+        showMessage("認識した文字のコピーに失敗しました");
+        return;
+    }
+    showMessage(std::format("{} 行をコピーしました ({})", done->result.lines.size(),
+                            done->result.language.empty() ? "文字認識" : done->result.language));
+}
+
 AnnotationSpec App::makeAnnotationSpec(AnnotationSpec::Kind kind) const {
     AnnotationSpec spec;
     spec.kind = kind;
@@ -1308,10 +1381,10 @@ AnnotationSpec App::makeAnnotationSpec(AnnotationSpec::Kind kind) const {
 }
 
 bool App::previewVisible() const {
-    // トリミングは切り出す範囲、テキストは中身の無い箱で、どちらも実物を描けない。
-    // その 2 つはラバーバンド(App::selection)に任せる
+    // トリミングは切り出す範囲、テキストは中身の無い箱、文字認識は読み取る範囲で、
+    // どれも実物を描けない。その 3 つはラバーバンド(App::selection)に任せる
     return selecting_ && current_ != nullptr && tool_ != EditTool::Crop &&
-           tool_ != EditTool::Text;
+           tool_ != EditTool::Text && tool_ != EditTool::Ocr;
 }
 
 void App::updatePreview() {

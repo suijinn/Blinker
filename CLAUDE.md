@@ -1,6 +1,7 @@
 # Blinker — 開発ガイド
 
-軽量・高速起動の画像ビューア。C++20。Windows版は Win32 API / Direct2D / WIC で外部ライブラリ依存ゼロの単一exe(約430KB)。Linux/macOS版は SDL3 + stb(third_party/にベンダリング)の `src/sdl` バックエンド(閲覧専用、編集は未対応)。
+軽量・高速起動の画像ビューア。C++20。Windows版は Win32 API / Direct2D / WIC / WinRT(OCR)で
+外部ライブラリ依存ゼロの単一exe(約465KB。うちOCRが約35KB)。Linux/macOS版は SDL3 + stb(third_party/にベンダリング)の `src/sdl` バックエンド(閲覧専用、編集は未対応)。
 
 設計の詳細(層構造・コンポーネントの責務・データフロー・起動シーケンス)の正は
 [docs/architecture.md](docs/architecture.md)。ここにはビルド方法と、コードを触るたびに必要になる
@@ -49,9 +50,13 @@ cmake --preset linux-release && cmake --build --preset linux-release
 - **データフローは一方向**: 入力 → KeyChord → `Keymap` → `Command` → `App::execute` → 状態更新 →
   `IAppHost::requestRedraw` → WM_PAINTで描画
 - **スレッドモデル**: App/Viewport/ImageListはUIスレッド専用でスレッド安全ではない。
-  デコードは `ImageCache` 内のワーカースレッド1本のみ。UI→ワーカーは `requestNow`/`setPrefetch`、
-  ワーカー→UIは `onDecoded` → `PostMessage(kMsgImageDecoded)` → `App::onDecodeCompleted`。
-  `DecoderWic` はthread_localでCOM初期化するためどのスレッドからでも呼べる
+  ワーカースレッドは2本だけで、どちらも同じ形(キュー投入 → 完了をPostMessage):
+  デコードは `ImageCache` 内の1本(UI→ワーカーは `requestNow`/`setPrefetch`、
+  ワーカー→UIは `onDecoded` → `PostMessage(kMsgImageDecoded)` → `App::onDecodeCompleted`)、
+  文字認識は `OcrService` 内の1本(`request` → `onCompleted` →
+  `PostMessage(kMsgOcrCompleted)` → `App::onOcrCompleted`)。
+  `DecoderWic` はthread_localでCOM初期化するためどのスレッドからでも呼べるが、
+  `OcrEngineWinrt` はMTA必須(非同期完了をブロック待ちするためSTAだと詰む)
 - **機能追加は定型手順に従う**: `Command` enum追加 → `App::execute` にハンドラ →
   `keymap.cpp`(`kCommandNames` とデフォルトキー表)→ `tests/core_tests.cpp` にテスト。
   詳細は architecture.md「機能追加の手順」

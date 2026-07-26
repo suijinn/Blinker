@@ -193,6 +193,9 @@ LRESULT MainWindow::handleMessage(UINT msg, WPARAM wp, LPARAM lp) {
     case kMsgImageDecoded:
         if (app_) app_->onDecodeCompleted();
         return 0;
+    case kMsgOcrCompleted:
+        if (app_) app_->onOcrCompleted();
+        return 0;
     case WM_DPICHANGED: {
         const RECT* suggested = reinterpret_cast<const RECT*>(lp);
         SetWindowPos(hwnd_, nullptr, suggested->left, suggested->top,
