@@ -140,6 +140,21 @@ std::optional<size_t> hitTestAnnotations(const std::vector<AnnotationSpec>& spec
 void translateAnnotation(AnnotationSpec& spec, float dx, float dy);
 
 /**
+ * @brief 注釈を原点基準で拡大縮小する(画像のリサイズに追従させる)。
+ *
+ * トリミングが translateAnnotation で注釈をオブジェクトのまま維持するのと同じ発想で、
+ * リサイズでも焼き込まずに座標だけを合わせる。
+ *
+ * @param[in,out] spec 拡大縮小する注釈。p1/p2/points と線幅・文字サイズが更新される。
+ * @param[in]     sx   X 方向の倍率。
+ * @param[in]     sy   Y 方向の倍率。
+ * @note 線幅・文字サイズ・枠線幅は 1 次元の量で縦横比の変わるリサイズでは一意に
+ *       決まらないため min(sx, sy) を掛ける(等比なら sx == sy で曖昧さはない)。
+ *       回転角 (angleDeg) は変えない。
+ */
+void scaleAnnotation(AnnotationSpec& spec, float sx, float sy);
+
+/**
  * @brief サイズ変更ハンドルの種類。
  *
  * Rect/Ellipse は四隅 + 四辺、Text は四隅 + 左右(高さは内容から決まる)、

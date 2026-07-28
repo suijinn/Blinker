@@ -50,15 +50,19 @@ cmake --preset linux-release && cmake --build --preset linux-release
 - **データフローは一方向**: 入力 → KeyChord → `Keymap` → `Command` → `App::execute` → 状態更新 →
   `IAppHost::requestRedraw` → WM_PAINTで描画
 - **スレッドモデル**: App/Viewport/ImageListはUIスレッド専用でスレッド安全ではない。
-  ワーカースレッドは2本だけで、どちらも同じ形(キュー投入 → 完了をPostMessage):
+  ワーカースレッドは3本だけで、どれも同じ形(キュー投入 → 完了をPostMessage):
   デコードは `ImageCache` 内の1本(UI→ワーカーは `requestNow`/`setPrefetch`、
   ワーカー→UIは `onDecoded` → `PostMessage(kMsgImageDecoded)` → `App::onDecodeCompleted`。
   **同じパスで通知が2回来ることがある**: カラーマネジメントは遅延式で、1回目は未変換、
   2回目が sRGB 変換後。2回目は `App::adoptRefinedImage` が画素だけ差し替える)、
   文字認識は `OcrService` 内の1本(`request` → `onCompleted` →
-  `PostMessage(kMsgOcrCompleted)` → `App::onOcrCompleted`)。
+  `PostMessage(kMsgOcrCompleted)` → `App::onOcrCompleted`)、
+  サブフォルダの再帰列挙は `ScanService` 内の1本(`request` → `onCompleted` →
+  `PostMessage(kMsgScanCompleted)` → `App::onScanCompleted`。**フォルダ直下の列挙は
+  UIスレッドで同期に行う** — 起動時はこれで表示を確定させ、再帰の走査だけを裏へ回す)。
   `DecoderWic` はthread_localでCOM初期化するためどのスレッドからでも呼べるが、
-  `OcrEngineWinrt` はMTA必須(非同期完了をブロック待ちするためSTAだと詰む)
+  `OcrEngineWinrt` はMTA必須(非同期完了をブロック待ちするためSTAだと詰む)。
+  `IFileSystem` の実装はScanServiceから呼ばれるためスレッド安全であること
 - **機能追加は定型手順に従う**: `Command` enum追加 → `App::execute` にハンドラ →
   `keymap.cpp`(`kCommandNames` とデフォルトキー表)→ `help.cpp`(`kCommandLabels` の
   表示名と操作一覧の `row()`。無いと F1 の一覧に出ない)→ `tests/core_tests.cpp` にテスト。
