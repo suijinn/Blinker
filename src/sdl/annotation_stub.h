@@ -22,6 +22,12 @@ namespace blinker {
 class AnnotationStub final : public IAnnotationRasterizer {
 public:
     /**
+     * @brief 注釈オブジェクトを扱えるか(常に未対応)。
+     * @return 常に false。
+     */
+    bool available() const override { return false; }
+
+    /**
      * @brief 注釈のラスタライズ(常に失敗)。
      * @return image が nullptr の AnnotationOverlay。
      */

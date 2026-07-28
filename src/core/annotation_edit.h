@@ -69,6 +69,21 @@ Point constrainToAxis(Point anchor, Point p);
 BoundsF annotationBounds(const AnnotationSpec& spec);
 
 /**
+ * @brief 貼り付けた画像オブジェクトを最初に置く矩形を求める。
+ *
+ * 大きさは等倍(貼り付け画像の 1px = 下地画像の 1px)を基本とし、下地に対して
+ * 大きすぎる場合だけ縦横比を保って縮める(拡大はしない)。位置は center を中心に
+ * 置き、全体が下地へ収まるよう寄せる。座標は整数へ丸めるので、縮小されなければ
+ * 焼き込みが 1:1 のコピーになる。
+ *
+ * @param[in] pasted 貼り付ける画像の大きさ(ピクセル)。
+ * @param[in] base   下地となる表示中の画像の大きさ(ピクセル)。
+ * @param[in] center 置きたい中心(画像座標。通常は可視領域の中心)。
+ * @return 置く矩形(画像座標)。pasted か base が 0 以下なら空の矩形。
+ */
+BoundsF pastedImageBounds(SizeF pasted, SizeF base, Point center);
+
+/**
  * @brief 手書き(Pen)の点列へ 1 点足す。
  *
  * 直前の点から minDistance 未満の位置は捨てる。マウスの WM_MOUSEMOVE は
@@ -158,7 +173,7 @@ void scaleAnnotation(AnnotationSpec& spec, float sx, float sy);
  * @brief サイズ変更ハンドルの種類。
  *
  * Rect/Ellipse は四隅 + 四辺、Text は四隅 + 左右(高さは内容から決まる)、
- * Line/Arrow は両端点(P1/P2)を使う。
+ * Number/Image は四隅のみ(縦横比を保つため)、Line/Arrow は両端点(P1/P2)を使う。
  */
 enum class ResizeHandle {
     TopLeft, Top, TopRight, Right, BottomRight, Bottom, BottomLeft, Left, P1, P2
@@ -178,6 +193,19 @@ struct ResizeHandlePos {
 std::vector<ResizeHandlePos> resizeHandlePositions(const AnnotationSpec& spec);
 
 /**
+ * @brief Shift の押下状態から、リサイズで縦横比を保つかを決める。
+ *
+ * 既定は「Shift 中だけ保つ」だが、画像オブジェクトは比率が崩れると見た目の事故に
+ * なるため既定で保ち、Shift で解除する(意味が反転する)。
+ *
+ * @param[in] spec      リサイズ対象の注釈。
+ * @param[in] shiftDown Shift が押されているか。
+ * @return 縦横比を保つなら true(resizeAnnotation の keepAspect へ渡す)。
+ * @note 連番マーカーは resizeAnnotation が常に円へ寄せるため、ここの結果に依らない。
+ */
+bool resizeKeepsAspect(const AnnotationSpec& spec, bool shiftDown);
+
+/**
  * @brief ハンドルをドラッグした結果の注釈を返す。
  *
  * 回転中でもアンカー(反対側の角/辺中点、端点ドラッグでは他端)の見た目の位置を固定する。
@@ -185,7 +213,8 @@ std::vector<ResizeHandlePos> resizeHandlePositions(const AnnotationSpec& spec);
  * @param[in] orig       ドラッグ開始時の注釈。
  * @param[in] handle     掴んでいるハンドル。
  * @param[in] mouseImage 現在のポインタ位置(画像座標)。
- * @param[in] keepAspect Shift ドラッグ用。true なら四隅ハンドルで縦横比を維持し、
+ * @param[in] keepAspect 縦横比を維持するか(Shift の押下から resizeKeepsAspect で求める)。
+ *                       true なら四隅ハンドルで縦横比を維持し、
  *                       端点ハンドル(P1/P2)では固定端から見て水平・垂直・45 度へ寄せる。
  * @return サイズ変更後の注釈。
  */

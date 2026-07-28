@@ -50,6 +50,7 @@ constexpr std::array kCommandLabels = {
     CommandLabel{Command::CopyFile, "ファイルをコピー"},
     CommandLabel{Command::CopyOcrText, "文字を認識してコピー"},
     CommandLabel{Command::PasteImage, "貼り付け"},
+    CommandLabel{Command::PasteObject, "画像オブジェクトとして貼り付け"},
     CommandLabel{Command::Undo, "元に戻す"},
     CommandLabel{Command::Redo, "やり直す"},
     CommandLabel{Command::DeleteAnnotation, "選択中の図形・テキストを削除"},
@@ -165,6 +166,7 @@ std::vector<HelpLine> buildHelpLines(const Keymap& keymap, const Mousemap& mouse
     row(Command::CopyFile);
     row(Command::CopyOcrText);
     row(Command::PasteImage);
+    row(Command::PasteObject);
 
     header("一覧");
     row(Command::SortByName);

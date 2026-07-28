@@ -129,6 +129,20 @@ stb_image のメモリ確保が失敗して「読み込み失敗」になる。�
 円を保つためドラッグは常に正方形へ寄せ、ハンドルも四隅だけにしてある。
 現在のツールはステータスバー左側に表示する(モードが見えないと誤操作になるため)。
 
+画像オブジェクト (`Kind::Image`) だけはツールを持たず、`Shift+V`
+(`Command::PasteObject` → `App::executePasteObject`)でクリップボードから直接作る。
+`AnnotationSpec::image`(`shared_ptr<const DecodedImage>`)に画素を持ち、p1/p2 の矩形へ
+引き伸ばして描かれる。初期の位置と大きさは `pastedImageBounds`(等倍が基本。下地の
+80% を超えるときだけ縦横比を保って縮め、可視領域の中心へ整数座標で置く)。
+`shared_ptr` なので undo スナップショットへ何段積んでも画素は複製されない。
+縦横比が崩れると見た目の事故になるため、ハンドルは四隅だけ・**既定でアスペクト維持で
+Shift が解除**(`resizeKeepsAspect` が種別ごとに Shift の意味を決める)。焼き込みの
+オーバーレイには上限があるので、貼り付けた時点で `downscaleToFit` で
+`kMaxResizeDimension` まで縮めて取り込む(後から縮めても画素は戻らないため)。
+下地が無いとき、および `IAnnotationRasterizer::available()` が false の環境
+(SDL バックエンド。ライブ描画もラスタライズも未実装)では `Ctrl+V` と同じ
+画像そのものの貼り付けへ回す ―― 見えず保存もされないオブジェクトを作らないため。
+
 Shift ドラッグの寄せ方は種別で変える(`App::dragEndImage`)。矩形・楕円などは
 選択領域を正方形にする (`constrainToSquare`) が、直線・矢印は bbox ではなく**線の向き**を
 揃えたいので、始点から見て一番近い水平・垂直・45 度へ寄せる (`constrainToAxis`)。
@@ -147,7 +161,8 @@ Shift ドラッグの寄せ方は種別で変える(`App::dragEndImage`)。矩�
 水平・垂直・45 度へ寄せる。Text は幅のみで高さは
 ドラッグ確定時に実測へ正規化)、選択枠上の回転ハンドルで自由回転(Shift で 15° スナップ)、
 右クリックでオブジェクトメニュー(回転角度プリセット・太さ・文字サイズ・フォント・
-色・削除、手書きは線の不透明度、連番マーカーは番号)。
+色・削除、手書きは線の不透明度、連番マーカーは番号。画像は自身の画素で描かれるため
+削除と回転だけ)。
 Text 注釈を選択中の `Ctrl+B` だけは `App::onKey` が Keymap より先に横取りし、
 テキスト全体の太字を切り替える(`toggleSelectedTextBold`)。既定では
 `Command::ToggleSidebar` と同じキーだが、選んでいるオブジェクトへの操作を優先する。
@@ -431,7 +446,7 @@ Text 注釈は PowerPoint のテキストボックスと同じく**画像上で�
 | `TextEditBuffer` | インプレース編集中の文字列・キャレット・選択範囲・部分書式(`text_edit.h`。UTF-8 バイト位置の純粋ロジック、単体テスト対象)。文字列を変えるたびに書式範囲を追従させる |
 | `text_style.h` | 部分書式(色・太字・斜体・下線・フォント)の範囲リストとその編集の純関数。範囲の切り分け・正規化・編集への追従(`adjustTextStyles`)を担う(単体テスト対象) |
 | `MainWindow` | Win32 メッセージ変換、フルスクリーン、ダイアログ(開く・保存・上書き確認・色選択)・編集メニュー(サブメニュー対応)・テキストのインプレース編集まわり(`WM_CHAR`・IME・キャレット点滅タイマー)(IAppHost 実装) |
-| `RendererD2D` | BGRA ピクセル → ID2D1Bitmap(±1枚をGPU側にキャッシュ。枚数とバイト数の両方で上限)して描画。**GPU が扱える大きさの上限 (`GetMaximumBitmapSize`。機種により 8192 のこともある) を超える画像は `downscaleToFit` で縮小して載せ、転送元矩形はビットマップの実寸から取る**(縮むのは GPU 側のコピーだけで、保存・コピー・文字認識は元の大きさのまま)。注釈オブジェクト(`AnnotationsView`、選択枠・回転ハンドル含む)と選択領域のラバーバンド(`SelectionView`)もここで描く。図形の描画コードは焼き込みと共通(win/annotation_draw)。サイドバー・ステータスバーの文字は DirectWrite |
+| `RendererD2D` | BGRA ピクセル → ID2D1Bitmap(生成は `createD2DBitmap`。±1枚をGPU側にキャッシュ。枚数とバイト数の両方で上限。表示中の画像と `Kind::Image` 注釈の画素が同じキャッシュを通る)して描画。**GPU が扱える大きさの上限 (`GetMaximumBitmapSize`。機種により 8192 のこともある) を超える画像は `downscaleToFit` で縮小して載せ、転送元矩形はビットマップの実寸から取る**(縮むのは GPU 側のコピーだけで、保存・コピー・文字認識は元の大きさのまま)。注釈オブジェクト(`AnnotationsView`、選択枠・回転ハンドル含む)と選択領域のラバーバンド(`SelectionView`)もここで描く。図形の描画コードは焼き込みと共通(win/annotation_draw)。サイドバー・ステータスバーの文字は DirectWrite |
 | `DecoderWic` | WIC で 32bpp PBGRA に統一デコード。EXIF 回転適用、16384px 超は縮小(**メモリのための上限**。16384<sup>2</sup> でも PBGRA で 1GB になる)。縮小したときは元の大きさを `DecodedImage::sourceWidth/sourceHeight` に残し、上書き保存の拒否とステータスバーの表示に使う。デコード失敗時は失敗した段階と HRESULT を文字列で返し、ステータスバーに出す。**カラーマネジメントは遅延式**: `decode` はプロファイルの有無だけ見て `colorPending` を立て、`decodeColorManaged`(`IWICColorTransform` で ICC → sRGB)が後から読み直す。色変換は 24MP で 0.5 秒ほどかかり、最初の表示を待たせたくないため(`[view] color_management`。既定 true)|
 | `PrinterWin` | GDI による印刷 (Ctrl+P)。`PrintDlg` で選ばせたプリンタの DC へ `StretchDIBits` で 1 ページ描く(プリンタ・用紙・向き・部数はダイアログ、余白と自動回転は `[print]`)。**印刷される大きさを超える画素は先に `downscaleToFit` で捨てる**(GDI の間引きより結果がきれいで、ドライバへ渡す量も減る)。ダイアログの取りやめと失敗を区別して返し、App がメッセージを出し分ける |
 | `print_layout.h` | 用紙のどこに画像を置くかの計算(`layoutPrintImage`)。縦横比を保って印刷可能領域いっぱいに拡大縮小し、中央へ置く。**用紙より小さい画像も拡大する**(600dpi のプリンタで原寸に刷ると切手ほどにしかならないため)。90 度回した方が大きく刷れるなら回すかどうかも返す(`[print] auto_rotate`)。純粋関数で単体テスト対象 |
@@ -440,7 +455,7 @@ Text 注釈は PowerPoint のテキストボックスと同じく**画像上で�
 | `EncoderWic` | WIC で PNG/JPEG/BMP 保存 (Ctrl+S / Shift+Ctrl+S)。JPEG 品質は `EncodeOptions::jpegQuality` を ImageQuality へ渡す。`supports` は拡張子だけで可否を答える(上書き保存の可否をファイルへ手を付ける前に判断するため)。PNG は逆乗算してアルファ保持、JPEG/BMP は白背景に合成 |
 | `ClipboardWin` | クリップボード読み書き。書き込みは CF_DIBV5(アルファ)+ CF_DIB(白合成24bpp)の2形式。読み取り (Ctrl+V) は CF_DIBV5 優先で、DIB → PBGRA 変換は core の `imageFromDib`(純粋関数、単体テスト対象) |
 | `OcrEngineWinrt` | Windows.Media.Ocr による文字認識(`IOcrEngine` 実装)。**WinRT を C++/WinRT ではなく ABI で直接呼び、`combase.dll` は `LoadLibrary` で遅延解決する**。`windowsapp.lib` を静的リンクすると exe のインポートが増え、OCR を使わない起動でも DLL が読まれるため。認識器の生成も最初の実行まで遅延する。上限を超える画像は WIC で縮小し、座標は元のスケールへ戻す。文字が小さいときは 1 回目の行高から拡大率を決めて読み直す 2 パス構成(判断は core の `ocrRetryUpscale`)|
-| `AnnotationD2D` | 図形(矩形・楕円・矢印・直線・手書き・連番マーカー)とテキスト(複数行可)を D2D/DirectWrite で WIC ビットマップへ AA 描画し、PBGRA overlay として返す(`IAnnotationRasterizer` 実装)。描画コードはライブ表示と共通の `win/annotation_draw` を使い、`AnnotationSpec::angleDeg` によるバウンディングボックス中心周りの回転にも対応。テキスト注釈の実測サイズ取得(`App::measureTextExtent`)にも使われる。トリミング・合成は core の `edit.cpp`(`cropImage` / `blendOverlay`)、注釈のヒットテスト・回転幾何は core の `annotation_edit.cpp`(いずれも純粋関数、単体テスト対象) |
+| `AnnotationD2D` | 図形(矩形・楕円・矢印・直線・手書き・連番マーカー)とテキスト(複数行可)と貼り付けた画像 (`Kind::Image`) を D2D/DirectWrite で WIC ビットマップへ AA 描画し、PBGRA overlay として返す(`IAnnotationRasterizer` 実装)。描画コードはライブ表示と共通の `win/annotation_draw` を使い、`AnnotationSpec::angleDeg` によるバウンディングボックス中心周りの回転にも対応。テキスト注釈の実測サイズ取得(`App::measureTextExtent`)にも使われる。トリミング・合成は core の `edit.cpp`(`cropImage` / `blendOverlay`)、注釈のヒットテスト・回転幾何は core の `annotation_edit.cpp`(いずれも純粋関数、単体テスト対象) |
 
 ## スレッドモデル
 

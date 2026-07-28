@@ -33,11 +33,11 @@ inline constexpr const char* kDefaultFontFamily = "Yu Gothic";
  */
 struct AnnotationSpec {
     /// @brief 注釈の種別。
-    enum class Kind { Rect, Ellipse, Arrow, Line, Text, Pen, Number };
+    enum class Kind { Rect, Ellipse, Arrow, Line, Text, Pen, Number, Image };
     Kind kind = Kind::Rect;  ///< 注釈の種別
-    /// Rect/Ellipse/Text/Number は対角の一方、Arrow/Line は始点、Pen は points の bbox の左上
+    /// Rect/Ellipse/Text/Number/Image は対角の一方、Arrow/Line は始点、Pen は points の bbox の左上
     Point p1;
-    /// Rect/Ellipse/Text/Number は対角の他方、Arrow/Line は終点、Pen は points の bbox の右下
+    /// Rect/Ellipse/Text/Number/Image は対角の他方、Arrow/Line は終点、Pen は points の bbox の右下
     Point p2;
     uint32_t colorRGB = 0;   ///< 描画色(0xRRGGBB)。Text では文字色、Number では円の枠線色
     float strokeWidth = 1;   ///< 線幅(画像座標)。Text では使わない(borderWidth を見る)
@@ -61,6 +61,9 @@ struct AnnotationSpec {
     /// (updatePenBounds が保つ)。1 点だけなら点(円)として描かれる
     std::vector<Point> points;
     int number = 1;          ///< Number 用の連番(円の中に描く数字)
+    /// Image 用の画素(32bpp PBGRA)。p1/p2 の矩形へ引き伸ばして描かれる。
+    /// 実体は共有されるため、コピー(undo スナップショット等)しても画素は複製されない
+    std::shared_ptr<const DecodedImage> image;
 };
 
 /**
@@ -139,6 +142,18 @@ struct TextRangeRect {
 class IAnnotationRasterizer {
 public:
     virtual ~IAnnotationRasterizer() = default;
+
+    /**
+     * @brief この環境で注釈オブジェクトを扱えるかを返す。
+     *
+     * SDL バックエンドはライブ描画もラスタライズも未実装(annotation_stub)なので
+     * false を返す。App は注釈を作る前にこれを見て、未対応なら別の動作へ逃がす
+     * (例: Shift+V の画像オブジェクト貼り付け → 画像そのものの貼り付け)。
+     * 見えないうえ保存もされないオブジェクトができるのを防ぐためのもの。
+     *
+     * @return 扱えるなら true。
+     */
+    virtual bool available() const = 0;
 
     /**
      * @brief 注釈 1 件をラスタライズする。

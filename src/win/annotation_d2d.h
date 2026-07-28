@@ -24,6 +24,12 @@ public:
     AnnotationD2D();
 
     /**
+     * @brief 注釈オブジェクトを扱えるか(Windows では常に対応)。
+     * @return 常に true。
+     */
+    bool available() const override { return true; }
+
+    /**
      * @brief 注釈 1 件をラスタライズする。
      * @param[in] spec ラスタライズする注釈。
      * @return バウンディングボックス分の PBGRA 画像と合成先座標。

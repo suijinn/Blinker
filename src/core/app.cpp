@@ -479,20 +479,10 @@ void App::execute(Command command) {
         requestOcr(current_);
         break;
     case Command::PasteImage:
-        if (auto image = clipboard_.getImage(); image && image->width > 0 && image->height > 0) {
-            discardEdits();
-            current_ = std::move(image);
-            clipboardImage_ = true;
-            displayedPath_.clear();  // 一覧に戻ったとき必ず再取得させる
-            loadFailed_ = false;
-            loadError_.clear();
-            viewport_.setImage(
-                {static_cast<float>(current_->width), static_cast<float>(current_->height)});
-            updateTitle();
-            host_.requestRedraw();
-        } else {
-            showMessage("クリップボードに画像がありません");
-        }
+        executePasteImage();
+        break;
+    case Command::PasteObject:
+        executePasteObject();
         break;
     case Command::SaveImage:
         executeSaveOverwrite();
@@ -1384,7 +1374,8 @@ std::vector<MenuItem> App::buildObjectMenu(const AnnotationSpec& spec,
                 leaf(label, {Action::FontFamily, 0, name}, name == current));
         }
         items.push_back(std::move(family));
-    } else {
+    } else if (spec.kind != AnnotationSpec::Kind::Image) {
+        // 貼り付けた画像は線も文字も持たないので、太さの項目は出さない
         MenuItem stroke;
         stroke.text =
             std::format("線の太さ ({}px)", static_cast<int>(std::lround(spec.strokeWidth)));
@@ -1421,12 +1412,15 @@ std::vector<MenuItem> App::buildObjectMenu(const AnnotationSpec& spec,
         }
         items.push_back(std::move(number));
     }
-    items.push_back(
-        leaf(std::format("色の変更... (#{:06X})", spec.colorRGB), {Action::PickColor}));
+    // 画像は自身の画素で描かれるため、色も塗りつぶしも効かない
+    if (spec.kind != AnnotationSpec::Kind::Image) {
+        items.push_back(
+            leaf(std::format("色の変更... (#{:06X})", spec.colorRGB), {Action::PickColor}));
+    }
 
-    // 塗りつぶしは面を持つ種別だけ(直線・矢印・手書きには出さない)
+    // 塗りつぶしは面を持つ種別だけ(直線・矢印・手書き・画像には出さない)
     if (spec.kind != AnnotationSpec::Kind::Line && spec.kind != AnnotationSpec::Kind::Arrow &&
-        spec.kind != AnnotationSpec::Kind::Pen) {
+        spec.kind != AnnotationSpec::Kind::Pen && spec.kind != AnnotationSpec::Kind::Image) {
         MenuItem fill;
         fill.text = std::format("塗りつぶし ({})", fillAlphaLabel(spec.fillAlpha));
         for (const int a : kFillAlphaChoices) {
@@ -2198,6 +2192,76 @@ void App::deleteSelectedAnnotation() {
     host_.requestRedraw();
 }
 
+bool App::executePasteImage() {
+    auto image = clipboard_.getImage();
+    if (!image || image->width == 0 || image->height == 0) {
+        showMessage("クリップボードに画像がありません");
+        return false;
+    }
+    discardEdits();
+    current_ = std::move(image);
+    clipboardImage_ = true;
+    displayedPath_.clear();  // 一覧に戻ったとき必ず再取得させる
+    loadFailed_ = false;
+    loadError_.clear();
+    viewport_.setImage(
+        {static_cast<float>(current_->width), static_cast<float>(current_->height)});
+    updateTitle();
+    host_.requestRedraw();
+    return true;
+}
+
+void App::executePasteObject() {
+    // 下地が無い / この環境では注釈を扱えない場合は、画像そのものの貼り付けにする
+    // (置いても見えず保存もされないオブジェクトを作らない)
+    if (!current_ || !rasterizer_.available()) {
+        const bool unsupported = current_ && !rasterizer_.available();
+        if (executePasteImage() && unsupported) {
+            showMessage("この環境では画像オブジェクトを扱えないため、画像として開きました");
+        }
+        return;
+    }
+    auto image = clipboard_.getImage();
+    if (!image || image->width == 0 || image->height == 0) {
+        showMessage("クリップボードに画像がありません");
+        return;
+    }
+    // 焼き込み時のオーバーレイはラスタライザの上限までしか作れないので、
+    // 取り込む時点で縮めておく(あとで縮小しても画素は戻らないため、ここが唯一の機会)
+    if (image->width > kMaxResizeDimension || image->height > kMaxResizeDimension) {
+        auto reduced = downscaleToFit(*image, kMaxResizeDimension);
+        if (!reduced) {
+            showMessage("貼り付けられませんでした(画像が大きすぎます)");
+            return;
+        }
+        image = std::move(reduced);
+    }
+    if (textEditing_) commitTextEdit();  // 編集を確定してから新しい選択へ移る
+
+    // 可視領域の中心へ置く(サイドバー・ステータスバーを除いた矩形の中心)
+    const float barHeight = statusBarVisible() ? kStatusBarHeight : 0.0f;
+    const Point viewCenter{(sidebarOffset() + clientSize_.w) * 0.5f,
+                           (clientSize_.h - barHeight) * 0.5f};
+    const BoundsF box = pastedImageBounds(
+        {static_cast<float>(image->width), static_cast<float>(image->height)},
+        {static_cast<float>(current_->width), static_cast<float>(current_->height)},
+        imageToScreen().inverted().apply(viewCenter));
+
+    const uint32_t pastedWidth = image->width;
+    const uint32_t pastedHeight = image->height;
+    pushUndo();
+    AnnotationSpec spec;
+    spec.kind = AnnotationSpec::Kind::Image;
+    spec.p1 = {box.minX, box.minY};
+    spec.p2 = {box.maxX, box.maxY};
+    spec.image = std::move(image);
+    annotations_.push_back(std::move(spec));
+    selected_ = annotations_.size() - 1;  // 貼った直後から移動・リサイズできるよう選択する
+    markEdited();
+    host_.requestRedraw();
+    showMessage(std::format("{} x {} px の画像を貼り付けました", pastedWidth, pastedHeight));
+}
+
 void App::executeSaveOverwrite() {
     if (!current_) {
         showMessage("保存する画像がありません");
@@ -2642,7 +2706,8 @@ void App::onMouseMove(Point screenPos, bool shift) {
             const Point imagePos = imageToScreen().inverted().apply(screenPos);
             pushDragUndoOnce();
             AnnotationSpec resized =
-                resizeAnnotation(dragOrigSpec_, dragResizeHandle_, imagePos, shift);
+                resizeAnnotation(dragOrigSpec_, dragResizeHandle_, imagePos,
+                                 resizeKeepsAspect(dragOrigSpec_, shift));
             spec.p1 = resized.p1;
             spec.p2 = resized.p2;
             spec.points = std::move(resized.points);  // 手書きは点列も拡縮されている

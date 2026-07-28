@@ -154,8 +154,11 @@ border_width = 0
 # 使えるコマンド:
 #   next prev first last zoom_in zoom_out fit actual_size
 #   pan_left pan_right pan_up pan_down rotate_cw rotate_ccw
-#   fullscreen open copy_image copy_path copy_file copy_ocr_text paste save save_as
+#   fullscreen open copy_image copy_path copy_file copy_ocr_text paste paste_object
+#     save save_as
 #     (save = 元のファイルへ上書き保存、save_as = 名前を付けて保存)
+#     (paste = クリップボードの画像を表示、paste_object = 表示中の画像の上へ
+#      移動・回転・リサイズできるオブジェクトとして貼る)
 #   undo redo delete_annotation resize
 #     (resize = 倍率・長辺のプリセットメニューを出して画像をリサイズ)
 #   sort_name sort_date sort_size sort_ext sort_reverse sort_cycle recursive
