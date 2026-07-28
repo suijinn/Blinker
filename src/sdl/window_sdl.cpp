@@ -68,11 +68,12 @@ bool WindowSdl::create(FontStb& font) {
         return false;
     }
     renderer_ = std::make_unique<RendererSdl>(sdlRenderer_, font);
-    const Uint32 base = SDL_RegisterEvents(3);
+    const Uint32 base = SDL_RegisterEvents(4);
     if (base == 0) return false;
     eventDecoded_ = base;
     eventTimer_ = base + 1;
     eventOcr_ = base + 2;
+    eventScan_ = base + 3;
     // カーソルは SDL_Quit がまとめて解放する(ウィンドウ・レンダラと同じ扱い)
     arrowCursor_ = SDL_CreateSystemCursor(SDL_SYSTEM_CURSOR_DEFAULT);
     resizeCursor_ = SDL_CreateSystemCursor(SDL_SYSTEM_CURSOR_EW_RESIZE);
@@ -97,6 +98,12 @@ void WindowSdl::postDecodedEvent() {
 void WindowSdl::postOcrCompletedEvent() {
     SDL_Event event{};
     event.type = eventOcr_;
+    SDL_PushEvent(&event);  // スレッド安全
+}
+
+void WindowSdl::postScanCompletedEvent() {
+    SDL_Event event{};
+    event.type = eventScan_;
     SDL_PushEvent(&event);  // スレッド安全
 }
 
@@ -145,6 +152,10 @@ void WindowSdl::handleEvent(const SDL_Event& event) {
     }
     if (event.type == eventOcr_) {
         if (app_) app_->onOcrCompleted();
+        return;
+    }
+    if (event.type == eventScan_) {
+        if (app_) app_->onScanCompleted();
         return;
     }
     switch (event.type) {

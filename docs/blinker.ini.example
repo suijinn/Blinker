@@ -24,6 +24,19 @@ help_hint = true
 nav_arrows = true
 # フィット表示時にウィンドウより小さい画像を拡大するか
 fit_upscale = false
+# 一覧の並び順: name(名前) / date(更新日時) / size(サイズ) / ext(種類)。
+# 表示中はサイドバー(ファイル名一覧)の右クリックメニューから切り替えられる。
+# 並び替えても表示中の画像は変わらない(番号だけが変わる)
+sort = name
+# 降順にするか(date で true なら新しい順、size で true なら大きい順)。
+# 主キーが同じ画像どうしの並びは、降順でも名前の昇順のまま
+sort_descending = false
+# サブフォルダの画像も一覧に含めるか。並び順は「フォルダ → ファイル名」になり、
+# サイドバーには起点フォルダからの相対パスが出る(ステータスバーに
+# 「サブフォルダ含む」と表示される)。シンボリックリンクと隠しフォルダは辿らず、
+# 100000 件で打ち切る。走査は裏で行うので、大きなツリーでも起動は待たされない
+# (まずフォルダ直下の画像が出て、走査が終わると一覧が増える)
+recursive = false
 # 前後何枚を先読みするか (0-8)
 prefetch_radius = 2
 # 埋め込みカラープロファイル (ICC) を sRGB へ変換して表示するか。
@@ -143,7 +156,11 @@ border_width = 0
 #   pan_left pan_right pan_up pan_down rotate_cw rotate_ccw
 #   fullscreen open copy_image copy_path copy_file copy_ocr_text paste save save_as
 #     (save = 元のファイルへ上書き保存、save_as = 名前を付けて保存)
-#   undo redo delete_annotation
+#   undo redo delete_annotation resize
+#     (resize = 倍率・長辺のプリセットメニューを出して画像をリサイズ)
+#   sort_name sort_date sort_size sort_ext sort_reverse sort_cycle recursive
+#     (一覧の並び順。既定のキーは割り当てていない ―― サイドバーの右クリックが入口。
+#      sort_* は同じキーを選び直すと昇順 / 降順が入れ替わる)
 #   sidebar statusbar help escape quit
 #   tool_crop tool_ocr tool_rect tool_ellipse tool_arrow tool_line tool_pen tool_marker
 #   tool_number tool_text

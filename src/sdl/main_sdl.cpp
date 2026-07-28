@@ -11,6 +11,7 @@
 #include "core/config.h"
 #include "core/image_cache.h"
 #include "core/ocr_service.h"
+#include "core/scan_service.h"
 #include "core/str_util.h"
 #include "core/unicode.h"
 #include "sdl/annotation_stub.h"
@@ -80,9 +81,13 @@ int main(int argc, char** argv) {
         OcrStub ocrEngine;
         OcrService ocrService(ocrEngine);
         PrinterStub printer;  // 印刷も未対応(PrinterStub が理由を返す)
+        // サブフォルダの再帰列挙は UI スレッドで走らせると起動が固まるためワーカーへ回す。
+        // fileSystem より後に宣言すること(~ScanService がワーカーを join し終えるまで
+        // 列挙の実装は生きている必要がある)
+        ScanService scanService(fileSystem);
 
         App app(window, fileSystem, cache, clipboard, encoder, annotationRasterizer, ocrService,
-                printer);
+                printer, scanService);
         app.setDarkTheme(resolveDarkTheme(config));
         app.applyConfig(config);
         window.attachApp(&app);
@@ -90,6 +95,7 @@ int main(int argc, char** argv) {
         cache.setOnDecoded(
             [&window](const std::filesystem::path&) { window.postDecodedEvent(); });
         ocrService.setOnCompleted([&window] { window.postOcrCompletedEvent(); });
+        scanService.setOnCompleted([&window] { window.postScanCompletedEvent(); });
 
         // POSIX の argv はバイト列。ロケールは UTF-8 前提(現代の Linux/macOS 標準)
         if (argc >= 2 && argv[1] && argv[1][0] != '\0') {

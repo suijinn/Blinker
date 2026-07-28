@@ -58,6 +58,12 @@ public:
      */
     void postOcrCompletedEvent();
 
+    /**
+     * @brief サブフォルダ走査の完了をイベントとして投函する。
+     * @note ScanService のワーカースレッドから呼べる(SDL_PushEvent はスレッド安全)。
+     */
+    void postScanCompletedEvent();
+
     /// @name IAppHost の実装
     /// @{
 
@@ -191,6 +197,7 @@ private:
     Uint32 eventDecoded_ = 0;  ///< SDL_RegisterEvents で確保したデコード完了イベント
     Uint32 eventTimer_ = 0;    ///< 同・タイマー満了イベント
     Uint32 eventOcr_ = 0;      ///< 同・文字認識完了イベント
+    Uint32 eventScan_ = 0;     ///< 同・サブフォルダ走査完了イベント
     SDL_TimerID timerId_ = 0;
     SDL_Cursor* arrowCursor_ = nullptr;   ///< 既定のカーソル
     SDL_Cursor* resizeCursor_ = nullptr;  ///< サイドバーの幅変更用(左右の矢印)

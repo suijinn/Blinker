@@ -18,8 +18,8 @@
 #include "core/dib.h"
 #include "core/edit.h"
 #include "core/exif.h"
-#include "core/image_scale.h"
 #include "core/geometry.h"
+#include "core/image_scale.h"
 #include "core/help.h"
 #include "core/image_cache.h"
 #include "core/image_list.h"
@@ -30,6 +30,8 @@
 #include "core/ocr_text.h"
 #include "core/pixel_convert.h"
 #include "core/print_layout.h"
+#include "core/scan_service.h"
+#include "core/sort_order.h"
 #include "core/str_util.h"
 #include "core/text_edit.h"
 #include "core/text_style.h"
@@ -1173,11 +1175,29 @@ void chooseInToolMenu(App& app, FakeHost& host, std::initializer_list<size_t> ch
 
 class FakeFileSystem final : public IFileSystem {
 public:
-    std::vector<std::filesystem::path> listImages(const std::filesystem::path&) override {
-        return files;
+    // 実装と同じ契約(名前昇順で返す)を守るため、files は昇順で入れること
+    ListResult listImages(const std::filesystem::path& dir, const ListOptions& options) override {
+        const std::vector<std::filesystem::path>& source =
+            options.recursive && !recursiveFiles.empty() ? recursiveFiles : files;
+        ListResult result;
+        result.entries.reserve(source.size());
+        for (size_t i = 0; i < source.size(); ++i) {
+            FileEntry entry;
+            entry.path = source[i];
+            entry.relative = options.recursive ? source[i].lexically_relative(dir)
+                                               : source[i].filename();
+            if (entry.relative.empty()) entry.relative = source[i].filename();
+            entry.lastWriteTick = i < ticks.size() ? ticks[i] : 0;
+            entry.sizeBytes = i < sizes.size() ? sizes[i] : 0;
+            result.entries.push_back(std::move(entry));
+        }
+        return result;
     }
 
-    std::vector<std::filesystem::path> files;
+    std::vector<std::filesystem::path> files;           ///< フォルダ直下の画像(名前昇順)
+    std::vector<std::filesystem::path> recursiveFiles;  ///< 再帰時に返す一覧(空なら files)
+    std::vector<int64_t> ticks;   ///< source と同じ添字の更新時刻(大小比較にだけ使う)
+    std::vector<uint64_t> sizes;  ///< 同・ファイルサイズ
 };
 
 class FakeClipboard final : public IClipboard {
@@ -1367,8 +1387,10 @@ void testAppClipboard() {
     FakeAnnotationRasterizer rasterizer;
     FakeOcrEngine ocrEngine;
     OcrService ocrService(ocrEngine);
+    ScanService scanService(fileSystem);
     FakePrinter printer;
-    App app(host, fileSystem, cache, clipboard, encoder, rasterizer, ocrService, printer);
+    App app(host, fileSystem, cache, clipboard, encoder, rasterizer, ocrService, printer,
+            scanService);
 
     // 画像を開いていない状態では何もコピーされない
     app.execute(Command::CopyImage);
@@ -1427,6 +1449,7 @@ void testAppSlowDecode() {
     FakeAnnotationRasterizer rasterizer;
     FakeOcrEngine ocrEngine;
     OcrService ocrService(ocrEngine);
+    ScanService scanService(fileSystem);
 
     std::mutex mutex;
     std::condition_variable cv;
@@ -1438,7 +1461,8 @@ void testAppSlowDecode() {
     });
 
     FakePrinter printer;
-    App app(host, fileSystem, cache, clipboard, encoder, rasterizer, ocrService, printer);
+    App app(host, fileSystem, cache, clipboard, encoder, rasterizer, ocrService, printer,
+            scanService);
     app.onResize(800, 600);
     const std::filesystem::path path = "C:/pics/huge.jpeg";
     fileSystem.files = {path};
@@ -1468,8 +1492,10 @@ void testAppStatusBar() {
     FakeAnnotationRasterizer rasterizer;
     FakeOcrEngine ocrEngine;
     OcrService ocrService(ocrEngine);
+    ScanService scanService(fileSystem);
     FakePrinter printer;
-    App app(host, fileSystem, cache, clipboard, encoder, rasterizer, ocrService, printer);
+    App app(host, fileSystem, cache, clipboard, encoder, rasterizer, ocrService, printer,
+            scanService);
     app.onResize(800, 600);
 
     // 画像なし: バーは表示されるが左右とも空
@@ -1561,8 +1587,10 @@ void testAppPasteWithoutFolder() {
     FakeAnnotationRasterizer rasterizer;
     FakeOcrEngine ocrEngine;
     OcrService ocrService(ocrEngine);
+    ScanService scanService(fileSystem);
     FakePrinter printer;
-    App app(host, fileSystem, cache, clipboard, encoder, rasterizer, ocrService, printer);
+    App app(host, fileSystem, cache, clipboard, encoder, rasterizer, ocrService, printer,
+            scanService);
     app.onResize(800, 600);
 
     auto pasted = std::make_shared<DecodedImage>();
@@ -1598,8 +1626,10 @@ void testAppWheelHorizontal() {
     FakeAnnotationRasterizer rasterizer;
     FakeOcrEngine ocrEngine;
     OcrService ocrService(ocrEngine);
+    ScanService scanService(fileSystem);
     FakePrinter printer;
-    App app(host, fileSystem, cache, clipboard, encoder, rasterizer, ocrService, printer);
+    App app(host, fileSystem, cache, clipboard, encoder, rasterizer, ocrService, printer,
+            scanService);
     app.onResize(800, 600);
     for (int i = 1; i <= 6; ++i) {
         fileSystem.files.push_back(std::format("C:/pics/f{:02}.png", i));
@@ -1670,8 +1700,10 @@ void testAppPasteSave() {
     FakeAnnotationRasterizer rasterizer;
     FakeOcrEngine ocrEngine;
     OcrService ocrService(ocrEngine);
+    ScanService scanService(fileSystem);
     FakePrinter printer;
-    App app(host, fileSystem, cache, clipboard, encoder, rasterizer, ocrService, printer);
+    App app(host, fileSystem, cache, clipboard, encoder, rasterizer, ocrService, printer,
+            scanService);
     app.onResize(800, 600);
 
     // 画像なしでの保存: ダイアログは開かずメッセージ
@@ -1773,8 +1805,10 @@ void testAppSaveOverwrite() {
     FakeAnnotationRasterizer rasterizer;
     FakeOcrEngine ocrEngine;
     OcrService ocrService(ocrEngine);
+    ScanService scanService(fileSystem);
     FakePrinter printer;
-    App app(host, fileSystem, cache, clipboard, encoder, rasterizer, ocrService, printer);
+    App app(host, fileSystem, cache, clipboard, encoder, rasterizer, ocrService, printer,
+            scanService);
     app.onResize(800, 600);
     app.applyConfig(Config::parse("[save]\njpeg_quality = 55\n"));
 
@@ -1900,8 +1934,10 @@ void testAppSaveDownscaled() {
     FakeAnnotationRasterizer rasterizer;
     FakeOcrEngine ocrEngine;
     OcrService ocrService(ocrEngine);
+    ScanService scanService(fileSystem);
     FakePrinter printer;
-    App app(host, fileSystem, cache, clipboard, encoder, rasterizer, ocrService, printer);
+    App app(host, fileSystem, cache, clipboard, encoder, rasterizer, ocrService, printer,
+            scanService);
     app.onResize(800, 600);
 
     std::mutex mutex;
@@ -2079,8 +2115,10 @@ void testAppAdoptsRefinedImage() {
     FakeAnnotationRasterizer rasterizer;
     FakeOcrEngine ocrEngine;
     OcrService ocrService(ocrEngine);
+    ScanService scanService(fileSystem);
     FakePrinter printer;
-    App app(host, fileSystem, cache, clipboard, encoder, rasterizer, ocrService, printer);
+    App app(host, fileSystem, cache, clipboard, encoder, rasterizer, ocrService, printer,
+            scanService);
     app.onResize(800, 600);
 
     std::mutex mutex;
@@ -2145,8 +2183,10 @@ void testAppSaveColorConverted() {
     FakeAnnotationRasterizer rasterizer;
     FakeOcrEngine ocrEngine;
     OcrService ocrService(ocrEngine);
+    ScanService scanService(fileSystem);
     FakePrinter printer;
-    App app(host, fileSystem, cache, clipboard, encoder, rasterizer, ocrService, printer);
+    App app(host, fileSystem, cache, clipboard, encoder, rasterizer, ocrService, printer,
+            scanService);
     app.onResize(800, 600);
 
     std::mutex mutex;
@@ -2233,8 +2273,10 @@ void testAppPrint() {
     FakeAnnotationRasterizer rasterizer;
     FakeOcrEngine ocrEngine;
     OcrService ocrService(ocrEngine);
+    ScanService scanService(fileSystem);
     FakePrinter printer;
-    App app(host, fileSystem, cache, clipboard, encoder, rasterizer, ocrService, printer);
+    App app(host, fileSystem, cache, clipboard, encoder, rasterizer, ocrService, printer,
+            scanService);
     app.onResize(800, 600);
 
     // 画像なし: プリンタには渡さずメッセージだけ
@@ -2363,8 +2405,10 @@ void testAppSidebar() {
     FakeAnnotationRasterizer rasterizer;
     FakeOcrEngine ocrEngine;
     OcrService ocrService(ocrEngine);
+    ScanService scanService(fileSystem);
     FakePrinter printer;
-    App app(host, fileSystem, cache, clipboard, encoder, rasterizer, ocrService, printer);
+    App app(host, fileSystem, cache, clipboard, encoder, rasterizer, ocrService, printer,
+            scanService);
     app.onResize(800, 600);
 
     // 既定では非表示
@@ -2483,8 +2527,10 @@ void testAppSidebarResize() {
     FakeAnnotationRasterizer rasterizer;
     FakeOcrEngine ocrEngine;
     OcrService ocrService(ocrEngine);
+    ScanService scanService(fileSystem);
     FakePrinter printer;
-    App app(host, fileSystem, cache, clipboard, encoder, rasterizer, ocrService, printer);
+    App app(host, fileSystem, cache, clipboard, encoder, rasterizer, ocrService, printer,
+            scanService);
     app.onResize(800, 600);
     std::mutex mutex;
     std::condition_variable cv;
@@ -2569,8 +2615,10 @@ void testAppHelpSidebar() {
     FakeAnnotationRasterizer rasterizer;
     FakeOcrEngine ocrEngine;
     OcrService ocrService(ocrEngine);
+    ScanService scanService(fileSystem);
     FakePrinter printer;
-    App app(host, fileSystem, cache, clipboard, encoder, rasterizer, ocrService, printer);
+    App app(host, fileSystem, cache, clipboard, encoder, rasterizer, ocrService, printer,
+            scanService);
     app.onResize(800, 600);
     for (int i = 1; i <= 30; ++i) {
         fileSystem.files.push_back(std::format("C:/pics/f{:02}.png", i));
@@ -2653,14 +2701,16 @@ void testAppHelpSidebar() {
     CHECK(sb.items[1].text == "次の画像  N");
 
     // 起動時の案内はステータスバーに出る(未割り当てキーの案内に次ぐ2つ目の導線)
-    App fresh(host, fileSystem, cache, clipboard, encoder, rasterizer, ocrService, printer);
+    App fresh(host, fileSystem, cache, clipboard, encoder, rasterizer, ocrService, printer,
+            scanService);
     fresh.onResize(800, 600);
     fresh.showStartupHint();
     CHECK(fresh.statusBar().leftText == "F1 で操作一覧");
     CHECK(host.lastTimerMs > 0);  // 一定時間で消える
 
     // ini で無効にできる
-    App quiet(host, fileSystem, cache, clipboard, encoder, rasterizer, ocrService, printer);
+    App quiet(host, fileSystem, cache, clipboard, encoder, rasterizer, ocrService, printer,
+            scanService);
     quiet.onResize(800, 600);
     quiet.applyConfig(Config::parse("[view]\nhelp_hint = false\n"));
     quiet.showStartupHint();
@@ -2680,8 +2730,10 @@ void testAppHelpHint() {
     FakeAnnotationRasterizer rasterizer;
     FakeOcrEngine ocrEngine;
     OcrService ocrService(ocrEngine);
+    ScanService scanService(fileSystem);
     FakePrinter printer;
-    App app(host, fileSystem, cache, clipboard, encoder, rasterizer, ocrService, printer);
+    App app(host, fileSystem, cache, clipboard, encoder, rasterizer, ocrService, printer,
+            scanService);
     app.onResize(800, 600);
 
     // 何も割り当てられていないキー → 消費はしないが案内を出す
@@ -2709,7 +2761,8 @@ void testAppHelpHint() {
     CHECK(app.statusBar().leftText == "F1 で操作一覧");
 
     // ini でキーを変えれば案内の文面も変わる
-    App rebound(host, fileSystem, cache, clipboard, encoder, rasterizer, ocrService, printer);
+    App rebound(host, fileSystem, cache, clipboard, encoder, rasterizer, ocrService, printer,
+            scanService);
     rebound.onResize(800, 600);
     rebound.applyConfig(Config::parse("[keys]\nhelp = H\n"));
     CHECK(!rebound.onKey({KeyCode{'J'}}));
@@ -2718,7 +2771,8 @@ void testAppHelpHint() {
     CHECK(rebound.sidebarMode() == SidebarMode::Help);
 
     // ヘルプ自体を無効化(未割り当て)にしたら、案内する先がないので黙る
-    App unbound(host, fileSystem, cache, clipboard, encoder, rasterizer, ocrService, printer);
+    App unbound(host, fileSystem, cache, clipboard, encoder, rasterizer, ocrService, printer,
+            scanService);
     unbound.onResize(800, 600);
     unbound.applyConfig(Config::parse("[keys]\nhelp =\n"));
     CHECK(!unbound.onKey({KeyCode::F1}));
@@ -3028,8 +3082,10 @@ void testAppAnnotationObjects() {
     FakeAnnotationRasterizer rasterizer;
     FakeOcrEngine ocrEngine;
     OcrService ocrService(ocrEngine);
+    ScanService scanService(fileSystem);
     FakePrinter printer;
-    App app(host, fileSystem, cache, clipboard, encoder, rasterizer, ocrService, printer);
+    App app(host, fileSystem, cache, clipboard, encoder, rasterizer, ocrService, printer,
+            scanService);
     app.onResize(800, 600);
 
     // 8x8 画像を貼り付け、矩形注釈 (0,0)-(4,4) を追加(画像左上はスクリーン (396,283))
@@ -3207,8 +3263,10 @@ void testAppEdit() {
     FakeAnnotationRasterizer rasterizer;
     FakeOcrEngine ocrEngine;
     OcrService ocrService(ocrEngine);
+    ScanService scanService(fileSystem);
     FakePrinter printer;
-    App app(host, fileSystem, cache, clipboard, encoder, rasterizer, ocrService, printer);
+    App app(host, fileSystem, cache, clipboard, encoder, rasterizer, ocrService, printer,
+            scanService);
     app.onResize(800, 600);
 
     // 画像がないときは選択を開始しない
@@ -3336,12 +3394,12 @@ void testAppEdit() {
 
     // 閾値未満の右ドラッグ(ただの右クリック)はツール切り替えメニューを開く。
     // 末端項目: ツール10種 + 太さ7 + 文字サイズ7 + フォント9 + 色1 + 塗りつぶし(5+色1)
-    // + 枠線(6+色1) = 47(回転角度はオブジェクト側にある)
+    // + 枠線(6+色1) + リサイズ(倍率5+長辺7) = 59(回転角度はオブジェクト側にある)
     host.menuChoice = std::nullopt;  // キャンセルするので何も起きない
     app.onMouseDown(MouseButton::Right, {400, 300});
     app.onMouseUp(MouseButton::Right, {402, 301});
     CHECK(host.menuCount == 1);
-    CHECK(countMenuLeaves(host.lastMenuItems) == 47);
+    CHECK(countMenuLeaves(host.lastMenuItems) == 59);
     CHECK(app.currentTool() == EditTool::Rect);
     CHECK(app.annotations().specs->empty());
     CHECK(app.currentImage()->width == 8);
@@ -3916,8 +3974,10 @@ void testAppTextEditing() {
     FakeAnnotationRasterizer rasterizer;
     FakeOcrEngine ocrEngine;
     OcrService ocrService(ocrEngine);
+    ScanService scanService(fs);
     FakePrinter printer;
-    App app(host, fs, cache, clipboard, encoder, rasterizer, ocrService, printer);
+    App app(host, fs, cache, clipboard, encoder, rasterizer, ocrService, printer,
+            scanService);
 
     app.onResize(800, 600);
     // 100x100 の画像を貼り付け、等倍表示にしてスクリーン座標を素直にする
@@ -4095,8 +4155,10 @@ void testAppTextStyles() {
     FakeAnnotationRasterizer rasterizer;
     FakeOcrEngine ocrEngine;
     OcrService ocrService(ocrEngine);
+    ScanService scanService(fs);
     FakePrinter printer;
-    App app(host, fs, cache, clipboard, encoder, rasterizer, ocrService, printer);
+    App app(host, fs, cache, clipboard, encoder, rasterizer, ocrService, printer,
+            scanService);
 
     app.onResize(800, 600);
     auto source = std::make_shared<DecodedImage>();
@@ -4264,8 +4326,10 @@ void testAppFontFamily() {
     FakeAnnotationRasterizer rasterizer;
     FakeOcrEngine ocrEngine;
     OcrService ocrService(ocrEngine);
+    ScanService scanService(fs);
     FakePrinter printer;
-    App app(host, fs, cache, clipboard, encoder, rasterizer, ocrService, printer);
+    App app(host, fs, cache, clipboard, encoder, rasterizer, ocrService, printer,
+            scanService);
 
     app.onResize(800, 600);
     auto source = std::make_shared<DecodedImage>();
@@ -4349,8 +4413,10 @@ void testAppPenTools() {
     FakeAnnotationRasterizer rasterizer;
     FakeOcrEngine ocrEngine;
     OcrService ocrService(ocrEngine);
+    ScanService scanService(fileSystem);
     FakePrinter printer;
-    App app(host, fileSystem, cache, clipboard, encoder, rasterizer, ocrService, printer);
+    App app(host, fileSystem, cache, clipboard, encoder, rasterizer, ocrService, printer,
+            scanService);
     app.onResize(800, 600);
 
     auto source = std::make_shared<DecodedImage>();
@@ -4517,8 +4583,10 @@ void testAnnotationSizeIsImageBased() {
     FakeAnnotationRasterizer rasterizer;
     FakeOcrEngine ocrEngine;
     OcrService ocrService(ocrEngine);
+    ScanService scanService(fileSystem);
     FakePrinter printer;
-    App app(host, fileSystem, cache, clipboard, encoder, rasterizer, ocrService, printer);
+    App app(host, fileSystem, cache, clipboard, encoder, rasterizer, ocrService, printer,
+            scanService);
     app.onResize(800, 600);
 
     // 画面中央付近で描いても縁に当たらないよう、余裕のある大きさにする
@@ -4582,8 +4650,10 @@ void testAppSwapMouseButtons() {
     FakeAnnotationRasterizer rasterizer;
     FakeOcrEngine ocrEngine;
     OcrService ocrService(ocrEngine);
+    ScanService scanService(fileSystem);
     FakePrinter printer;
-    App app(host, fileSystem, cache, clipboard, encoder, rasterizer, ocrService, printer);
+    App app(host, fileSystem, cache, clipboard, encoder, rasterizer, ocrService, printer,
+            scanService);
     app.onResize(800, 600);
 
     // 既定では左がパン・右が編集
@@ -4668,13 +4738,16 @@ void testAppSwapMouseButtons() {
     CHECK(host.menuCount == 2);
     CHECK(app.annotations().specs->empty());
 
-    // サイドバーは UI 部品なので入れ替えの対象外(左クリックで消費、右は何もしない)
+    // サイドバーは UI 部品なので入れ替えの対象外(左クリックで項目へ移動、
+    // 右クリックは swap_buttons によらず一覧のメニュー)
     app.applyConfig(Config::parse("[view]\nsidebar = true\n"));
+    host.menuChoice = std::nullopt;  // キャンセルするので並び順は変わらない
     CHECK(app.onMouseDown(MouseButton::Left, {100, 100}));
     app.onMouseUp(MouseButton::Left, {100, 100});
     CHECK(app.onMouseDown(MouseButton::Right, {100, 100}));
     app.onMouseUp(MouseButton::Right, {100, 100});
-    CHECK(host.menuCount == 2);  // サイドバー上ではメニューを出さない
+    CHECK(host.menuCount == 3);  // 一覧のメニュー(並び替え・サブフォルダ)
+    CHECK(findMenuItem(host.lastMenuItems, "昇順") != nullptr);
 }
 
 void testNaturalCompare() {
@@ -4858,6 +4931,7 @@ void testAppOcr() {
     FakeAnnotationRasterizer rasterizer;
     FakeOcrEngine ocrEngine;
     OcrService ocrService(ocrEngine);
+    ScanService scanService(fileSystem);
 
     std::mutex mutex;
     std::condition_variable cv;
@@ -4873,7 +4947,8 @@ void testAppOcr() {
     };
 
     FakePrinter printer;
-    App app(host, fileSystem, cache, clipboard, encoder, rasterizer, ocrService, printer);
+    App app(host, fileSystem, cache, clipboard, encoder, rasterizer, ocrService, printer,
+            scanService);
     app.onResize(800, 600);
 
     // 画像が無いときは予約せず通知だけ
@@ -4984,6 +5059,341 @@ void testAppOcr() {
 
 } // namespace
 
+void testSortOrder() {
+    const auto make = [](const std::string& name, const int64_t tick, const uint64_t size) {
+        FileEntry entry;
+        entry.path = "C:/pics/" + name;
+        entry.relative = name;
+        entry.lastWriteTick = tick;
+        entry.sizeBytes = size;
+        return entry;
+    };
+    // IFileSystem の契約どおり名前昇順で渡す。同値の tie-break はこの並びで決まる
+    const std::vector<FileEntry> entries = {
+        make("a.png", 30, 100),
+        make("b.jpg", 10, 300),
+        make("c.png", 20, 100),
+        make("d.jpg", 10, 200),
+    };
+    const auto names = [&entries](const std::vector<size_t>& order) {
+        std::string joined;
+        for (const size_t i : order) {
+            if (!joined.empty()) joined += ',';
+            joined += pathToUtf8(entries[i].path.filename());
+        }
+        return joined;
+    };
+
+    CHECK(names(sortedOrder(entries, {SortKey::Name, false})) == "a.png,b.jpg,c.png,d.jpg");
+    CHECK(names(sortedOrder(entries, {SortKey::Name, true})) == "d.jpg,c.png,b.jpg,a.png");
+
+    // 更新日時。同じ時刻の b と d は名前昇順のまま並ぶ
+    CHECK(names(sortedOrder(entries, {SortKey::Date, false})) == "b.jpg,d.jpg,c.png,a.png");
+    // 降順でも同値の中は名前昇順のまま(std::reverse で実装してはならない理由)
+    CHECK(names(sortedOrder(entries, {SortKey::Date, true})) == "a.png,c.png,b.jpg,d.jpg");
+
+    CHECK(names(sortedOrder(entries, {SortKey::Size, false})) == "a.png,c.png,d.jpg,b.jpg");
+    CHECK(names(sortedOrder(entries, {SortKey::Size, true})) == "b.jpg,d.jpg,a.png,c.png");
+
+    CHECK(names(sortedOrder(entries, {SortKey::Extension, false})) == "b.jpg,d.jpg,a.png,c.png");
+    CHECK(names(sortedOrder(entries, {SortKey::Extension, true})) == "a.png,c.png,b.jpg,d.jpg");
+
+    // 拡張子の大文字小文字は区別しない
+    const std::vector<FileEntry> mixed = {make("x.JPG", 0, 0), make("y.png", 0, 0),
+                                          make("z.jpg", 0, 0)};
+    std::string mixedNames;
+    for (const size_t i : sortedOrder(mixed, {SortKey::Extension, false})) {
+        if (!mixedNames.empty()) mixedNames += ',';
+        mixedNames += pathToUtf8(mixed[i].path.filename());
+    }
+    CHECK(mixedNames == "x.JPG,z.jpg,y.png");
+
+    CHECK(sortedOrder({}, {SortKey::Date, true}).empty());
+
+    // ini 表記の往復と巡回
+    CHECK(sortKeyIniName(SortKey::Extension) == "ext");
+    CHECK(sortKeyFromIniName(" Date ") == SortKey::Date);
+    CHECK(!sortKeyFromIniName("mtime").has_value());
+    CHECK(nextSortKey(SortKey::Name) == SortKey::Date);
+    CHECK(nextSortKey(SortKey::Extension) == SortKey::Name);
+    CHECK(sortOrderLabel({SortKey::Date, true}) == "更新日時 (新しい順)");
+}
+
+void testResizeImage() {
+    // 2x2。B チャンネルだけ値を変え、G/R/A は一定にして混ざり方を見る
+    DecodedImage img;
+    img.width = 2;
+    img.height = 2;
+    const uint8_t blues[4] = {0, 100, 200, 255};
+    for (const uint8_t b : blues) {
+        img.pixels.insert(img.pixels.end(), {b, 10, 20, 255});
+    }
+
+    CHECK(resizeImage(img, 0, 4) == nullptr);
+    CHECK(resizeImage(img, 4, 0) == nullptr);
+    CHECK(resizeImage(DecodedImage{}, 4, 4) == nullptr);
+    CHECK(resizeImage(img, kMaxResizeDimension + 1, 4) == nullptr);
+    CHECK(resizeImage(img, 4, kMaxResizeDimension + 1) == nullptr);
+
+    // 等倍の指定は恒等(半径 1 の三角フィルタは中心以外の重みが 0 になる)
+    const auto same = resizeImage(img, 2, 2);
+    CHECK(same != nullptr);
+    CHECK(same->pixels == img.pixels);
+
+    // 2x2 → 1x1 は 4 画素の平均。固定小数の丸めで ±2 程度ずれる
+    const auto one = resizeImage(img, 1, 1);
+    CHECK(one != nullptr);
+    CHECK(one->width == 1 && one->height == 1);
+    CHECK(std::abs(static_cast<int>(one->pixels[0]) - (0 + 100 + 200 + 255) / 4) <= 2);
+    CHECK(one->pixels[1] == 10 && one->pixels[2] == 20 && one->pixels[3] == 255);
+
+    // 拡大しても四隅の色は元のまま(端の外側は端の画素へ畳み込む)
+    const auto up = resizeImage(img, 4, 4);
+    CHECK(up != nullptr);
+    CHECK(up->width == 4 && up->height == 4);
+    CHECK(up->pixels[0] == 0);                  // 左上 = src(0,0)
+    CHECK(up->pixels[(3 * 4 + 3) * 4] == 255);  // 右下 = src(1,1)
+    CHECK(up->pixels[3] == 255);                // アルファは保たれる
+
+    // 一様な画像はどう変えても値が変わらない(重みの合計が 1 になっていること)
+    DecodedImage flat;
+    flat.width = 7;
+    flat.height = 3;
+    flat.pixels.assign(7 * 3 * 4, 128);
+    const auto stretched = resizeImage(flat, 3, 11);
+    CHECK(stretched != nullptr);
+    CHECK(stretched->pixels == std::vector<uint8_t>(3 * 11 * 4, 128));
+
+    // 取り込み時に縮小された画像は、リサイズしても上書き保存を拒む印を保つ
+    CHECK(!up->downscaled());
+    DecodedImage shrunk = img;
+    shrunk.sourceWidth = 8;
+    shrunk.sourceHeight = 8;
+    const auto resizedShrunk = resizeImage(shrunk, 4, 4);
+    CHECK(resizedShrunk != nullptr);
+    CHECK(resizedShrunk->downscaled());
+    CHECK(resizedShrunk->sourceWidth == 8 && resizedShrunk->sourceHeight == 8);
+}
+
+void testScaleAnnotation() {
+    AnnotationSpec spec;
+    spec.p1 = {10, 20};
+    spec.p2 = {30, 60};
+    spec.points = {{10, 20}, {30, 60}};
+    spec.strokeWidth = 4;
+    spec.fontSize = 20;
+    spec.borderWidth = 2;
+    spec.angleDeg = 30;
+
+    scaleAnnotation(spec, 2.0f, 0.5f);
+    CHECK(nearly(spec.p1.x, 20) && nearly(spec.p1.y, 10));
+    CHECK(nearly(spec.p2.x, 60) && nearly(spec.p2.y, 30));
+    CHECK(nearly(spec.points[1].x, 60) && nearly(spec.points[1].y, 30));
+    // 1 次元の量は小さいほうの倍率(ここでは 0.5)に合わせる
+    CHECK(nearly(spec.strokeWidth, 2));
+    CHECK(nearly(spec.fontSize, 10));
+    CHECK(nearly(spec.borderWidth, 1));
+    CHECK(nearly(spec.angleDeg, 30));  // 回転角は変えない
+}
+
+void testAppSortOrder() {
+    FakeDecoder decoder;
+    ImageCache cache(decoder);
+    FakeHost host;
+    FakeFileSystem fileSystem;
+    FakeClipboard clipboard;
+    FakeEncoder encoder;
+    FakeAnnotationRasterizer rasterizer;
+    FakeOcrEngine ocrEngine;
+    OcrService ocrService(ocrEngine);
+    ScanService scanService(fileSystem);
+    FakePrinter printer;
+    App app(host, fileSystem, cache, clipboard, encoder, rasterizer, ocrService, printer,
+            scanService);
+    app.onResize(800, 600);
+
+    std::mutex mutex;
+    std::condition_variable cv;
+    bool decoded = false;
+    cache.setOnDecoded([&](const std::filesystem::path&) {
+        std::lock_guard lock(mutex);
+        decoded = true;
+        cv.notify_all();
+    });
+
+    fileSystem.files = {"C:/pics/a.png", "C:/pics/b.png", "C:/pics/c.png"};
+    fileSystem.ticks = {10, 20, 30};  // a が最も古い = 「新しい順」は名前の逆順になる
+    app.openPath(fileSystem.files[0]);
+    {
+        std::unique_lock lock(mutex);
+        CHECK(cv.wait_for(lock, std::chrono::seconds(5), [&] { return decoded; }));
+    }
+    app.onDecodeCompleted();
+    app.execute(Command::ToggleSidebar);
+
+    const auto labels = [&app] {
+        std::string joined;
+        for (const auto& item : app.sidebar().items) {
+            if (!joined.empty()) joined += ',';
+            joined += item.text;
+        }
+        return joined;
+    };
+    const auto currentIndex = [&app] {
+        const SidebarView view = app.sidebar();
+        for (size_t i = 0; i < view.items.size(); ++i) {
+            if (view.items[i].current) return i;
+        }
+        return view.items.size();
+    };
+    CHECK(labels() == "a.png,b.png,c.png");
+    CHECK(currentIndex() == 0);
+
+    // 並び替えても表示中の画像は変わらない(一覧内の位置だけが動く)
+    app.execute(Command::SortByDate);  // 別のキーへ移るとき、日時だけ「新しい順」が既定
+    CHECK(labels() == "c.png,b.png,a.png");
+    CHECK(currentIndex() == 2);
+    CHECK(app.currentImage() != nullptr);
+
+    app.execute(Command::SortByDate);  // 同じキーをもう一度で昇順 / 降順が反転する
+    CHECK(labels() == "a.png,b.png,c.png");
+    CHECK(currentIndex() == 0);
+
+    app.execute(Command::SortByName);
+    CHECK(labels() == "a.png,b.png,c.png");
+    CHECK(currentIndex() == 0);
+    app.execute(Command::ToggleSortDescending);
+    CHECK(labels() == "c.png,b.png,a.png");
+    CHECK(currentIndex() == 2);
+}
+
+void testAppRecursive() {
+    FakeDecoder decoder;
+    ImageCache cache(decoder);
+    FakeHost host;
+    FakeFileSystem fileSystem;
+    FakeClipboard clipboard;
+    FakeEncoder encoder;
+    FakeAnnotationRasterizer rasterizer;
+    FakeOcrEngine ocrEngine;
+    OcrService ocrService(ocrEngine);
+    ScanService scanService(fileSystem);
+    FakePrinter printer;
+    App app(host, fileSystem, cache, clipboard, encoder, rasterizer, ocrService, printer,
+            scanService);
+    app.onResize(800, 600);
+
+    std::mutex mutex;
+    std::condition_variable cv;
+    bool decoded = false;
+    bool scanned = false;
+    cache.setOnDecoded([&](const std::filesystem::path&) {
+        std::lock_guard lock(mutex);
+        decoded = true;
+        cv.notify_all();
+    });
+    scanService.setOnCompleted([&] {
+        std::lock_guard lock(mutex);
+        scanned = true;
+        cv.notify_all();
+    });
+    const auto waitFor = [&](bool& flag) {
+        std::unique_lock lock(mutex);
+        const bool ok = cv.wait_for(lock, std::chrono::seconds(5), [&] { return flag; });
+        flag = false;
+        return ok;
+    };
+
+    fileSystem.files = {"C:/pics/a.png", "C:/pics/b.png"};
+    // 再帰時は「親フォルダ → ファイル名」の順(直下が先、サブフォルダが後)
+    fileSystem.recursiveFiles = {"C:/pics/a.png", "C:/pics/b.png", "C:/pics/sub/c.png"};
+    app.openPath(fileSystem.files[0]);
+    CHECK(waitFor(decoded));
+    app.onDecodeCompleted();
+    app.execute(Command::ToggleSidebar);
+    CHECK(app.sidebar().items.size() == 2);
+
+    // サブフォルダの走査はワーカーで走り、完了通知を受けてから一覧が入れ替わる
+    app.execute(Command::ToggleRecursive);
+    CHECK(app.sidebar().items.size() == 2);  // 走査中は直下のままで、待たされない
+    CHECK(waitFor(scanned));
+    app.onScanCompleted();
+    CHECK(app.sidebar().items.size() == 3);
+    // 再帰中はファイル名だけでは区別できないので相対パスを出す
+    const std::string subLabel = app.sidebar().items[2].text;
+    CHECK(subLabel.find("c.png") != std::string::npos);
+    CHECK(subLabel != "c.png");
+    // 表示中の画像は変わらない
+    CHECK(app.sidebar().items[0].current);
+    CHECK(app.currentImage() != nullptr);
+
+    // サブフォルダの画像を表示している状態で再帰を切ると、その画像は一覧から消えるので
+    // 現在位置の画像へ切り替わる(表示中の画像が残るときは切り替えない)
+    app.execute(Command::LastImage);
+    CHECK(waitFor(decoded));
+    app.onDecodeCompleted();
+    CHECK(app.sidebar().items[2].current);
+
+    // 戻すほうは同期で済ませる(走査ワーカーを起こさない)
+    app.execute(Command::ToggleRecursive);
+    CHECK(app.sidebar().items.size() == 2);
+    CHECK(app.sidebar().items[0].text == "a.png");
+    CHECK(app.sidebar().items[0].current);
+}
+
+void testAppResize() {
+    FakeDecoder decoder;
+    ImageCache cache(decoder);
+    FakeHost host;
+    FakeFileSystem fileSystem;
+    FakeClipboard clipboard;
+    FakeEncoder encoder;
+    FakeAnnotationRasterizer rasterizer;
+    FakeOcrEngine ocrEngine;
+    OcrService ocrService(ocrEngine);
+    ScanService scanService(fileSystem);
+    FakePrinter printer;
+    App app(host, fileSystem, cache, clipboard, encoder, rasterizer, ocrService, printer,
+            scanService);
+    app.onResize(800, 600);
+
+    // 8x8 の貼り付け画像に矩形注釈 (0,0)-(4,4) を置く(画像左上はスクリーン (396,283))
+    auto source = std::make_shared<DecodedImage>();
+    source->width = 8;
+    source->height = 8;
+    source->pixels.resize(8 * 8 * 4, 200);
+    clipboard.pasteImage = source;
+    app.execute(Command::PasteImage);
+    app.onMouseDown(MouseButton::Right, {396, 283});
+    app.onMouseUp(MouseButton::Right, {400, 287});
+    CHECK(app.annotations().specs->size() == 1);
+    const AnnotationSpec before = app.annotations().specs->front();
+
+    // メニューの「倍率 → 50%」を選んだのと同じ経路(host が末端項目の index を返す)。
+    // 倍率は 200 / 150 / 75 / 50 / 25 の順なので 4 番目
+    host.menuChoice = 3;
+    app.execute(Command::ResizeImage);
+    CHECK(app.currentImage()->width == 4);
+    CHECK(app.currentImage()->height == 4);
+    // 注釈は焼き込まず、同じ倍率で座標が追従する
+    CHECK(app.annotations().specs->size() == 1);
+    CHECK(nearly(app.annotations().specs->front().p2.x, before.p2.x * 0.5f));
+    CHECK(nearly(app.annotations().specs->front().p2.y, before.p2.y * 0.5f));
+
+    // 長辺の指定でも同じ経路を通る(倍率5 + 長辺の 1920 は index 5+2=7)
+    host.menuChoice = 7;
+    app.execute(Command::ResizeImage);
+    CHECK(app.currentImage()->width == 1920);
+    CHECK(app.currentImage()->height == 1920);
+
+    // 取り消せる(トリミングと同じ破壊的編集)
+    app.execute(Command::Undo);
+    CHECK(app.currentImage()->width == 4);
+    app.execute(Command::Undo);
+    CHECK(app.currentImage()->width == 8);
+    CHECK(nearly(app.annotations().specs->front().p2.x, before.p2.x));
+}
+
 int main() {
     std::cout << std::unitbuf;  // 途中で落ちても FAIL の出力を失わない
     testUnicode();
@@ -5022,6 +5432,9 @@ int main() {
     testImageCacheColorRefine();
     testAppAdoptsRefinedImage();
     testDownscaleToFit();
+    testResizeImage();
+    testScaleAnnotation();
+    testSortOrder();
     testAppSidebar();
     testAppSidebarResize();
     testAppHelpSidebar();
@@ -5042,6 +5455,9 @@ int main() {
     testFlattenOnBackground();
     testOcrService();
     testAppOcr();
+    testAppSortOrder();
+    testAppRecursive();
+    testAppResize();
 
     if (g_failures == 0) {
         std::cout << "all tests passed\n";

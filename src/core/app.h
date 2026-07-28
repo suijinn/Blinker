@@ -19,6 +19,8 @@
 #include "core/keymap.h"
 #include "core/mousemap.h"
 #include "core/ocr_service.h"
+#include "core/scan_service.h"
+#include "core/sort_order.h"
 #include "core/text_edit.h"
 #include "core/viewport.h"
 #include "platform/annotation.h"
@@ -215,10 +217,11 @@ public:
      * @param[in] rasterizer 注釈ラスタライズの実装。
      * @param[in] ocr        文字認識の非同期実行。本オブジェクトより長生きすること。
      * @param[in] printer    印刷の実装。
+     * @param[in] scan       サブフォルダ走査の非同期実行。本オブジェクトより長生きすること。
      */
     App(IAppHost& host, IFileSystem& fileSystem, ImageCache& cache, IClipboard& clipboard,
         IImageEncoder& encoder, IAnnotationRasterizer& rasterizer, OcrService& ocr,
-        IPrinter& printer);
+        IPrinter& printer, ScanService& scan);
 
     /**
      * @brief blinker.ini の設定を適用する。
@@ -498,6 +501,16 @@ public:
     void onOcrCompleted();
 
     /**
+     * @brief サブフォルダ走査の完了を通知する。
+     *
+     * 走査結果で一覧を差し替える。表示中の画像は保たれ(パス一致で位置を復元する)、
+     * 再デコードも起きない。予約し直された後に届いた古い結果は捨てる。
+     *
+     * @note UI スレッドで呼ぶこと(ワーカースレッドから直接呼んではならない)。
+     */
+    void onScanCompleted();
+
+    /**
      * @brief 表示中の画像を返す(描画用スナップショット)。
      * @return 表示中の画像。未読み込み・読み込み失敗なら nullptr。
      */
@@ -571,6 +584,8 @@ private:
     static constexpr float kSidebarResizeGripPx = 4.0f;
     /// 幅の変更で画像の表示領域をここまでは残す(狭いウィンドウでの上限)
     static constexpr float kMinViewportWidth = 120.0f;
+    /// 一覧に載せるファイル数の上限。サブフォルダを再帰で辿ると際限が無くなるため
+    static constexpr size_t kMaxListFiles = 100000;
 
     /// @brief undo 1 段分のスナップショット(画像と注釈一覧)。
     struct UndoState {
@@ -590,6 +605,55 @@ private:
 
     /// @brief 現在位置の画像をキャッシュから取り直し、表示状態を更新する。
     void refreshCurrent();
+
+    /**
+     * @brief entries_ を並べ替えて order_ と ImageList を作り直す。
+     * @param[in] keep 表示位置にしたいパス。空、または一覧に無ければ先頭を指す。
+     */
+    void applyListOrder(const std::filesystem::path& keep);
+
+    /**
+     * @brief 一覧を作り直して表示へ反映する(並び順の変更・走査の完了)。
+     *
+     * 表示中の画像はそのまま(番号だけが変わる)で、再デコードも起きない。
+     * 表示中の画像が一覧から消えた場合(再帰を切ったなど)だけ現在位置の画像へ切り替える。
+     */
+    void relist();
+
+    /**
+     * @brief サブフォルダの走査を予約する(再帰が有効なときだけ)。
+     * @param[in] announce 完了時に件数をステータスバーへ出すか(利用者が切り替えたとき)。
+     * @note 起動時にツリー全体を同期で歩くと最初の 1 枚が出るまで固まるため、
+     *       直下の同期列挙で表示を確定させたうえでこちらを走らせる。
+     */
+    void requestScan(bool announce);
+
+    /**
+     * @brief 並び順を変更して一覧を作り直す。
+     * @param[in] order 新しい並び順。
+     */
+    void setSortOrder(SortOrder order);
+
+    /**
+     * @brief 並び替えキーを選ぶ(Command::SortBy* の共通処理)。
+     * @param[in] key 選ぶキー。既に同じキーなら昇順 / 降順を反転する。
+     */
+    void selectSortKey(SortKey key);
+
+    /**
+     * @brief サブフォルダを含めるかを切り替える。
+     * @param[in] enabled true で含める。
+     * @note 含めない側への切り替えは直下の同期列挙で足りるため走査ワーカーを使わない。
+     */
+    void setRecursive(bool enabled);
+
+    /**
+     * @brief サイドバーの項目に出す文字列を組み立てる。
+     * @param[in] index 一覧内のインデックス。
+     * @return 通常はファイル名。再帰中は起点フォルダからの相対パス
+     *         (ファイル名だけでは別フォルダの同名・連番が区別できないため)。
+     */
+    std::string sidebarLabel(size_t index) const;
 
     /**
      * @brief 遅延カラーマネジメントで読み直された画像へ差し替える。
@@ -801,12 +865,22 @@ private:
         /// @brief 末端項目が表す操作の種類。
         enum class Action {
             SelectTool, StrokeWidth, FontSize, FontFamily, PickColor,
-            FillAlpha, PickFillColor, BorderWidth, PickBorderColor
+            FillAlpha, PickFillColor, BorderWidth, PickBorderColor,
+            ResizePercent,  ///< 画像を value % にリサイズする(縦横比を保つ)
+            ResizeLongEdge  ///< 画像の長辺を value px にリサイズする(縦横比を保つ)
         };
         Action action;                    ///< 操作の種類
         EditTool tool = EditTool::Rect;   ///< SelectTool で選ばれたツール
         float value = 0;                  ///< 設定系の値
         std::string family;               ///< FontFamily で選ばれたフォント名(UTF-8)
+    };
+
+    /// @brief サイドバー(ファイル名一覧)を右クリックしたときのメニューの末端項目。
+    struct SidebarMenuEntry {
+        /// @brief 末端項目が表す操作の種類。
+        enum class Action { SortKey, SortAscending, SortDescending, ToggleRecursive };
+        Action action;                ///< 操作の種類
+        SortKey key = SortKey::Name;  ///< SortKey で選ばれた並び替えキー
     };
 
     /// @brief 注釈オブジェクトを右クリックしたときのメニューの末端項目。
@@ -855,6 +929,47 @@ private:
      * @return メニューを閉じるなら true。設定系で再表示するなら false。
      */
     bool applyEditChoice(const EditMenuEntry& entry);
+
+    /**
+     * @brief リサイズのプリセットメニューを組み立てる。
+     * @param[out] entries 末端項目の一覧。entries[i] が showContextMenu の返す index i に対応する。
+     * @return メニュー構造(倍率と長辺の 2 つのサブメニュー)。項目には変換後の
+     *         大きさを添える(選ぶ前に結果が分かるように)。
+     * @note ツール切り替えメニューへ埋め込むためにも呼ばれるので、entries は
+     *       呼び出し側の並びに続けて積む(深さ優先の通し番号を保つ)。
+     */
+    std::vector<MenuItem> buildResizeMenu(std::vector<EditMenuEntry>& entries) const;
+
+    /**
+     * @brief リサイズのプリセットメニューを表示し、選ばれた大きさへ変換する。
+     * @param[in] screenPos メニューの表示位置(スクリーン座標)。
+     */
+    void showResizeMenu(Point screenPos);
+
+    /**
+     * @brief 表示中の画像をリサイズする(トリミングと同じ破壊的編集)。
+     *
+     * 注釈オブジェクトは焼き込まず、同じ倍率で座標を追従させる(scaleAnnotation)。
+     * 保存は既存の経路のままで、取り込み時に縮小された画像は上書き保存の拒否を保つ。
+     *
+     * @param[in] width  変換後の幅(ピクセル)。
+     * @param[in] height 変換後の高さ(ピクセル)。
+     */
+    void applyResize(uint32_t width, uint32_t height);
+
+    /**
+     * @brief サイドバー(ファイル名一覧)のメニュー構造を組み立てる。
+     * @param[out] entries 末端項目の一覧。entries[i] が showContextMenu の返す index i に対応する。
+     * @return メニュー構造。現在の並び順・向き・再帰の有無にチェックが付く。
+     */
+    std::vector<MenuItem> buildSidebarMenu(std::vector<SidebarMenuEntry>& entries) const;
+
+    /**
+     * @brief サイドバーのメニューを表示し、選ばれた項目を適用する。
+     * @param[in] screenPos メニューの表示位置(スクリーン座標)。
+     * @note 並び替えと再帰は既定のキーを持たないので、ここが主な入口になる。
+     */
+    void showSidebarMenu(Point screenPos);
 
     /**
      * @brief 現在のツールを切り替える。
@@ -1173,11 +1288,24 @@ private:
     IAnnotationRasterizer& rasterizer_;
     OcrService& ocr_;
     IPrinter& printer_;
+    ScanService& scan_;
     /// 待っている認識の generation。0 なら認識中でない。古い結果を捨てるのに使う
     uint64_t ocrGeneration_ = 0;
+    /// 待っているサブフォルダ走査の generation。0 なら走査中でない(同上)
+    uint64_t scanGeneration_ = 0;
+    bool scanAnnounce_ = false;  ///< 走査の完了時に件数をステータスバーへ出すか
     Keymap keymap_ = Keymap::defaults();
     Mousemap mousemap_ = Mousemap::defaults();
     ImageList list_;
+    /// 一覧の起点フォルダ。並び順の変更・再帰の切り替えで列挙し直すのに使う
+    std::filesystem::path listRoot_;
+    /// 列挙結果。IFileSystem の契約どおり名前昇順のまま持ち、並べ替えは order_ で表す
+    std::vector<FileEntry> entries_;
+    /// 表示順(entries_ への添字)。list_ と同じ並びで、サイドバーの相対パス表示に使う
+    std::vector<size_t> order_;
+    SortOrder sortOrder_;          ///< 一覧の並び順([view] sort / sort_descending)
+    bool recursive_ = false;       ///< サブフォルダを含めるか([view] recursive)
+    bool listTruncated_ = false;   ///< 列挙が kMaxListFiles で打ち切られたか
     Viewport viewport_;
     std::shared_ptr<DecodedImage> current_;
     std::filesystem::path displayedPath_;  ///< current_ がどのパスの画像か
@@ -1209,6 +1337,7 @@ private:
     bool panning_ = false;       ///< パン役のボタンでパン中か(何も掴まなかったとき)
     Point lastPointerScreen_{};  ///< 最後のポインタ位置。パンの差分と Shift 再計算に使う
     bool menuPressed_ = false;   ///< 右ボタンをメニューを開ける場所で押したか
+    bool menuOnSidebar_ = false; ///< 上記の押下位置がサイドバー(= 一覧のメニュー)だったか
     Point menuPressScreen_{};    ///< 上記の押下位置(ドラッグ量の閾値判定用)
     /// ホイールでコマンドを実行するときの回転量の貯金(垂直 / 水平で別に持つ)。
     /// 1 ノッチ未満ずつ通知される高精細ホイールでも取りこぼさないため

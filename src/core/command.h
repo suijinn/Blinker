@@ -43,6 +43,14 @@ enum class Command {
     SaveImage,         ///< 表示中の画像を元のファイルへ上書き保存(確認あり)
     SaveImageAs,       ///< 表示中の画像を名前を付けて保存 (PNG/JPEG/BMP)
     PrintImage,        ///< 表示中の画像を印刷する(印刷ダイアログを出す)
+    ResizeImage,       ///< 表示中の画像をリサイズする(倍率・長辺のメニューを出す)
+    SortByName,        ///< 一覧を名前順に。既に名前順なら昇順 / 降順を反転する
+    SortByDate,        ///< 一覧を更新日時順に(同上)
+    SortBySize,        ///< 一覧をファイルサイズ順に(同上)
+    SortByExtension,   ///< 一覧を種類(拡張子)順に(同上)
+    ToggleSortDescending,  ///< 一覧の昇順 / 降順を反転する
+    CycleSortKey,      ///< 一覧の並び替えキーを順に切り替える
+    ToggleRecursive,   ///< サブフォルダの画像も一覧に含めるかを切り替える
     Undo,              ///< 直前の編集(トリミング・図形・テキスト)を取り消す
     Redo,              ///< 取り消した編集をやり直す
     DeleteAnnotation,  ///< 選択中の注釈オブジェクトを削除

@@ -30,6 +30,9 @@ public:
     /// @brief OcrService のワーカースレッドからの文字認識完了通知に使うウィンドウメッセージ。
     static constexpr UINT kMsgOcrCompleted = WM_APP + 2;
 
+    /// @brief ScanService のワーカースレッドからのサブフォルダ走査完了通知に使うウィンドウメッセージ。
+    static constexpr UINT kMsgScanCompleted = WM_APP + 3;
+
     /**
      * @brief ウィンドウクラスを登録してウィンドウを作成・表示する。
      * @param[in] hinstance   モジュールインスタンスハンドル。

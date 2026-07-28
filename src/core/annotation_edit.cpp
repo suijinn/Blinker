@@ -177,6 +177,23 @@ void translateAnnotation(AnnotationSpec& spec, float dx, float dy) {
     }
 }
 
+void scaleAnnotation(AnnotationSpec& spec, const float sx, const float sy) {
+    spec.p1.x *= sx;
+    spec.p1.y *= sy;
+    spec.p2.x *= sx;
+    spec.p2.y *= sy;
+    for (Point& p : spec.points) {  // 手書きの点列も一緒に拡縮する(bbox との同期を保つ)
+        p.x *= sx;
+        p.y *= sy;
+    }
+    // 線幅・文字サイズ・枠線幅は 1 次元の量なので、縦横比が変わるリサイズでは
+    // 一意に決まらない。細くなる側(小さいほうの倍率)に合わせて枠からはみ出さないようにする
+    const float scalar = std::min(sx, sy);
+    spec.strokeWidth *= scalar;
+    spec.fontSize *= scalar;
+    spec.borderWidth *= scalar;
+}
+
 std::vector<ResizeHandlePos> resizeHandlePositions(const AnnotationSpec& spec) {
     if (spec.kind == AnnotationSpec::Kind::Line || spec.kind == AnnotationSpec::Kind::Arrow) {
         const Point c = annotationCenter(spec);

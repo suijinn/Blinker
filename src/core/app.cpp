@@ -13,6 +13,7 @@
 #include "core/edit.h"
 #include "core/exif.h"
 #include "core/help.h"
+#include "core/image_scale.h"
 #include "core/ocr_text.h"
 #include "core/pixel_convert.h"
 #include "core/str_util.h"
@@ -156,6 +157,25 @@ Command commandOfTool(EditTool tool) {
     return Command::None;
 }
 
+// 並び替えキーに対応するコマンド。メニュー項目にキー表記を出すために使う
+Command commandOfSortKey(SortKey key) {
+    switch (key) {
+    case SortKey::Name:      return Command::SortByName;
+    case SortKey::Date:      return Command::SortByDate;
+    case SortKey::Size:      return Command::SortBySize;
+    case SortKey::Extension: return Command::SortByExtension;
+    }
+    return Command::None;
+}
+
+// 縦横比を保ったまま倍率を掛けた大きさ。0 にならないよう最低 1px は残す
+std::pair<uint32_t, uint32_t> scaledSize(uint32_t width, uint32_t height, double factor) {
+    const auto scale = [factor](const uint32_t v) {
+        return std::max(1u, static_cast<uint32_t>(std::lround(v * factor)));
+    };
+    return {scale(width), scale(height)};
+}
+
 // 図形ツールが作る注釈の種別。Crop は注釈ではないので Rect を返す(呼ばれない)。
 // ペンとマーカーは同じ Pen 注釈で、違いは線幅と不透明度だけ(makeAnnotationSpec が付ける)
 AnnotationSpec::Kind kindOfTool(EditTool tool) {
@@ -178,7 +198,7 @@ AnnotationSpec::Kind kindOfTool(EditTool tool) {
 
 App::App(IAppHost& host, IFileSystem& fileSystem, ImageCache& cache, IClipboard& clipboard,
          IImageEncoder& encoder, IAnnotationRasterizer& rasterizer, OcrService& ocr,
-         IPrinter& printer)
+         IPrinter& printer, ScanService& scan)
     : host_(host),
       fileSystem_(fileSystem),
       cache_(cache),
@@ -186,7 +206,8 @@ App::App(IAppHost& host, IFileSystem& fileSystem, ImageCache& cache, IClipboard&
       encoder_(encoder),
       rasterizer_(rasterizer),
       ocr_(ocr),
-      printer_(printer) {}
+      printer_(printer),
+      scan_(scan) {}
 
 void App::applyConfig(const Config& config) {
     keymap_.applyConfig(config.section("keys"));
@@ -202,6 +223,10 @@ void App::applyConfig(const Config& config) {
         std::clamp(config.getInt("view", "sidebar_width", static_cast<int>(sidebarWidth_)),
                    static_cast<int>(kMinSidebarWidth), static_cast<int>(kMaxSidebarWidth)));
     helpHintEnabled_ = config.getBool("view", "help_hint", helpHintEnabled_);
+    // 一覧の並び順と再帰。applyConfig は openPath より前に呼ばれるので最初の列挙から効く
+    if (const auto key = sortKeyFromIniName(config.get("view", "sort"))) sortOrder_.key = *key;
+    sortOrder_.descending = config.getBool("view", "sort_descending", sortOrder_.descending);
+    recursive_ = config.getBool("view", "recursive", recursive_);
     encodeOptions_.jpegQuality =
         std::clamp(config.getInt("save", "jpeg_quality", encodeOptions_.jpegQuality), 1, 100);
     // 上書き保存(Ctrl+S)は元の画像を失うので既定では確認する
@@ -262,12 +287,107 @@ void App::openPath(const fs::path& path) {
     const fs::path dir = isDirectory ? path : path.parent_path();
     // フォルダ列挙を待たずに表示対象のデコードを開始する(起動を最速にするため)
     if (!isDirectory) cache_.requestNow(path);
-    list_.set(fileSystem_.listImages(dir), isDirectory ? fs::path{} : path);
+    listRoot_ = dir;
+    // ここでは再帰が有効でも直下だけを同期列挙する。ツリー全体を UI スレッドで歩くと
+    // 最初の 1 枚が出るまで固まるため、全体は走査ワーカーへ回して後から差し替える
+    ListResult listed = fileSystem_.listImages(dir, {false, kMaxListFiles});
+    entries_ = std::move(listed.entries);
+    listTruncated_ = listed.truncated;
     current_.reset();
     displayedPath_.clear();
     loadFailed_ = false;
     loadError_.clear();
+    applyListOrder(isDirectory ? fs::path{} : path);
     refreshCurrent();
+    requestScan(false);  // 起動時の走査は黙って差し替える(件数の通知は出さない)
+}
+
+void App::applyListOrder(const fs::path& keep) {
+    order_ = sortedOrder(entries_, sortOrder_);
+    std::vector<fs::path> paths;
+    paths.reserve(order_.size());
+    for (const size_t i : order_) paths.push_back(entries_[i].path);
+    list_.set(std::move(paths), keep);
+}
+
+void App::relist() {
+    // 位置の正は「一覧の現在位置」で、表示中の画像 (displayedPath_) ではない。
+    // デコード待ちの間は両者がずれており、displayedPath_ を基準にすると
+    // 進行中の画像送りが取り消されてしまう
+    const fs::path keep = list_.empty() ? fs::path{} : list_.current();
+    // 貼り付け画像の表示中は一覧の位置に意味が無いので先頭へ寄せる(表示はそのまま)
+    applyListOrder(clipboardImage_ ? fs::path{} : keep);
+    // 求めた位置に着けなかった(一覧が空だった・現在の画像が消えた)ときだけ表示を
+    // 切り替える。着けたなら refreshCurrent は呼ばない — 編集中の内容を捨ててしまうため
+    if (!clipboardImage_ && !list_.empty() && !samePath(list_.current(), keep)) {
+        refreshCurrent();
+        return;
+    }
+    scrollSidebarToCurrent();
+    updatePrefetch();
+    updateTitle();
+    host_.requestRedraw();
+}
+
+void App::requestScan(const bool announce) {
+    if (!recursive_ || listRoot_.empty()) {
+        scanGeneration_ = 0;  // 走査中の結果が届いても捨てる
+        return;
+    }
+    scanAnnounce_ = announce;
+    scanGeneration_ = scan_.request(listRoot_, {true, kMaxListFiles});
+}
+
+void App::onScanCompleted() {
+    const auto done = scan_.takeResult();
+    // 予約し直した後に届いた古い結果(再帰を切った・別のフォルダを開いた)は捨てる
+    if (!done || done->generation != scanGeneration_) return;
+    scanGeneration_ = 0;
+    entries_ = std::move(done->result.entries);
+    listTruncated_ = done->result.truncated;
+    relist();
+    if (listTruncated_) {
+        showMessage(std::format("{} 件で打ち切りました(サブフォルダの画像が多すぎます)",
+                                kMaxListFiles));
+    } else if (scanAnnounce_) {
+        showMessage(std::format("サブフォルダを含める ({} 件)", list_.size()));
+    }
+}
+
+void App::setSortOrder(const SortOrder order) {
+    sortOrder_ = order;
+    relist();
+    showMessage(std::format("並び順: {}", sortOrderLabel(sortOrder_)));
+}
+
+void App::selectSortKey(const SortKey key) {
+    // 同じキーを選び直したら向きを反転する(エクスプローラの列ヘッダと同じ)。
+    // 別のキーへ移るときは、日時だけ「新しい順」を既定にする(写真では大抵こちら)
+    if (key == sortOrder_.key) {
+        setSortOrder({key, !sortOrder_.descending});
+        return;
+    }
+    setSortOrder({key, key == SortKey::Date});
+}
+
+void App::setRecursive(const bool enabled) {
+    if (recursive_ == enabled) return;
+    recursive_ = enabled;
+    host_.requestRedraw();  // ステータスバーの表示が変わる
+    if (listRoot_.empty()) return;
+    if (enabled) {
+        requestScan(true);
+        showMessage("サブフォルダを検索しています...");
+        return;
+    }
+    // 直下だけの列挙は同期で十分速い(走査ワーカーを起こす必要がない)。
+    // 走査中だった結果は届いても捨てる
+    scanGeneration_ = 0;
+    ListResult listed = fileSystem_.listImages(listRoot_, {false, kMaxListFiles});
+    entries_ = std::move(listed.entries);
+    listTruncated_ = listed.truncated;
+    relist();
+    showMessage(std::format("サブフォルダを含めない ({} 件)", list_.size()));
 }
 
 void App::execute(Command command) {
@@ -382,6 +502,31 @@ void App::execute(Command command) {
         break;
     case Command::PrintImage:
         executePrint();
+        break;
+    case Command::ResizeImage:
+        // 大きさはメニューのプリセットから選ぶ(数値入力ダイアログは持たない)
+        showResizeMenu(lastPointerScreen_);
+        break;
+    case Command::SortByName:
+        selectSortKey(SortKey::Name);
+        break;
+    case Command::SortByDate:
+        selectSortKey(SortKey::Date);
+        break;
+    case Command::SortBySize:
+        selectSortKey(SortKey::Size);
+        break;
+    case Command::SortByExtension:
+        selectSortKey(SortKey::Extension);
+        break;
+    case Command::ToggleSortDescending:
+        setSortOrder({sortOrder_.key, !sortOrder_.descending});
+        break;
+    case Command::CycleSortKey:
+        selectSortKey(nextSortKey(sortOrder_.key));
+        break;
+    case Command::ToggleRecursive:
+        setRecursive(!recursive_);
         break;
     case Command::Undo:
         executeUndo();
@@ -572,6 +717,7 @@ bool App::onMouseDown(MouseButton button, Point screenPos) {
     pointerInside_ = true;
     panning_ = false;
     menuPressed_ = false;
+    menuOnSidebar_ = false;
     // 右端を掴んだら幅の変更。項目のクリック判定より先に見る(境界際のクリックで
     // 画像が切り替わってしまわないように)
     if (button == MouseButton::Left && onSidebarResizeEdge(screenPos)) {
@@ -580,10 +726,17 @@ bool App::onMouseDown(MouseButton button, Point screenPos) {
         sidebarResizeStartWidth_ = sidebarOffset();  // 見えている幅を基準に 1:1 で動かす
         return true;
     }
-    // サイドバーは UI 部品なので左右の入れ替えの対象外。左クリックだけが項目へ移動し、
-    // 右クリックは何もしない(メニューも出さない)
+    // サイドバーは UI 部品なので左右の入れ替えの対象外。左クリックが項目へ移動し、
+    // 右クリックは一覧のメニュー(並び替え・サブフォルダ)を開く
     if (sidebarVisible() && screenPos.x < sidebarOffset()) {
         if (button == MouseButton::Left) clickSidebarItem(screenPos);
+        // 操作一覧モードには並べ替える一覧が無いのでメニューも出さない。
+        // ここでは位置だけ覚え、ドラッグにならずに離されたら onMouseUp が開く
+        if (button == MouseButton::Right && sidebarMode_ == SidebarMode::Files) {
+            menuPressed_ = true;
+            menuOnSidebar_ = true;
+            menuPressScreen_ = screenPos;
+        }
         return true;  // サイドバー上のクリックはパン開始にしない
     }
     if (button == MouseButton::Right) {
@@ -725,9 +878,15 @@ void App::onMouseUp(MouseButton button, Point screenPos, bool shift) {
     // メニューは入れ替えの対象外。右ボタンをドラッグせずに離したときだけ開く
     if (button != MouseButton::Right || !menuPressed_) return;
     menuPressed_ = false;
+    const bool onSidebar = std::exchange(menuOnSidebar_, false);
     const float dx = screenPos.x - menuPressScreen_.x;
     const float dy = screenPos.y - menuPressScreen_.y;
-    if (dx * dx + dy * dy < kDragThresholdPx * kDragThresholdPx) showPointerMenu(screenPos);
+    if (dx * dx + dy * dy >= kDragThresholdPx * kDragThresholdPx) return;
+    if (onSidebar) {
+        showSidebarMenu(screenPos);
+    } else {
+        showPointerMenu(screenPos);
+    }
 }
 
 void App::endObjectGrab() {
@@ -875,6 +1034,72 @@ void App::showToolMenu(Point screenPos) {
     host_.requestRedraw();
 }
 
+std::vector<MenuItem> App::buildSidebarMenu(std::vector<SidebarMenuEntry>& entries) const {
+    const auto leaf = [&entries](std::string text, SidebarMenuEntry entry,
+                                 const bool checked = false) {
+        entries.push_back(entry);
+        MenuItem item;
+        item.text = std::move(text);
+        item.checked = checked;
+        return item;
+    };
+    using Action = SidebarMenuEntry::Action;
+    const auto sortKey = [&leaf, this](const std::string_view label, const SortKey key) {
+        std::string text(label);
+        if (const std::string keys = keysLabel(keymap_, commandOfSortKey(key)); !keys.empty()) {
+            text += '\t';
+            text += keys;
+        }
+        return leaf(std::move(text), {Action::SortKey, key}, key == sortOrder_.key);
+    };
+
+    std::vector<MenuItem> items;
+    MenuItem sort;
+    sort.text = std::format("並び替え ({})", sortOrderLabel(sortOrder_));
+    sort.children.push_back(sortKey("名前", SortKey::Name));
+    sort.children.push_back(sortKey("更新日時", SortKey::Date));
+    sort.children.push_back(sortKey("サイズ", SortKey::Size));
+    sort.children.push_back(sortKey("種類", SortKey::Extension));
+    items.push_back(std::move(sort));
+    items.push_back(menuSeparator());
+    items.push_back(leaf("昇順", {Action::SortAscending}, !sortOrder_.descending));
+    items.push_back(leaf("降順", {Action::SortDescending}, sortOrder_.descending));
+    items.push_back(menuSeparator());
+
+    std::string recursive = "サブフォルダを含める";
+    if (const std::string keys = keysLabel(keymap_, Command::ToggleRecursive); !keys.empty()) {
+        recursive += '\t';
+        recursive += keys;
+    }
+    items.push_back(leaf(std::move(recursive), {Action::ToggleRecursive}, recursive_));
+    return items;
+}
+
+void App::showSidebarMenu(Point screenPos) {
+    std::vector<SidebarMenuEntry> entries;
+    const std::vector<MenuItem> items = buildSidebarMenu(entries);
+    const auto choice = host_.showContextMenu(items, screenPos);
+    if (!choice || *choice >= entries.size()) return;
+    const SidebarMenuEntry& entry = entries[*choice];
+    switch (entry.action) {
+    case SidebarMenuEntry::Action::SortKey:
+        // メニューでは向きを反転しない(チェックの付いた項目を選び直したら現状維持)。
+        // 反転は「昇順 / 降順」の項目と Command::ToggleSortDescending が担う
+        setSortOrder({entry.key, entry.key == sortOrder_.key ? sortOrder_.descending
+                                                            : entry.key == SortKey::Date});
+        break;
+    case SidebarMenuEntry::Action::SortAscending:
+        setSortOrder({sortOrder_.key, false});
+        break;
+    case SidebarMenuEntry::Action::SortDescending:
+        setSortOrder({sortOrder_.key, true});
+        break;
+    case SidebarMenuEntry::Action::ToggleRecursive:
+        setRecursive(!recursive_);
+        break;
+    }
+}
+
 void App::setTool(EditTool tool) {
     // トリミングは一度きりなので、戻り先として直前の図形ツールを覚えておく
     if (tool != EditTool::Crop) toolAfterCrop_ = tool;
@@ -1016,7 +1241,93 @@ std::vector<MenuItem> App::buildEditMenu(std::vector<EditMenuEntry>& entries) co
     border.children.push_back(leaf(std::format("色の変更... (#{:06X})", editBorderRGB_),
                                    {Action::PickBorderColor}));
     items.push_back(std::move(border));
+
+    // リサイズはツールではなく一度きりの操作だが、画像に対する操作の入口がこのメニュー
+    // しかないのでここへ置く(Command::ResizeImage は同じ内容を単独で出す)
+    if (current_) {
+        items.push_back(menuSeparator());
+        MenuItem resize;
+        resize.text = std::format("画像をリサイズ ({} x {})", current_->width, current_->height);
+        resize.children = buildResizeMenu(entries);
+        items.push_back(std::move(resize));
+    }
     return items;
+}
+
+std::vector<MenuItem> App::buildResizeMenu(std::vector<EditMenuEntry>& entries) const {
+    const auto leaf = [&entries](std::string text, EditMenuEntry entry) {
+        entries.push_back(entry);
+        MenuItem item;
+        item.text = std::move(text);
+        return item;
+    };
+    using Action = EditMenuEntry::Action;
+    const uint32_t width = current_ ? current_->width : 0;
+    const uint32_t height = current_ ? current_->height : 0;
+    // 変換後の大きさを項目に添える(選ぶ前に結果が分かるように)
+    const auto label = [width, height](const std::string& head, const double factor) {
+        const auto [w, h] = scaledSize(width, height, factor);
+        return std::format("{}\t{} x {}", head, w, h);
+    };
+
+    std::vector<MenuItem> items;
+    MenuItem percent;
+    percent.text = "倍率";
+    for (const int p : {200, 150, 75, 50, 25}) {
+        percent.children.push_back(
+            leaf(label(std::format("{}%", p), p / 100.0),
+                 {Action::ResizePercent, EditTool::Rect, static_cast<float>(p)}));
+    }
+    items.push_back(std::move(percent));
+
+    MenuItem longEdge;
+    longEdge.text = "長辺を指定";
+    const uint32_t longest = std::max(width, height);
+    for (const int e : {3840, 2560, 1920, 1280, 1024, 800, 640}) {
+        const double factor = longest > 0 ? static_cast<double>(e) / longest : 1.0;
+        longEdge.children.push_back(
+            leaf(label(std::format("{} px", e), factor),
+                 {Action::ResizeLongEdge, EditTool::Rect, static_cast<float>(e)}));
+    }
+    items.push_back(std::move(longEdge));
+    return items;
+}
+
+void App::showResizeMenu(Point screenPos) {
+    if (!current_) {
+        showMessage("リサイズする画像がありません");
+        return;
+    }
+    std::vector<EditMenuEntry> entries;
+    const std::vector<MenuItem> items = buildResizeMenu(entries);
+    const auto choice = host_.showContextMenu(items, screenPos);
+    if (!choice || *choice >= entries.size()) return;
+    applyEditChoice(entries[*choice]);
+    host_.requestRedraw();
+}
+
+void App::applyResize(const uint32_t width, const uint32_t height) {
+    if (!current_) {
+        showMessage("リサイズする画像がありません");
+        return;
+    }
+    if (width == current_->width && height == current_->height) return;  // 変化なし
+    if (textEditing_) commitTextEdit();  // 座標が変わるので先に確定させる
+    auto resized = resizeImage(*current_, width, height);
+    if (!resized) {
+        showMessage("リサイズできませんでした(指定した大きさが大きすぎます)");
+        return;
+    }
+    const float sx = static_cast<float>(width) / static_cast<float>(current_->width);
+    const float sy = static_cast<float>(height) / static_cast<float>(current_->height);
+    pushUndo();
+    current_ = std::move(resized);
+    // 注釈はトリミングと同じくオブジェクトのまま維持し、座標だけ倍率に追従させる
+    for (AnnotationSpec& spec : annotations_) scaleAnnotation(spec, sx, sy);
+    viewport_.setImage({static_cast<float>(width), static_cast<float>(height)});
+    markEdited();
+    host_.requestRedraw();
+    showMessage(std::format("{} x {} px にリサイズしました", width, height));
 }
 
 std::vector<MenuItem> App::buildObjectMenu(const AnnotationSpec& spec,
@@ -1373,6 +1684,20 @@ bool App::applyEditChoice(const EditMenuEntry& entry) {
             if (editBorderWidth_ <= 0) editBorderWidth_ = 1.0f;
         }
         return false;
+    case EditMenuEntry::Action::ResizePercent:
+        if (current_) {
+            const auto [w, h] = scaledSize(current_->width, current_->height, entry.value / 100.0);
+            applyResize(w, h);
+        }
+        return true;
+    case EditMenuEntry::Action::ResizeLongEdge:
+        if (current_) {
+            const uint32_t longest = std::max(current_->width, current_->height);
+            const double factor = longest > 0 ? entry.value / longest : 1.0;
+            const auto [w, h] = scaledSize(current_->width, current_->height, factor);
+            applyResize(w, h);
+        }
+        return true;
     }
     return true;
 }
@@ -2557,13 +2882,15 @@ StatusBarView App::statusBar() const {
     } else if (current_) {
         // 編集ドラッグが何をするかは見た目に出ないので、現在のツールをここに出す。
         // 縮小して取り込んだ画像は、ズーム率が元の大きさに対する比でなくなるので明示する
-        bar.leftText =
+        std::string text =
             current_->downscaled()
-                ? std::format("{} x {} px (元 {} x {} を縮小表示)  |  ツール: {}",
-                              current_->width, current_->height, current_->sourceWidth,
-                              current_->sourceHeight, toolLabel(tool_))
-                : std::format("{} x {} px  |  ツール: {}", current_->width, current_->height,
-                              toolLabel(tool_));
+                ? std::format("{} x {} px (元 {} x {} を縮小表示)", current_->width,
+                              current_->height, current_->sourceWidth, current_->sourceHeight)
+                : std::format("{} x {} px", current_->width, current_->height);
+        // なぜ隣のフォルダの画像が出てくるのか分からなくなるので、再帰中は常に見せる
+        if (recursive_) text += "  |  サブフォルダ含む";
+        text += std::format("  |  ツール: {}", toolLabel(tool_));
+        bar.leftText = std::move(text);
     } else if (loadFailed_) {
         // 失敗した段階とコードまで出す(現物が手元にない不具合を切り分けられるように)
         bar.leftText = loadError_.empty() ? "読み込み失敗"
@@ -2598,10 +2925,18 @@ SidebarView App::sidebar() const {
             // 見出し行を current の強調表示で描く(レンダラは両モードを区別しない)
             sb.items.push_back({helpLines_[i].text, helpLines_[i].header});
         } else {
-            sb.items.push_back({pathToUtf8(list_.at(i).filename()), i == list_.index()});
+            sb.items.push_back({sidebarLabel(i), i == list_.index()});
         }
     }
     return sb;
+}
+
+std::string App::sidebarLabel(const size_t index) const {
+    // 再帰中はファイル名だけだと別フォルダの同名・連番が区別できないので相対パスを出す
+    if (recursive_ && index < order_.size() && order_[index] < entries_.size()) {
+        return pathToUtf8(entries_[order_[index]].relative);
+    }
+    return pathToUtf8(list_.at(index).filename());
 }
 
 void App::updatePrefetch() {

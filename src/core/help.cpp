@@ -37,6 +37,14 @@ constexpr std::array kCommandLabels = {
     CommandLabel{Command::SaveImage, "上書き保存"},
     CommandLabel{Command::SaveImageAs, "名前を付けて保存"},
     CommandLabel{Command::PrintImage, "印刷"},
+    CommandLabel{Command::ResizeImage, "画像をリサイズ"},
+    CommandLabel{Command::SortByName, "名前順に並べ替え"},
+    CommandLabel{Command::SortByDate, "更新日時順に並べ替え"},
+    CommandLabel{Command::SortBySize, "サイズ順に並べ替え"},
+    CommandLabel{Command::SortByExtension, "種類順に並べ替え"},
+    CommandLabel{Command::ToggleSortDescending, "昇順 / 降順を反転"},
+    CommandLabel{Command::CycleSortKey, "並び替えキーを切り替え"},
+    CommandLabel{Command::ToggleRecursive, "サブフォルダを含める"},
     CommandLabel{Command::CopyImage, "画像をコピー"},
     CommandLabel{Command::CopyPath, "パスをコピー"},
     CommandLabel{Command::CopyFile, "ファイルをコピー"},
@@ -158,9 +166,22 @@ std::vector<HelpLine> buildHelpLines(const Keymap& keymap, const Mousemap& mouse
     row(Command::CopyOcrText);
     row(Command::PasteImage);
 
+    header("一覧");
+    row(Command::SortByName);
+    row(Command::SortByDate);
+    row(Command::SortBySize);
+    row(Command::SortByExtension);
+    row(Command::ToggleSortDescending);
+    row(Command::CycleSortKey);
+    row(Command::ToggleRecursive);
+    // 並び替えと再帰は既定のキーを持たないので、上の row() はどれも出ない。
+    // 唯一の入口であるサイドバーのメニューはここで案内する
+    text("一覧のメニュー", "ファイル名一覧で右クリック");
+
     header("編集");
     row(Command::Undo);
     row(Command::Redo);
+    row(Command::ResizeImage);
     row(Command::DeleteAnnotation);
     row(Command::SelectToolCrop);
     row(Command::SelectToolOcr);

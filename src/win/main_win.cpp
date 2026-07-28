@@ -9,6 +9,7 @@
 #include "core/config.h"
 #include "core/image_cache.h"
 #include "core/ocr_service.h"
+#include "core/scan_service.h"
 #include "core/str_util.h"
 #include "win/annotation_d2d.h"
 #include "win/clipboard_win.h"
@@ -91,9 +92,13 @@ int WINAPI wWinMain(HINSTANCE hinstance, HINSTANCE, PWSTR, int showCommand) {
         // ocrService より後に ocrEngine が壊れるよう、宣言順はこの通りにすること
         // (~OcrService がワーカーを join し終えるまでエンジンは生きている必要がある)
         OcrService ocrService(ocrEngine);
+        // サブフォルダの再帰列挙は UI スレッドで走らせると起動が固まるためワーカーへ回す。
+        // fileSystem より後に宣言すること(~ScanService がワーカーを join し終えるまで
+        // 列挙の実装は生きている必要がある)
+        ScanService scanService(fileSystem);
 
         App app(window, fileSystem, cache, clipboard, encoder, annotationRasterizer, ocrService,
-                printer);
+                printer, scanService);
         app.setDarkTheme(darkTheme);
         app.applyConfig(config);
         window.attachApp(&app);
@@ -103,6 +108,9 @@ int WINAPI wWinMain(HINSTANCE hinstance, HINSTANCE, PWSTR, int showCommand) {
         });
         ocrService.setOnCompleted([hwnd = window.hwnd()] {
             PostMessageW(hwnd, MainWindow::kMsgOcrCompleted, 0, 0);
+        });
+        scanService.setOnCompleted([hwnd = window.hwnd()] {
+            PostMessageW(hwnd, MainWindow::kMsgScanCompleted, 0, 0);
         });
 
         if (const auto initialPath = pathFromCommandLine(); !initialPath.empty()) {
