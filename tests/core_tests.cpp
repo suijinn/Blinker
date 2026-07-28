@@ -487,6 +487,7 @@ void testHelpLines() {
     stripped.unbindCommand(Command::CopyFile);
     stripped.unbindCommand(Command::CopyOcrText);
     stripped.unbindCommand(Command::PasteImage);
+    stripped.unbindCommand(Command::PasteObject);
     const std::vector<HelpLine> strippedLines = buildHelpLines(stripped, mm, false);
     CHECK(std::none_of(strippedLines.begin(), strippedLines.end(),
                        [](const HelpLine& line) { return line.text == "ファイル"; }));
@@ -1319,6 +1320,8 @@ public:
 
 class FakeAnnotationRasterizer final : public IAnnotationRasterizer {
 public:
+    bool available() const override { return supported; }
+
     AnnotationOverlay rasterize(const AnnotationSpec& spec) override {
         ++rasterizeCount;
         lastSpec = spec;
@@ -1367,6 +1370,7 @@ public:
     }
 
     bool ok = true;
+    bool supported = true;  // false で SDL バックエンド相当(注釈を扱えない環境)にする
     int rasterizeCount = 0;
     uint32_t overlayWidth = 1;
     uint32_t overlayHeight = 1;
@@ -3003,6 +3007,49 @@ void testAnnotationGeometry() {
     CHECK(nearly(snappedEnds[1].pos.x, 5, 0.01f) && nearly(snappedEnds[1].pos.y, 20, 0.01f));
 }
 
+void testPastedImageGeometry() {
+    // 等倍で収まる大きさなら等倍のまま、中心へ整数座標で置かれる
+    BoundsF b = pastedImageBounds({40, 20}, {200, 100}, {100, 50});
+    CHECK(nearly(b.minX, 80) && nearly(b.minY, 40));
+    CHECK(nearly(b.maxX, 120) && nearly(b.maxY, 60));
+
+    // 下地に対して大きすぎる画像は、縦横比を保って 80% へ収まるまで縮む
+    b = pastedImageBounds({400, 200}, {200, 100}, {100, 50});
+    CHECK(nearly(b.maxX - b.minX, 160) && nearly(b.maxY - b.minY, 80));
+
+    // 中心が端に寄っていても全体が下地へ収まる
+    b = pastedImageBounds({40, 20}, {200, 100}, {0, 0});
+    CHECK(nearly(b.minX, 0) && nearly(b.minY, 0));
+    b = pastedImageBounds({40, 20}, {200, 100}, {1000, 1000});
+    CHECK(nearly(b.maxX, 200) && nearly(b.maxY, 100));
+
+    // 大きさが不正なら空の矩形(呼び出し側で貼らない判断ができる)
+    b = pastedImageBounds({0, 20}, {200, 100}, {100, 50});
+    CHECK(nearly(b.maxX - b.minX, 0) && nearly(b.maxY - b.minY, 0));
+
+    // 画像オブジェクトは既定で縦横比を維持し、Shift で解除する(他の種別とは逆)
+    AnnotationSpec image;
+    image.kind = AnnotationSpec::Kind::Image;
+    CHECK(resizeKeepsAspect(image, false));
+    CHECK(!resizeKeepsAspect(image, true));
+    const AnnotationSpec rect;  // 既定は Rect
+    CHECK(!resizeKeepsAspect(rect, false));
+    CHECK(resizeKeepsAspect(rect, true));
+
+    // ヒットテストは箱の内部全体(テキストと同じ)、ハンドルは四隅だけ
+    image.p1 = {10, 10};
+    image.p2 = {50, 30};
+    CHECK(hitTestAnnotation(image, {30, 20}, 1));
+    CHECK(!hitTestAnnotation(image, {60, 20}, 1));
+    CHECK(resizeHandlePositions(image).size() == 4);
+
+    // 四隅ドラッグは比率を保つ(大きい側の倍率に合わせる)
+    const AnnotationSpec resized =
+        resizeAnnotation(image, ResizeHandle::BottomRight, {90, 35}, true);
+    CHECK(nearly(resized.p2.x - resized.p1.x, 80));
+    CHECK(nearly(resized.p2.y - resized.p1.y, 40));
+}
+
 void testPenGeometry() {
     // 点の間引き: 直前の点から minDistance 未満なら捨てる(最初の1点は必ず入る)
     std::vector<Point> points;
@@ -4403,6 +4450,103 @@ void testAppFontFamily() {
     }
 }
 
+void testAppPasteObject() {
+    FakeDecoder decoder;
+    ImageCache cache(decoder);
+    FakeHost host;
+    FakeFileSystem fileSystem;
+    FakeClipboard clipboard;
+    FakeEncoder encoder;
+    FakeAnnotationRasterizer rasterizer;
+    FakeOcrEngine ocrEngine;
+    OcrService ocrService(ocrEngine);
+    ScanService scanService(fileSystem);
+    FakePrinter printer;
+    App app(host, fileSystem, cache, clipboard, encoder, rasterizer, ocrService, printer,
+            scanService);
+    app.onResize(800, 600);
+
+    const auto makeImage = [](uint32_t w, uint32_t h) {
+        auto image = std::make_shared<DecodedImage>();
+        image->width = w;
+        image->height = h;
+        image->pixels.resize(static_cast<size_t>(w) * h * 4);
+        return image;
+    };
+
+    // 下地が無いうちは Ctrl+V と同じ(オブジェクトにする相手がいない)
+    const std::shared_ptr<DecodedImage> base = makeImage(100, 100);
+    clipboard.pasteImage = base;
+    app.execute(Command::PasteObject);
+    CHECK(app.currentImage() == base);
+    CHECK(app.annotations().specs->empty());
+
+    app.execute(Command::ZoomActual);  // 等倍・中央表示にして座標を素直にする
+    const Matrix3x2 toScreen = app.imageToScreen();
+    const auto screenOf = [&toScreen](float x, float y) { return toScreen.apply({x, y}); };
+
+    // 40x20 をオブジェクトとして貼る。下地の画素は変わらない
+    const std::shared_ptr<DecodedImage> pasted = makeImage(40, 20);
+    clipboard.pasteImage = pasted;
+    app.execute(Command::PasteObject);
+    CHECK(app.currentImage() == base);
+    CHECK(app.statusBar().leftText == "40 x 20 px の画像を貼り付けました");
+    {
+        const AnnotationsView view = app.annotations();
+        CHECK(view.specs->size() == 1);
+        CHECK(view.selected && *view.selected == 0);  // 貼った直後から掴める
+        const AnnotationSpec& spec = view.specs->back();
+        CHECK(spec.kind == AnnotationSpec::Kind::Image);
+        CHECK(spec.image == pasted);  // 画素は複製せず共有する
+        // 可視領域の中心(= 画像の中心 (50,50))へ等倍で置かれる
+        CHECK(nearly(spec.p1.x, 30) && nearly(spec.p1.y, 40));
+        CHECK(nearly(spec.p2.x, 70) && nearly(spec.p2.y, 60));
+    }
+
+    // オブジェクトメニューは削除と回転だけ(線・色・塗りつぶしは画像に効かない)
+    host.menuChoice = std::nullopt;
+    app.onMouseDown(MouseButton::Right, screenOf(50, 50));
+    app.onMouseUp(MouseButton::Right, screenOf(50, 50));
+    CHECK(countMenuLeaves(host.lastMenuItems) == 9);  // 削除 1 + 回転 8
+    CHECK(findMenuItem(host.lastMenuItems, "線の太さ") == nullptr);
+    CHECK(findMenuItem(host.lastMenuItems, "色の変更") == nullptr);
+    CHECK(findMenuItem(host.lastMenuItems, "塗りつぶし") == nullptr);
+    CHECK(findMenuItem(host.lastMenuItems, "回転角度") != nullptr);
+
+    // 保存・コピーの経路では焼き込まれる
+    app.execute(Command::CopyImage);
+    CHECK(rasterizer.rasterizeCount == 1);
+    CHECK(rasterizer.lastSpec.kind == AnnotationSpec::Kind::Image);
+
+    // 他の注釈と同じく undo/redo できる
+    app.execute(Command::Undo);
+    CHECK(app.annotations().specs->empty());
+    CHECK(app.currentImage() == base);
+    app.execute(Command::Redo);
+    CHECK(app.annotations().specs->size() == 1);
+
+    // 焼き込みの上限を超える画像は、取り込む時点で縮められる(あとでは画素が戻らない)
+    clipboard.pasteImage = makeImage(kMaxResizeDimension + 1000, 1);
+    app.execute(Command::PasteObject);
+    CHECK(app.annotations().specs->size() == 2);
+    CHECK(app.annotations().specs->back().image->width == kMaxResizeDimension);
+
+    // クリップボードが空なら何も起きない
+    clipboard.pasteImage = nullptr;
+    app.execute(Command::PasteObject);
+    CHECK(app.annotations().specs->size() == 2);
+    CHECK(app.statusBar().leftText == "クリップボードに画像がありません");
+
+    // 注釈を扱えない環境では、見えないオブジェクトを作らず画像として開く
+    rasterizer.supported = false;
+    clipboard.pasteImage = pasted;
+    app.execute(Command::PasteObject);
+    CHECK(app.currentImage() == pasted);
+    CHECK(app.annotations().specs->empty());
+    CHECK(app.statusBar().leftText ==
+          "この環境では画像オブジェクトを扱えないため、画像として開きました");
+}
+
 void testAppPenTools() {
     FakeDecoder decoder;
     ImageCache cache(decoder);
@@ -5442,11 +5586,13 @@ int main() {
     testEditFunctions();
     testAnnotationGeometry();
     testPenGeometry();
+    testPastedImageGeometry();
     testAppAnnotationObjects();
     testAppEdit();
     testAppTextEditing();
     testAppTextStyles();
     testAppFontFamily();
+    testAppPasteObject();
     testAppPenTools();
     testAnnotationSizeIsImageBased();
     testAppSwapMouseButtons();

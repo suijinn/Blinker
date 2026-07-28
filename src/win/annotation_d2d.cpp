@@ -127,12 +127,17 @@ AnnotationOverlay AnnotationD2D::rasterize(const AnnotationSpec& spec) {
         bounds.maxY = box.bottom;
     }
     // 手書き・連番マーカーは bbox が線の芯を通るため、線幅と AA の染み出しぶんで足りる
-    // (矢印ヘッドのようなはみ出しが無い)。テキストは枠線と AA、それ以外は矢印ヘッドまで見込む
-    const float margin = spec.kind == AnnotationSpec::Kind::Text ? textOverlayMargin(spec)
-                         : spec.kind == AnnotationSpec::Kind::Pen ||
-                                 spec.kind == AnnotationSpec::Kind::Number
-                             ? spec.strokeWidth + 2.0f
-                             : spec.strokeWidth + arrowHeadLength(spec.strokeWidth);
+    // (矢印ヘッドのようなはみ出しが無い)。テキストは枠線と AA、それ以外は矢印ヘッドまで見込む。
+    // 画像は bbox がそのまま外形なので、回転時の AA の染み出しぶんだけ確保する
+    float margin = spec.strokeWidth + arrowHeadLength(spec.strokeWidth);
+    if (spec.kind == AnnotationSpec::Kind::Text) {
+        margin = textOverlayMargin(spec);
+    } else if (spec.kind == AnnotationSpec::Kind::Pen ||
+               spec.kind == AnnotationSpec::Kind::Number) {
+        margin = spec.strokeWidth + 2.0f;
+    } else if (spec.kind == AnnotationSpec::Kind::Image) {
+        margin = 1.0f;
+    }
     // 回転はバウンディングボックス中心周り。マージン込みの矩形の四隅を回して
     // 回転後の AABB をオーバーレイの領域にする(回転は等長変換なのでマージンは保たれる)
     const float centerX = (bounds.minX + bounds.maxX) * 0.5f;
@@ -188,7 +193,15 @@ AnnotationOverlay AnnotationD2D::rasterize(const AnnotationSpec& spec) {
             transform;
     }
     target->SetTransform(transform);
-    drawAnnotationShape(target.Get(), factory_.Get(), dwriteFactory_.Get(), spec, brush.Get());
+    // 焼き込みは 1 回きりなのでキャッシュは持たない(描画中だけ生かす)
+    ComPtr<ID2D1Bitmap> imageBitmap;
+    const AnnotationBitmapProvider bitmaps =
+        [&](const std::shared_ptr<const DecodedImage>& src) -> ID2D1Bitmap* {
+        if (!imageBitmap) imageBitmap = createD2DBitmap(target.Get(), *src);
+        return imageBitmap.Get();
+    };
+    drawAnnotationShape(target.Get(), factory_.Get(), dwriteFactory_.Get(), spec, brush.Get(),
+                        bitmaps);
     if (FAILED(target->EndDraw())) return {};
 
     auto image = std::make_shared<DecodedImage>();

@@ -55,6 +55,20 @@ BoundsF annotationBounds(const AnnotationSpec& spec) {
             std::max(spec.p1.x, spec.p2.x), std::max(spec.p1.y, spec.p2.y)};
 }
 
+BoundsF pastedImageBounds(SizeF pasted, SizeF base, Point center) {
+    if (pasted.w <= 0 || pasted.h <= 0 || base.w <= 0 || base.h <= 0) return {};
+    // 画面いっぱいに貼られると下地が見えず、掴む余地も無くなるので少し余白を残す
+    constexpr float kFitRatio = 0.8f;
+    const float scale =
+        std::min({1.0f, base.w * kFitRatio / pasted.w, base.h * kFitRatio / pasted.h});
+    const float w = std::max(1.0f, std::round(pasted.w * scale));
+    const float h = std::max(1.0f, std::round(pasted.h * scale));
+    // 収まらないほど下地が小さいときは左上へ寄せる(clamp の下限を上限より優先する)
+    const float x = std::clamp(std::round(center.x - w * 0.5f), 0.0f, std::max(base.w - w, 0.0f));
+    const float y = std::clamp(std::round(center.y - h * 0.5f), 0.0f, std::max(base.h - h, 0.0f));
+    return {x, y, x + w, y + h};
+}
+
 bool appendPenPoint(std::vector<Point>& points, Point p, float minDistance) {
     if (!points.empty() && minDistance > 0) {
         const float dx = p.x - points.back().x;
@@ -152,6 +166,7 @@ bool hitTestAnnotation(const AnnotationSpec& spec, Point imagePos, float toleran
         return nx * nx + ny * ny <= 1.0f;
     }
     case AnnotationSpec::Kind::Text:
+    case AnnotationSpec::Kind::Image:
         return q.x >= b.minX - tolerance && q.x <= b.maxX + tolerance &&
                q.y >= b.minY - tolerance && q.y <= b.maxY + tolerance;
     }
@@ -204,8 +219,9 @@ std::vector<ResizeHandlePos> resizeHandlePositions(const AnnotationSpec& spec) {
     const auto mid = [](Point a, Point b) {
         return Point{(a.x + b.x) * 0.5f, (a.y + b.y) * 0.5f};
     };
-    // 連番マーカーは円を保つため四隅だけ(辺ハンドルを出すと楕円にできてしまう)
-    if (spec.kind == AnnotationSpec::Kind::Number) {
+    // 連番マーカーは円を保つため四隅だけ(辺ハンドルを出すと楕円にできてしまう)。
+    // 画像も縦横比を保つのが既定なので、比率を崩す辺ハンドルは出さない
+    if (spec.kind == AnnotationSpec::Kind::Number || spec.kind == AnnotationSpec::Kind::Image) {
         return {{ResizeHandle::TopLeft, corners[0]},
                 {ResizeHandle::TopRight, corners[1]},
                 {ResizeHandle::BottomRight, corners[2]},
@@ -223,6 +239,12 @@ std::vector<ResizeHandlePos> resizeHandlePositions(const AnnotationSpec& spec) {
         handles.push_back({ResizeHandle::Bottom, mid(corners[2], corners[3])});
     }
     return handles;
+}
+
+bool resizeKeepsAspect(const AnnotationSpec& spec, bool shiftDown) {
+    // 画像は比率が崩れると見た目の事故になるため、Shift の意味を反転させる
+    if (spec.kind == AnnotationSpec::Kind::Image) return !shiftDown;
+    return shiftDown;
 }
 
 AnnotationSpec resizeAnnotation(const AnnotationSpec& orig, ResizeHandle handle,

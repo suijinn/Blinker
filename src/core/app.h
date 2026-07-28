@@ -1158,6 +1158,27 @@ private:
     std::shared_ptr<DecodedImage> compositeImage() const;
 
     /**
+     * @brief クリップボードの画像を表示中の画像として開く(Command::PasteImage)。
+     *
+     * 編集中の内容は捨てられ、一覧の位置から切り離された「貼り付け画像」になる
+     * (次/前へ移動するとフォルダの一覧へ戻る)。
+     *
+     * @return 貼り付けたら true。クリップボードに画像が無ければ false
+     *         (その旨をステータスバーへ出したうえで何も変えない)。
+     */
+    bool executePasteImage();
+
+    /**
+     * @brief クリップボードの画像を注釈オブジェクトとして貼る(Command::PasteObject)。
+     *
+     * 表示中の画像は変えず、Kind::Image の注釈として上へ重ねる(移動・回転・
+     * リサイズ・削除・undo は他の注釈と同じ。保存・コピー時に焼き込まれる)。
+     * 下地が無いとき、および注釈を扱えない環境(SDL バックエンド)では
+     * executePasteImage へ回す ―― 見えないオブジェクトを作らないため。
+     */
+    void executePasteObject();
+
+    /**
      * @brief 表示中の画像を元のファイルへ上書き保存する(Command::SaveImage)。
      *
      * 上書き先が無い(貼り付け画像・一覧が空)ときは名前を付けて保存へ回す。

@@ -4,7 +4,6 @@
 #include <array>
 
 #include "core/annotation_edit.h"
-#include "core/image_scale.h"
 #include "core/unicode.h"
 #include "win/annotation_draw.h"
 
@@ -98,23 +97,12 @@ ID2D1Bitmap* RendererD2D::bitmapFor(const std::shared_ptr<const DecodedImage>& i
             return bitmaps_.front().bitmap.Get();
         }
     }
-    // GPU が扱える上限を超える画像は縮小して載せる(元のピクセルはそのまま残る)
-    const UINT32 maxSize = target_->GetMaximumBitmapSize();
-    std::shared_ptr<DecodedImage> reduced;
-    if (image->width > maxSize || image->height > maxSize) {
-        reduced = downscaleToFit(*image, maxSize);
-        if (!reduced) return nullptr;  // 縮小できないなら載せる術がない
-    }
-    const DecodedImage& source = reduced ? *reduced : *image;
-
-    ComPtr<ID2D1Bitmap> bitmap;
-    const auto props = D2D1::BitmapProperties(
-        D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED));
-    if (FAILED(target_->CreateBitmap(D2D1::SizeU(source.width, source.height),
-                                     source.pixels.data(), source.width * 4, props, &bitmap))) {
-        return nullptr;
-    }
-    bitmaps_.push_front(BitmapEntry{image, std::move(bitmap), source.byteSize()});
+    ComPtr<ID2D1Bitmap> bitmap = createD2DBitmap(target_.Get(), *image);
+    if (!bitmap) return nullptr;
+    // 上限に収めるため縮小されていることがあるので、実際に載ったほうの寸法で数える
+    const D2D1_SIZE_U pixelSize = bitmap->GetPixelSize();
+    const size_t bytes = static_cast<size_t>(pixelSize.width) * pixelSize.height * 4;
+    bitmaps_.push_front(BitmapEntry{image, std::move(bitmap), bytes});
     size_t totalBytes = 0;
     for (const BitmapEntry& entry : bitmaps_) totalBytes += entry.bytes;
     while (bitmaps_.size() > 1 &&
@@ -174,6 +162,9 @@ void RendererD2D::drawAnnotations(const AnnotationsView& annotations,
     // 画面上での太さを一定にするため、画像座標での幅はズームの逆数を掛ける
     const TextEditView& edit = annotations.textEdit;
     const float invZoom = 1.0f / std::max(std::abs(imageToScreen.m11), 0.001f);
+    // Image 注釈の画素は表示中の画像と同じ LRU に載せる(毎フレームの転送を避ける)
+    const AnnotationBitmapProvider bitmaps =
+        [this](const std::shared_ptr<const DecodedImage>& src) { return bitmapFor(src); };
     // 画像座標のまま描き、変換で拡縮する(線幅・文字も拡縮され焼き込み結果と一致する)
     for (size_t i = 0; i < specs.size(); ++i) {
         const AnnotationSpec& spec = specs[i];
@@ -190,7 +181,7 @@ void RendererD2D::drawAnnotations(const AnnotationsView& annotations,
         const bool splitDraw = editingThis && !edit.selectionRects.empty();
         if (splitDraw) {
             drawAnnotationShape(target_.Get(), factory_.Get(), dwriteFactory_.Get(), spec,
-                                brush_.Get(), AnnotationDrawParts::Background);
+                                brush_.Get(), bitmaps, AnnotationDrawParts::Background);
             brush_->SetColor(colorFromARGB(edit.selectionARGB));
             for (const TextRangeRect& r : edit.selectionRects) {
                 target_->FillRectangle(D2D1::RectF(r.left, r.top, r.right, r.bottom),
@@ -199,7 +190,7 @@ void RendererD2D::drawAnnotations(const AnnotationsView& annotations,
         }
         brush_->SetColor(colorFromRGB(spec.colorRGB));
         drawAnnotationShape(target_.Get(), factory_.Get(), dwriteFactory_.Get(), spec,
-                            brush_.Get(),
+                            brush_.Get(), bitmaps,
                             splitDraw ? AnnotationDrawParts::Foreground
                                       : AnnotationDrawParts::All);
         if (editingThis && !edit.compositionRects.empty()) {
@@ -228,7 +219,8 @@ void RendererD2D::drawAnnotations(const AnnotationsView& annotations,
         target_->SetTransform(toD2D(imageToScreen));
         brush_->SetColor(colorFromRGB(annotations.preview->colorRGB));
         drawAnnotationShape(target_.Get(), factory_.Get(), dwriteFactory_.Get(),
-                            *annotations.preview, brush_.Get(), AnnotationDrawParts::All);
+                            *annotations.preview, brush_.Get(), bitmaps,
+                            AnnotationDrawParts::All);
     }
     target_->SetTransform(D2D1::Matrix3x2F::Identity());
 

@@ -4,6 +4,7 @@
 #include <cmath>
 #include <string>
 
+#include "core/image_scale.h"
 #include "core/unicode.h"
 
 namespace blinker {
@@ -12,6 +13,26 @@ using Microsoft::WRL::ComPtr;
 
 float arrowHeadLength(float strokeWidth) {
     return strokeWidth * 4.0f;
+}
+
+ComPtr<ID2D1Bitmap> createD2DBitmap(ID2D1RenderTarget* target, const DecodedImage& image) {
+    if (!target || image.width == 0 || image.height == 0) return nullptr;
+    // GPU が扱える上限を超える画像は縮小して載せる(元のピクセルはそのまま残る)
+    const UINT32 maxSize = target->GetMaximumBitmapSize();
+    std::shared_ptr<DecodedImage> reduced;
+    if (image.width > maxSize || image.height > maxSize) {
+        reduced = downscaleToFit(image, maxSize);
+        if (!reduced) return nullptr;  // 縮小できないなら載せる術がない
+    }
+    const DecodedImage& source = reduced ? *reduced : image;
+    ComPtr<ID2D1Bitmap> bitmap;
+    const auto props = D2D1::BitmapProperties(
+        D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED));
+    if (FAILED(target->CreateBitmap(D2D1::SizeU(source.width, source.height),
+                                    source.pixels.data(), source.width * 4, props, &bitmap))) {
+        return nullptr;
+    }
+    return bitmap;
 }
 
 namespace {
@@ -162,7 +183,8 @@ void applyTextColorEffects(ID2D1RenderTarget* target, IDWriteTextLayout* layout,
 
 void drawAnnotationShape(ID2D1RenderTarget* target, ID2D1Factory* factory,
                          IDWriteFactory* dwrite, const AnnotationSpec& spec,
-                         ID2D1SolidColorBrush* brush, AnnotationDrawParts parts) {
+                         ID2D1SolidColorBrush* brush, const AnnotationBitmapProvider& bitmaps,
+                         AnnotationDrawParts parts) {
     const D2D1_POINT_2F p1{spec.p1.x, spec.p1.y};
     const D2D1_POINT_2F p2{spec.p2.x, spec.p2.y};
     const float left = std::min(p1.x, p2.x);
@@ -276,6 +298,19 @@ void drawAnnotationShape(ID2D1RenderTarget* target, ID2D1Factory* factory,
         const std::wstring number = std::to_wstring(spec.number);
         target->DrawText(number.c_str(), static_cast<UINT32>(number.size()), format.Get(),
                          D2D1::RectF(left, top, right, bottom), textBrush.Get());
+        break;
+    }
+    case AnnotationSpec::Kind::Image: {
+        // 貼り付けた画像は面そのもの(輪郭線を持たない)ので背景として描く
+        if (!background) break;
+        if (!spec.image || !bitmaps) break;
+        ID2D1Bitmap* bitmap = bitmaps(spec.image);
+        if (!bitmap) break;
+        // ビットマップは上限に収めるため元画像より小さいことがある。転送元は実寸で取る
+        const D2D1_SIZE_F size = bitmap->GetSize();
+        target->DrawBitmap(bitmap, D2D1::RectF(left, top, right, bottom), 1.0f,
+                           D2D1_BITMAP_INTERPOLATION_MODE_LINEAR,
+                           D2D1::RectF(0, 0, size.width, size.height));
         break;
     }
     case AnnotationSpec::Kind::Text: {
