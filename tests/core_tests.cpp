@@ -331,6 +331,17 @@ void testMousemap() {
     CHECK(consumeWheelSteps(accum, 0.9f) == 0);
     CHECK(consumeWheelSteps(accum, -0.9f) == 0);
     CHECK(consumeWheelSteps(accum, -0.9f) == -1);
+
+    // しきい値を上げると、その分だけ回さないと 1 段にならない(水平ホイールの誤爆対策)
+    accum = 0.0f;
+    CHECK(consumeWheelSteps(accum, 1.0f, 2.0f) == 0);
+    CHECK(consumeWheelSteps(accum, 0.9f, 2.0f) == 0);
+    CHECK(consumeWheelSteps(accum, 0.2f, 2.0f) == 1);  // 2.1 → 1 段(0.1 は残す)
+    CHECK(consumeWheelSteps(accum, 4.0f, 2.0f) == 2);  // 4.1 → 2 段(0.1 は残す)
+    CHECK(consumeWheelSteps(accum, -4.0f, 2.0f) == -2);
+    // 0 以下のしきい値は 1.0 として扱う(0 除算を避ける)
+    accum = 0.0f;
+    CHECK(consumeWheelSteps(accum, 1.0f, 0.0f) == 1);
 }
 
 void testNavArrows() {
@@ -1536,6 +1547,117 @@ void testAppStatusBar() {
     CHECK(app.currentImage() == nullptr);
     CHECK(app.statusBar().leftText == "読み込み失敗: ピクセル取得 (0x88982F50)");
     CHECK(host.lastTitle.find("(読み込み失敗)") != std::string::npos);
+}
+
+// 画像を読まずに起動 → 貼り付け、の状態で移動系を叩いても貼り付け画像を失わないこと。
+// 一覧が空だと戻る先が無く、捨ててしまうと二度と表示に戻せない
+void testAppPasteWithoutFolder() {
+    FakeDecoder decoder;
+    ImageCache cache(decoder);
+    FakeHost host;
+    FakeFileSystem fileSystem;
+    FakeClipboard clipboard;
+    FakeEncoder encoder;
+    FakeAnnotationRasterizer rasterizer;
+    FakeOcrEngine ocrEngine;
+    OcrService ocrService(ocrEngine);
+    FakePrinter printer;
+    App app(host, fileSystem, cache, clipboard, encoder, rasterizer, ocrService, printer);
+    app.onResize(800, 600);
+
+    auto pasted = std::make_shared<DecodedImage>();
+    pasted->width = 2;
+    pasted->height = 1;
+    pasted->pixels = {0, 0, 255, 255, 0, 255, 0, 255};
+    clipboard.pasteImage = pasted;
+    app.execute(Command::PasteImage);
+    CHECK(app.currentImage() && app.currentImage()->width == 2);
+    CHECK(host.lastTitle.find("(クリップボード)") == 0);
+
+    for (const Command command : {Command::NextImage, Command::PrevImage, Command::FirstImage,
+                                  Command::LastImage}) {
+        app.execute(command);
+        CHECK(app.currentImage() && app.currentImage()->width == 2);
+        CHECK(host.lastTitle.find("(クリップボード)") == 0);
+    }
+    // オーバーレイ矢印も出ない(押せてしまうと同じことが起きる)
+    app.onMouseMove({790, 300});
+    CHECK(!app.navArrows().arrows.next.visible);
+    CHECK(!app.navArrows().arrows.prev.visible);
+}
+
+// 水平ホイール(チルト)の誤爆対策。トラックボールでは縦スクロール中に微小な横成分が
+// 混ざり続けるため、しきい値・軸ロック・サイドバーの 3 つで弾く
+void testAppWheelHorizontal() {
+    FakeDecoder decoder;
+    ImageCache cache(decoder);
+    FakeHost host;
+    FakeFileSystem fileSystem;
+    FakeClipboard clipboard;
+    FakeEncoder encoder;
+    FakeAnnotationRasterizer rasterizer;
+    FakeOcrEngine ocrEngine;
+    OcrService ocrService(ocrEngine);
+    FakePrinter printer;
+    App app(host, fileSystem, cache, clipboard, encoder, rasterizer, ocrService, printer);
+    app.onResize(800, 600);
+    for (int i = 1; i <= 6; ++i) {
+        fileSystem.files.push_back(std::format("C:/pics/f{:02}.png", i));
+    }
+    std::mutex mutex;
+    std::condition_variable cv;
+    bool decoded = false;
+    cache.setOnDecoded([&](const std::filesystem::path&) {
+        std::lock_guard lock(mutex);
+        decoded = true;
+        cv.notify_all();
+    });
+    app.openPath(fileSystem.files[0]);
+    {
+        std::unique_lock lock(mutex);
+        CHECK(cv.wait_for(lock, std::chrono::seconds(5), [&] { return decoded; }));
+    }
+    app.onDecodeCompleted();
+    const auto showing = [&host](std::string_view name) {
+        return host.lastTitle.find(name) != std::string::npos;
+    };
+    CHECK(showing("f01.png"));
+
+    // 既定は垂直と同じ 1 ノッチ 1 枚(普通のチルトホイールは倒すたびに切り替わる)
+    app.onWheelHorizontal(1.0f, {500, 300});
+    CHECK(showing("f02.png"));
+
+    // 垂直ホイールが来たら横の貯金は捨てる(縦スクロール中の横成分を積ませない)
+    app.onWheelHorizontal(0.5f, {500, 300});
+    app.onWheel(-1.0f, {500, 300});  // 画像の上なのでズーム(遷移はしない)
+    CHECK(showing("f02.png"));
+    app.onWheelHorizontal(0.5f, {500, 300});
+    CHECK(showing("f02.png"));  // 捨てられているので合計 1 ノッチでも足りない
+    app.onWheelHorizontal(0.5f, {500, 300});
+    CHECK(showing("f03.png"));  // 貯金そのものは効いている
+
+    // サイドバー(ここでは操作一覧)の上では効かず、貯金も残さない
+    app.execute(Command::ToggleHelp);
+    CHECK(nearly(app.sidebar().width, 300));
+    app.onWheelHorizontal(5.0f, {100, 300});
+    CHECK(showing("f03.png"));
+    app.onWheelHorizontal(0.5f, {500, 300});
+    CHECK(showing("f03.png"));
+    app.execute(Command::ToggleHelp);
+    app.onWheel(-1.0f, {500, 300});  // 貯金を捨てて次の確認へ
+    app.onWheelHorizontal(1.0f, {500, 300});
+    CHECK(showing("f04.png"));
+
+    // しきい値は設定で上げられる(トラックボールでの誤爆対策)
+    app.applyConfig(Config::parse("[mouse]\nwheel_horizontal_threshold = 2\n"));
+    app.onWheelHorizontal(1.0f, {500, 300});
+    CHECK(showing("f04.png"));
+    app.onWheelHorizontal(1.0f, {500, 300});
+    CHECK(showing("f05.png"));
+    // 範囲外はクランプされる(0 は 1 として扱う)
+    app.applyConfig(Config::parse("[mouse]\nwheel_horizontal_threshold = 0\n"));
+    app.onWheelHorizontal(-1.0f, {500, 300});
+    CHECK(showing("f04.png"));
 }
 
 void testAppPasteSave() {
@@ -3418,12 +3540,46 @@ void testAppEdit() {
     rasterizer.ok = true;
     app.onTimer();
 
-    // 画像移動で編集(注釈含む)は破棄される(一覧が空なので表示もなくなる)
-    app.execute(Command::NextImage);
+    // 一覧が空のときの移動は無視する。戻る先が無いので、貼り付け画像も編集も捨てない
+    // (捨てると二度と表示に戻せなくなる)
+    const size_t countBeforeMove = app.annotations().specs->size();
+    for (const Command command : {Command::NextImage, Command::PrevImage, Command::FirstImage,
+                                  Command::LastImage}) {
+        app.execute(command);
+        CHECK(app.currentImage() && app.currentImage()->width == 8);
+        CHECK(app.annotations().specs->size() == countBeforeMove);
+        CHECK(host.lastTitle.find("(クリップボード)") == 0);
+    }
+
+    // 一覧があるなら移動でフォルダの画像へ戻り、そのとき編集(注釈含む)は破棄される
+    std::mutex mutex;
+    std::condition_variable cv;
+    bool decoded = false;
+    cache.setOnDecoded([&](const std::filesystem::path&) {
+        std::lock_guard lock(mutex);
+        decoded = true;
+        cv.notify_all();
+    });
+    const std::filesystem::path path = "C:/pics/a.png";
+    fileSystem.files = {path};
+    app.openPath(path);
+    {
+        std::unique_lock lock(mutex);
+        CHECK(cv.wait_for(lock, std::chrono::seconds(5), [&] { return decoded; }));
+    }
+    app.onDecodeCompleted();
+    CHECK(app.currentImage() && app.currentImage()->width == 1);  // FakeDecoder の 1x1
+
+    app.execute(Command::PasteImage);  // 8x8 を貼り直して注釈を 1 つ足す
+    app.execute(Command::SelectToolRect);
+    app.onMouseDown(MouseButton::Right, {396, 283});
+    app.onMouseUp(MouseButton::Right, {400, 287});
+    CHECK(app.annotations().specs->size() == 1);
+    app.execute(Command::NextImage);  // 1 枚しかないが貼り付け表示からは戻る
     CHECK(app.statusBar().leftText == "編集を破棄しました");
-    CHECK(app.currentImage() == nullptr);
+    CHECK(app.currentImage() && app.currentImage()->width == 1);
     CHECK(app.annotations().specs->empty());
-    CHECK(host.lastTitle == std::format("Blinker v{} ({})", kAppVersion, kAppGitSha));
+    CHECK(host.lastTitle.find("a.png") != std::string::npos);
     app.execute(Command::Undo);
     CHECK(app.statusBar().leftText == "取り消す編集はありません");
 }
@@ -4855,6 +5011,8 @@ int main() {
     testAppSlowDecode();
     testAppClipboard();
     testAppStatusBar();
+    testAppPasteWithoutFolder();
+    testAppWheelHorizontal();
     testAppPasteSave();
     testAppSaveOverwrite();
     testAppSaveDownscaled();

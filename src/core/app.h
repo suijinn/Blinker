@@ -294,11 +294,15 @@ public:
      * 既定では左右が前後の画像。垂直ホイールと違い未割り当て時の既定動作は無い。
      *
      * @param[in] wheelNotches 回転量(ノッチ単位)。正で右へ。
-     * @param[in] screenPos    ポインタ位置(現状は未使用。将来の領域判定のために受け取る)。
+     * @param[in] screenPos    ポインタ位置。サイドバー上なら何もしない。
      * @param[in] ctrl         Ctrl が押されているか。
      * @param[in] shift        Shift が押されているか。
      * @param[in] alt          Alt が押されているか。
-     * @note サイドバー上でも同じに扱う(一覧は横スクロールしないため)。
+     * @note サイドバー上では無視する(横スクロールする中身が無く、一覧を読んでいる
+     *       最中に画像が切り替わると邪魔になるため)。
+     * @note 誤爆しやすい軸なので、垂直ホイールが来たら貯金は捨てる(軸ロック)。
+     *       1 段とみなすノッチ数も `[mouse] wheel_horizontal_threshold`(既定 1)で
+     *       鈍くできる。
      */
     void onWheelHorizontal(float wheelNotches, Point screenPos, bool ctrl = false,
                            bool shift = false, bool alt = false);
@@ -573,6 +577,16 @@ private:
         std::shared_ptr<DecodedImage> image;      ///< トリミング前の画像
         std::vector<AnnotationSpec> annotations;  ///< そのときの注釈一覧
     };
+
+    /**
+     * @brief 移動系コマンドの後始末(表示中の画像を一覧の現在位置に合わせ直す)。
+     *
+     * 貼り付け画像の表示中は、一覧の位置が動かなくてもフォルダ一覧の表示へ戻す。
+     * ただし一覧が空のときは戻る先が無いので何もしない(貼り付け画像を保持する)。
+     *
+     * @param[in] moved ImageList 側で現在位置が動いたか(next/prev/first/last の戻り値)。
+     */
+    void navigate(bool moved);
 
     /// @brief 現在位置の画像をキャッシュから取り直し、表示状態を更新する。
     void refreshCurrent();
@@ -1121,8 +1135,9 @@ private:
      * @param[in] ctrl       Ctrl が押されているか。
      * @param[in] shift      Shift が押されているか。
      * @param[in] alt        Alt が押されているか。
-     * @return 割り当てがあれば true(1 ノッチに達しておらず何も実行しなかった場合も
+     * @return 割り当てがあれば true(1 段に達しておらず何も実行しなかった場合も
      *         含む。呼び出し側はズームへ落とさないこと)。未割り当てなら false。
+     * @note 1 段とみなすノッチ数は垂直が 1.0 固定、水平が wheelHorizontalThreshold_。
      */
     bool wheelCommand(float notches, bool horizontal, bool ctrl, bool shift, bool alt);
 
@@ -1199,6 +1214,10 @@ private:
     /// 1 ノッチ未満ずつ通知される高精細ホイールでも取りこぼさないため
     float wheelAccumV_ = 0.0f;
     float wheelAccumH_ = 0.0f;
+    /// 水平ホイールを 1 段と数えるまでのノッチ数(`[mouse] wheel_horizontal_threshold`)。
+    /// 既定は垂直と同じ 1 ノッチ。縦スクロールに横成分が混ざるトラックボール等で
+    /// 誤爆するなら大きくする(軸ロックとサイドバーの無視は既定で効いている)
+    float wheelHorizontalThreshold_ = 1.0f;
     bool pointerInside_ = false;  ///< ポインタがクライアント領域内にあるか(矢印の表示判定)
     /// オーバーレイ矢印を出すか(`[view] nav_arrows`)。使用感が合わなければ false にできる
     bool navArrowsEnabled_ = true;

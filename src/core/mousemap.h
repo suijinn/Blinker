@@ -152,12 +152,15 @@ private:
  * 画像の遷移は離散なので、1 ノッチ未満ずつ通知される高精細ホイールや
  * タッチパッドでも取りこぼさないよう蓄積してから 1 段ずつ消費する。
  *
- * @param[in,out] accum   蓄積値(呼び出し側が保持する。消費分は差し引かれる)。
- * @param[in]     notches 今回の回転量(ノッチ単位。正で奥へ)。
+ * @param[in,out] accum     蓄積値(呼び出し側が保持する。消費分は差し引かれる)。
+ * @param[in]     notches   今回の回転量(ノッチ単位。正で奥へ)。
+ * @param[in]     threshold 1 段とみなすノッチ数。大きいほど鈍くなる。0 以下は 1.0 として扱う。
  * @return 確定した段数(正で奥へ、負で手前へ)。
  * @note 前回と符号が反転した場合、蓄積値は捨ててから数え直す
  *       (逆方向へ回したときに 1 回目が飲まれないようにするため)。
+ * @note threshold は水平ホイールの誤爆対策で使う(トラックボール等で縦スクロールに
+ *       混ざる微小な横成分が積み上がって画像が切り替わるのを防ぐ)。
  */
-int consumeWheelSteps(float& accum, float notches);
+int consumeWheelSteps(float& accum, float notches, float threshold = 1.0f);
 
 } // namespace blinker
