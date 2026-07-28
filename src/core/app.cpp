@@ -214,6 +214,11 @@ void App::applyConfig(const Config& config) {
     navArrowsEnabled_ = config.getBool("view", "nav_arrows", navArrowsEnabled_);
     // パンと編集の左右を入れ替える(メニューは入れ替えず常に右クリック)
     swapMouseButtons_ = config.getBool("mouse", "swap_buttons", swapMouseButtons_);
+    // 水平ホイールを 1 段と数えるまでのノッチ数(トラックボールの誤爆対策)
+    wheelHorizontalThreshold_ = static_cast<float>(std::clamp(
+        config.getInt("mouse", "wheel_horizontal_threshold",
+                      static_cast<int>(wheelHorizontalThreshold_)),
+        1, 10));
     editColorRGB_ = config.getColorRGB("edit", "color", editColorRGB_);
     editStrokeWidth_ = static_cast<float>(std::clamp(
         config.getInt("edit", "stroke_width", static_cast<int>(editStrokeWidth_)), 1, 100));
@@ -267,19 +272,17 @@ void App::openPath(const fs::path& path) {
 
 void App::execute(Command command) {
     switch (command) {
-    // 移動系は貼り付け画像の表示中ならフォルダ一覧の表示へ戻る(一覧位置が
-    // 動かなくても refreshCurrent が必要なため clipboardImage_ を OR する)
     case Command::NextImage:
-        if (list_.next() || clipboardImage_) refreshCurrent();
+        navigate(list_.next());
         break;
     case Command::PrevImage:
-        if (list_.prev() || clipboardImage_) refreshCurrent();
+        navigate(list_.prev());
         break;
     case Command::FirstImage:
-        if (list_.first() || clipboardImage_) refreshCurrent();
+        navigate(list_.first());
         break;
     case Command::LastImage:
-        if (list_.last() || clipboardImage_) refreshCurrent();
+        navigate(list_.last());
         break;
     case Command::ZoomIn:
         viewport_.zoomStep(true);
@@ -497,6 +500,10 @@ void App::onResize(float width, float height) {
 
 void App::onWheel(float wheelNotches, Point screenPos, bool ctrl, bool shift, bool alt) {
     if (wheelNotches == 0) return;
+    // 縦を回している間の横成分は誤入力とみなす(トラックボールや高精細ホイールでは
+    // 縦スクロール中に微小な横が混ざり続け、放っておくと 1 段分に積み上がる)。
+    // 逆向きの相殺はしない。縦を優先する非対称な扱いは意図したもの
+    wheelAccumH_ = 0.0f;
     if (sidebarVisible() && screenPos.x < sidebarOffset()) {
         // サイドバー上ではズームも遷移もせず一覧をスクロール(1ノッチ = 3項目)
         sidebarScroll_ -= wheelNotches * 3 * kSidebarItemHeight;
@@ -512,8 +519,15 @@ void App::onWheel(float wheelNotches, Point screenPos, bool ctrl, bool shift, bo
     onViewChanged();
 }
 
-void App::onWheelHorizontal(float wheelNotches, Point, bool ctrl, bool shift, bool alt) {
+void App::onWheelHorizontal(float wheelNotches, Point screenPos, bool ctrl, bool shift, bool alt) {
     if (wheelNotches == 0) return;
+    if (sidebarVisible() && screenPos.x < sidebarOffset()) {
+        // 一覧の上では何もしない(横スクロールする中身が無い)。垂直ホイールが
+        // ここでズーム・遷移をしないのと同じで、一覧を読んでいる最中に画像が
+        // 切り替わらないようにする。貯金も捨てて後から効かないようにする
+        wheelAccumH_ = 0.0f;
+        return;
+    }
     // 未割り当てのときの既定動作は無い(垂直ホイールのズームに相当するものがない)
     wheelCommand(wheelNotches, true, ctrl, shift, alt);
 }
@@ -524,10 +538,12 @@ bool App::wheelCommand(float notches, bool horizontal, bool ctrl, bool shift, bo
                    : (notches > 0 ? MouseInput::WheelUp : MouseInput::WheelDown);
     const Command command = mousemap_.find({input, ctrl, shift, alt});
     if (command == Command::None) return false;
-    // 1 ノッチに達した分だけ繰り返し実行する。向きはコマンド側で決まっているので
-    // ここでは段数の絶対値だけを使う(逆向きに回すと貯金は捨てられる)
+    // 1 段に達した分だけ繰り返し実行する。向きはコマンド側で決まっているので
+    // ここでは段数の絶対値だけを使う(逆向きに回すと貯金は捨てられる)。
+    // 水平だけ 1 段の重みを設定で変えられる(既定 1 ノッチ。誤爆対策)
     float& accum = horizontal ? wheelAccumH_ : wheelAccumV_;
-    const int steps = std::abs(consumeWheelSteps(accum, notches));
+    const float threshold = horizontal ? wheelHorizontalThreshold_ : 1.0f;
+    const int steps = std::abs(consumeWheelSteps(accum, notches, threshold));
     for (int i = 0; i < steps; ++i) execute(command);
     return true;
 }
@@ -2356,6 +2372,14 @@ void App::adoptRefinedImage() {
     if (latest->width != current_->width || latest->height != current_->height) return;
     current_ = std::move(latest);
     host_.requestRedraw();  // ズーム・パン・注釈はそのまま(画素だけ入れ替わる)
+}
+
+void App::navigate(bool moved) {
+    // 一覧が空なら戻る先が無い。ここで refreshCurrent を呼ぶと貼り付け画像を捨てた末に
+    // 何も表示できず、二度と戻せなくなる(画像を読まずに起動して貼り付けた場合)
+    if (list_.empty()) return;
+    // 貼り付け画像の表示中は、一覧位置が動かなくてもフォルダ一覧の表示へ戻す
+    if (moved || clipboardImage_) refreshCurrent();
 }
 
 void App::refreshCurrent() {

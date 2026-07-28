@@ -182,13 +182,14 @@ void Mousemap::applyConfig(const std::unordered_map<std::string, std::string>& m
     }
 }
 
-int consumeWheelSteps(float& accum, const float notches) {
+int consumeWheelSteps(float& accum, const float notches, const float threshold) {
     if (notches == 0.0f) return 0;
+    const float unit = threshold > 0.0f ? threshold : 1.0f;  // 0 除算を避ける
     // 逆方向へ回したときに、それまでの貯金で 1 回目が飲まれないようにする
     if ((accum > 0.0f && notches < 0.0f) || (accum < 0.0f && notches > 0.0f)) accum = 0.0f;
     accum += notches;
-    const int steps = static_cast<int>(accum);  // 0 方向への切り捨て
-    accum -= static_cast<float>(steps);
+    const int steps = static_cast<int>(accum / unit);  // 0 方向への切り捨て
+    accum -= static_cast<float>(steps) * unit;
     return steps;
 }
 
