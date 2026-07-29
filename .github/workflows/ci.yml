@@ -1,0 +1,201 @@
+# main への push と PR で、ビルド・テスト・ドキュメントを検証する。
+#
+# release.yml も同じビルドとテストを通すが、あちらが動くのはタグを打った後だけで、
+# 壊れたことに気付くのがリリースの瞬間になる。こちらは変更が main に入る前に落とすのが役目。
+#
+# 検証するのは CLAUDE.md の「壊してはならない」もののうち、機械で見られる 4 つ:
+#   1. Windows 版がビルドでき、core の単体テストが通る
+#   2. SDL 版 (Linux) がビルドでき、同じテストが通る
+#      ―― core を共有しているので Win 側だけを直したつもりでも普通に壊れる。
+#         今まで CI で一度も検証しておらず、誰かが手元の WSL2 で気付くまで分からなかった
+#   3. Doxygen の警告がゼロ(@brief / @param の書き漏れはここで落ちる)
+#   4. .ps1 が UTF-8 BOM 付きのまま(落とすと release.bat が即死する。2026-07 に踏んだ)
+#
+# コンパイラ警告(/W4, -Wall -Wextra)は警告のままでは CI を落とせないので、
+# Configure に -DBLINKER_WERROR=ON を渡して /WX ・ -Werror を足している
+# (CI 専用のスイッチ。既定は OFF。詳細は CMakeLists.txt のコメント)。
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# 同じブランチへ続けて push したときは、走っている古い実行を打ち切る
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    name: Windows (build + test)
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash   # windows-latest の既定は pwsh。他のワークフローと記法を揃える
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        # release.yml と同じく Ninja プリセットではなく Visual Studio ジェネレータを使う。
+        # プリセットは vcvars を要求し、CI では第三者製アクションへの依存が増えるため。
+        # ジェネレータのバージョンは決め打ちにしないこと(windows-latest が載せる VS は
+        # 更新される。2026-07 に vs2022 → vs2026 で "17 2022" 決め打ちが壊れた)。
+        #
+        # BLINKER_WERROR は CI 専用のスイッチ (既定 OFF)。/WX を足して
+        # 「警告ゼロを維持すること」を強制する。詳細は CMakeLists.txt のコメント。
+        run: |
+          cmake --version
+          cmake -S . -B build/ci -A x64 -DBLINKER_WERROR=ON
+
+      - name: Build
+        run: cmake --build build/ci --config Release
+
+      - name: Test
+        run: ctest --test-dir build/ci -C Release --output-on-failure
+
+      - name: .ps1 が UTF-8 BOM 付きか
+        # Windows PowerShell 5.1 は BOM のない .ps1 を ANSI コードページ (日本語環境では
+        # CP932) として読むため、BOM を落とすと日本語コメントが化けて構文エラーになる。
+        # release.bat は powershell (=5.1) を呼ぶので、release.ps1 が死ぬとリリースできない。
+        # 先頭 3 バイトの確認と、CLAUDE.md に書いてある 5.1 での構文解析の両方を見る。
+        run: |
+          status=0
+          for f in $(git ls-files '*.ps1'); do
+            bom=$(head -c 3 "$f" | od -An -tx1 | tr -d ' ')
+            if [ "$bom" != "efbbbf" ]; then
+              echo "::error file=$f::UTF-8 BOM がない (先頭 3 バイト: $bom)"
+              status=1
+            fi
+          done
+          exit $status
+
+      - name: .ps1 が Windows PowerShell 5.1 で構文解析できるか
+        # スクリプト本体に非 ASCII を書かないこと。このステップの一時 .ps1 を書き出すのは
+        # ランナー側で、BOM の有無はこちらで決められない。BOM 無しだとまさにこの
+        # ワークフローが検査している化けを自分で踏む
+        shell: powershell   # pwsh ではなく Windows PowerShell 5.1。release.bat と同じ経路
+        run: |
+          $status = 0
+          foreach ($f in (git ls-files '*.ps1')) {
+            $errors = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile(
+              (Resolve-Path $f).Path, [ref]$null, [ref]$errors)
+            if ($errors.Count -gt 0) {
+              Write-Output "::error file=$f::parse error ($($errors.Count)): $($errors[0].Message)"
+              $status = 1
+            }
+          }
+          exit $status
+
+  linux:
+    name: Linux / SDL3 (build + test)
+    runs-on: ubuntu-latest
+    env:
+      # FetchContent の取得先を build/ の外の固定パスに出して、キャッシュの対象にする。
+      # 既定の <binaryDir>/_deps のままだと、キャッシュに build ディレクトリごと
+      # 抱き込むことになって扱いづらい
+      FETCHCONTENT_BASE_DIR: ${{ github.workspace }}/.deps
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: ビルド依存を入れる
+        # ninja はプリセットが要求する。X11 / Wayland の開発ヘッダは SDL3 のビルドに要る。
+        # 無くても SDL3 の configure は通ってしまい、ビデオドライバが黙って落ちた SDL が
+        # できあがる(リンクも通るので気付けない)ので、実機に近い構成で入れておく
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            ninja-build \
+            libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxi-dev \
+            libxfixes-dev libxkbcommon-dev \
+            libwayland-dev wayland-protocols libdecor-0-dev \
+            libegl1-mesa-dev libgl1-mesa-dev \
+            libasound2-dev libpulse-dev
+
+      - name: SDL3 のタグを取り出す
+        # キャッシュキーに使う。CMakeLists.txt 全体のハッシュにすると、リリースのたびの
+        # project(VERSION ...) の書き換えでキャッシュが無駄に飛ぶ
+        id: sdl
+        run: |
+          tag=$(sed -n 's/.*GIT_TAG *\(release-[0-9.]*\).*/\1/p' CMakeLists.txt)
+          if [ -z "$tag" ]; then
+            echo "::error file=CMakeLists.txt::SDL3 の GIT_TAG を解析できなかった"
+            exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: SDL3 のキャッシュを復元
+        id: sdl-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ env.FETCHCONTENT_BASE_DIR }}
+          key: sdl3-${{ runner.os }}-${{ steps.sdl.outputs.tag }}
+
+      - name: Configure
+        # 警告ゼロの強制は Windows 側と同じ (こちらは -Werror が付く)。
+        # FETCHCONTENT_BASE_DIR は CMake のキャッシュ変数で、環境変数を置くだけでは
+        # 効かないので -D で明示的に渡す (env のほうはキャッシュのパス指定と共用)
+        run: |
+          cmake --preset linux-release \
+            -DBLINKER_WERROR=ON \
+            -DFETCHCONTENT_BASE_DIR="$FETCHCONTENT_BASE_DIR"
+
+      - name: Build
+        run: cmake --build --preset linux-release
+
+      - name: Test
+        run: ctest --preset linux-release --output-on-failure
+
+      - name: SDL3 のキャッシュを保存
+        # ビルドが通ったときだけ保存する。actions/cache の post ステップは失敗した
+        # ジョブでも走るため、まとめ版だと壊れかけの SDL をキャッシュしてしまう
+        if: success() && steps.sdl-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ env.FETCHCONTENT_BASE_DIR }}
+          key: sdl3-${{ runner.os }}-${{ steps.sdl.outputs.tag }}
+
+  docs:
+    name: Doxygen (警告ゼロ)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: doxygen と graphviz を入れる
+        # Doxyfile は HAVE_DOT = YES なので graphviz が要る。無いとクラス図の生成が
+        # 失敗して、本題でない警告で埋まる
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends doxygen graphviz
+
+      - name: Doxygen を実行して警告を数える
+        # WARN_AS_ERROR = NO なので doxygen 自体は警告があっても 0 で終わる。
+        # 出力を見て判定する。Doxyfile 内のパスは実行時の CWD 基準なのでルートから実行する。
+        #
+        # 除外する 1 件は「日本語の翻訳が 1.8.15 以降更新されていない」という
+        # Doxygen 側の無害な通知で、こちらでは消せない(2 行に折り返して出る)。
+        run: |
+          doxygen docs/Doxyfile 2> doxygen-warnings.txt || true
+          grep -v 'The selected output language "japanese" has not been updated' doxygen-warnings.txt \
+            | grep -v 'since release 1.8.15' \
+            | grep -v '^[[:space:]]*$' > doxygen-warnings-filtered.txt || true
+          count=$(wc -l < doxygen-warnings-filtered.txt)
+          if [ "$count" -ne 0 ]; then
+            echo "::error::Doxygen の警告が $count 行ある(@brief / @param の書き漏れ)"
+            cat doxygen-warnings-filtered.txt
+            exit 1
+          fi
+          echo "Doxygen の警告はゼロ"
+
+      - name: 警告ログを保存
+        # 落ちたときに Actions の画面から中身を落として読めるようにしておく
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: doxygen-warnings
+          path: doxygen-warnings.txt
