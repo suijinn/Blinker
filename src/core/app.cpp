@@ -18,6 +18,7 @@
 #include "core/str_util.h"
 #include "core/unicode.h"
 #include "core/version.h"
+#include "core/view_text.h"
 
 namespace blinker {
 
@@ -2445,22 +2446,8 @@ std::string App::hoverInfoText(Point screenPos) const {
         return {};
     }
     const Point p = imageToScreen().inverted().apply(screenPos);
-    const int x = static_cast<int>(std::floor(p.x));
-    const int y = static_cast<int>(std::floor(p.y));
-    if (x < 0 || y < 0 || x >= static_cast<int>(current_->width) ||
-        y >= static_cast<int>(current_->height)) {
-        return {};
-    }
-    const uint8_t* px =
-        current_->pixels.data() + (static_cast<size_t>(y) * current_->width + x) * 4;
-    const uint8_t a = px[3];
-    const uint8_t r = unpremultiply(px[2], a);
-    const uint8_t g = unpremultiply(px[1], a);
-    const uint8_t b = unpremultiply(px[0], a);
-    std::string text = std::format("({}, {})  #{:02X}{:02X}{:02X}", x, y, r, g, b);
-    text += a == 255 ? std::format("  RGB({}, {}, {})", r, g, b)
-                     : std::format("  RGBA({}, {}, {}, {})", r, g, b, a);
-    return text;
+    return pixelInfoText(*current_, static_cast<int>(std::floor(p.x)),
+                         static_cast<int>(std::floor(p.y)));
 }
 
 void App::showMessage(std::string text) {
@@ -2476,40 +2463,29 @@ StatusBarView App::statusBar() const {
     bar.height = kStatusBarHeight;
     bar.backgroundRGB = darkTheme_ ? 0x2B2B2B : 0xF2F2F2;
     bar.textRGB = darkTheme_ ? 0xD8D8D8 : 0x202020;
-    if (!message_.empty()) {
-        bar.leftText = message_;
-    } else if (current_) {
-        // 編集ドラッグが何をするかは見た目に出ないので、現在のツールをここに出す。
-        // 縮小して取り込んだ画像は、ズーム率が元の大きさに対する比でなくなるので明示する
-        std::string text =
-            current_->downscaled()
-                ? std::format("{} x {} px (元 {} x {} を縮小表示)", current_->width,
-                              current_->height, current_->sourceWidth, current_->sourceHeight)
-                : std::format("{} x {} px", current_->width, current_->height);
-        // 何枚目を見ているのかはタイトルの [i/n](フォルダ内の位置)では分からない
-        if (multiFrame()) {
-            text += std::format("  |  {} {}/{}", frameUnitLabel(), playback_.index + 1,
-                                sequence_->frames.size());
-            if (const std::string& label = sequence_->frames[playback_.index].label;
-                !label.empty()) {
-                text += std::format(" ({})", label);
-            }
-            if (sequence_->kind == SequenceKind::Animation) {
-                text += playback_.playing ? " 再生中" : " 停止中";
-            }
-        }
-        // なぜ隣のフォルダの画像が出てくるのか分からなくなるので、再帰中は常に見せる
-        if (recursive_) text += "  |  サブフォルダ含む";
-        text += std::format("  |  ツール: {}", toolLabel(style_.tool()));
-        bar.leftText = std::move(text);
-    } else if (origin_.failed()) {
-        // 失敗した段階とコードまで出す(現物が手元にない不具合を切り分けられるように)
-        bar.leftText = origin_.error().empty()
-                           ? "読み込み失敗"
-                           : std::format("読み込み失敗: {}", origin_.error());
-    }
+    StatusTextState state;
+    state.message = message_;
+    state.image = current_.get();
+    state.frame = frameStatus();
+    state.error = origin_.error();
+    state.tool = style_.tool();
+    state.recursive = recursive_;
+    state.failed = origin_.failed();
+    bar.leftText = statusText(state);
     bar.rightText = hoverText_;
     return bar;
+}
+
+std::optional<FrameStatus> App::frameStatus() const {
+    if (!multiFrame()) return std::nullopt;
+    FrameStatus frame;
+    frame.unitLabel = frameUnitLabel();
+    frame.label = sequence_->frames[playback_.index].label;
+    frame.index = playback_.index;
+    frame.count = sequence_->frames.size();
+    frame.animation = sequence_->kind == SequenceKind::Animation;
+    frame.playing = playback_.playing;
+    return frame;
 }
 
 SidebarView App::sidebar() const {
@@ -2557,28 +2533,20 @@ void App::updatePrefetch() {
 
 void App::updateTitle() {
     const std::string appName = std::format("Blinker v{} ({})", kAppVersion, kAppGitSha);
-    if (origin_.fromClipboard()) {
-        host_.setTitle(std::format("(クリップボード){} {}% - {}",
-                                   origin_.edited() ? " (編集済み)" : "",
-                                   static_cast<int>(std::lround(viewport_.zoom() * 100)), appName));
-        return;
-    }
-    if (list_.empty()) {
-        host_.setTitle(appName);
-        return;
-    }
-    std::string title = std::format("{} [{}/{}]", pathToUtf8(list_.current().filename()),
-                                    list_.index() + 1, list_.size());
-    if (origin_.failed()) {
-        title += " (読み込み失敗)";
-    } else if (origin_.path() != list_.current()) {
-        title += " (読み込み中)";
-    } else {
-        if (origin_.edited()) title += " (編集済み)";
-        title += std::format(" {}%", static_cast<int>(std::lround(viewport_.zoom() * 100)));
-    }
-    title += " - " + appName;
-    host_.setTitle(title);
+    // ファイル名は string_view で渡すので、組み立てが終わるまで実体を保つ
+    const std::string filename =
+        list_.empty() ? std::string() : pathToUtf8(list_.current().filename());
+    TitleState state;
+    state.appName = appName;
+    state.filename = filename;
+    state.index = list_.empty() ? 0 : list_.index();
+    state.count = list_.size();
+    state.zoom = viewport_.zoom();
+    state.fromClipboard = origin_.fromClipboard();
+    state.failed = origin_.failed();
+    state.loading = !list_.empty() && origin_.path() != list_.current();
+    state.edited = origin_.edited();
+    host_.setTitle(windowTitle(state));
 }
 
 } // namespace blinker

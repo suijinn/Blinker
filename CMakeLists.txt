@@ -57,6 +57,7 @@ add_library(blinker_core STATIC
     src/core/text_edit_state.cpp
     src/core/text_style.cpp
     src/core/unicode.cpp
+    src/core/view_text.cpp
     src/core/viewport.cpp
 )
 target_include_directories(blinker_core PUBLIC src ${CMAKE_BINARY_DIR}/generated)
