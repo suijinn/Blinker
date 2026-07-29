@@ -586,10 +586,10 @@ void App::execute(Command command) {
     case Command::Escape:
         if (selected_) {
             selected_.reset();
-            objectDrag_ = ObjectDrag::None;
+            objectDrag_.end();
             host_.requestRedraw();
-        } else if (selecting_) {
-            selecting_ = false;
+        } else if (drag_.dragging()) {
+            drag_.end();
             host_.requestRedraw();
         } else if (sidebar_.showing(SidebarMode::Help)) {
             // ヘルプを見ている最中の Esc で終了してしまわないよう、まず閉じる
@@ -766,7 +766,7 @@ bool App::beginObjectGrab(Point screenPos) {
     if (!current_) return false;
     const float barHeight = statusBarVisible() ? kStatusBarHeight : 0.0f;
     if (screenPos.y >= clientSize_.h - barHeight) return false;
-    objectDrag_ = ObjectDrag::None;
+    objectDrag_.end();
     history_.resetDrag();
     // 選択中オブジェクトのハンドル(スクリーン座標で判定)→ 回転 / リサイズ開始
     if (selected_ && *selected_ < annotations_.size()) {
@@ -775,10 +775,8 @@ bool App::beginObjectGrab(Point screenPos) {
         const float dx = screenPos.x - handle.x;
         const float dy = screenPos.y - handle.y;
         if (dx * dx + dy * dy <= kRotationHandleHitPx * kRotationHandleHitPx) {
-            objectDrag_ = ObjectDrag::Rotate;
-            dragOrigSpec_ = spec;
-            dragStartAngleDeg_ =
-                angleDegFrom(imageToScreen().apply(annotationCenter(spec)), screenPos);
+            objectDrag_.beginRotate(
+                spec, angleDegFrom(imageToScreen().apply(annotationCenter(spec)), screenPos));
             return true;
         }
         // ヒット領域が重なりうる(小さいオブジェクト)ため最も近いハンドルを掴む
@@ -796,9 +794,7 @@ bool App::beginObjectGrab(Point screenPos) {
             }
         }
         if (nearest) {
-            objectDrag_ = ObjectDrag::Resize;
-            dragResizeHandle_ = nearest->handle;
-            dragOrigSpec_ = spec;
+            objectDrag_.beginResize(spec, nearest->handle);
             return true;
         }
     }
@@ -819,9 +815,7 @@ bool App::beginObjectGrab(Point screenPos) {
     // 注釈本体 → 選択して移動ドラッグ開始。外れたら選択解除してパンに回す
     if (const auto hit = hitTestAnnotations(annotations_, imagePos, tolerance)) {
         selected_ = hit;
-        objectDrag_ = ObjectDrag::Move;
-        dragStartImage_ = imagePos;
-        dragOrigSpec_ = annotations_[*hit];
+        objectDrag_.beginMove(imagePos, annotations_[*hit]);
         host_.requestRedraw();
         return true;
     }
@@ -846,7 +840,7 @@ void App::onMouseUp(MouseButton button, Point screenPos, bool shift) {
     // 掴んでいたオブジェクト操作を終える(掴むのは常に左ボタンなので解放も左だけ)
     if (button == MouseButton::Left) endObjectGrab();
     if (mouseRole(button) == MouseRole::Edit) {
-        endEditDrag(screenPos, shift);  // 掴んでいたなら selecting_ が false で素通りする
+        endEditDrag(screenPos, shift);  // 掴んでいたならドラッグ中でないので素通りする
     } else {
         pointer_.endPan();
     }
@@ -868,7 +862,7 @@ void App::endObjectGrab() {
     textEdit_.endMouseSelect();
     // テキストの高さは内容で決まるため、リサイズ確定時に折り返し後の実寸へ揃える。
     // 編集中は利用者が決めた枠幅を保ちたいので高さだけ合わせる
-    if (objectDrag_ == ObjectDrag::Resize && history_.dragPushed() && selected_ &&
+    if (objectDrag_.mode() == ObjectDragMode::Resize && history_.dragPushed() && selected_ &&
         *selected_ < annotations_.size() &&
         annotations_[*selected_].kind == AnnotationSpec::Kind::Text) {
         const bool changed = textEdit_.active() ? measureTextHeight(annotations_[*selected_])
@@ -878,7 +872,7 @@ void App::endObjectGrab() {
             host_.requestRedraw();
         }
     }
-    objectDrag_ = ObjectDrag::None;
+    objectDrag_.end();
     history_.resetDrag();
 }
 
@@ -907,7 +901,7 @@ bool App::beginTextEditByDoubleClick(Point screenPos) {
     if (!hit || annotations_[*hit].kind != AnnotationSpec::Kind::Text) return false;
     if (textEdit_.active()) commitTextEdit();
     selected_ = hit;
-    objectDrag_ = ObjectDrag::None;
+    objectDrag_.end();
     beginTextEdit(*hit, {current_, annotations_}, false);
     // 文字位置はダブルクリックした場所の語を選ぶ(通常のテキスト編集と同じ)
     textEdit_.buffer().selectWordAt(textOffsetAt(imagePos));
@@ -920,40 +914,28 @@ void App::beginEditDrag(Point screenPos) {
     // サイドバー・ステータスバー上、画像がないときは開始しない
     if (!inViewportArea(screenPos)) return;
     if (textEdit_.active()) commitTextEdit();  // 編集ドラッグは編集の外側なので先に確定する
-    selecting_ = true;
-    selStartScreen_ = screenPos;
-    selStartImage_ = clampToImage(imageToScreen().inverted().apply(screenPos));
-    selEndImage_ = selStartImage_;
-    penPoints_.clear();
-    penStraightAnchor_.reset();
-    if (penToolActive()) penPoints_.push_back(selStartImage_);
+    drag_.begin(screenPos, clampToImage(imageToScreen().inverted().apply(screenPos)),
+                penToolActive());
     updatePreview();
     host_.requestRedraw();
 }
 
 void App::updatePenStraightAnchor(bool shift) {
     if (!shift || !penToolActive()) {
-        penStraightAnchor_.reset();
+        drag_.resetStraightAnchor();
         return;
     }
-    // 押し始めた位置を覚える。押している間は動かさないので、そこから先だけが直線になる
-    if (!penStraightAnchor_ && !penPoints_.empty()) penStraightAnchor_ = penPoints_.size() - 1;
+    drag_.anchorStraight();
 }
 
 void App::extendPenPoints(float minDistancePx) {
     if (!penToolActive()) return;
-    if (penStraightAnchor_ && *penStraightAnchor_ < penPoints_.size()) {
-        // Shift 中はアンカーから先を捨てて引き直す(1 本の直線として追従させる)
-        penPoints_.resize(*penStraightAnchor_ + 1);
-        penPoints_.push_back(selEndImage_);
-        return;
-    }
-    appendPenPoint(penPoints_, selEndImage_, minDistancePx);
+    drag_.extendPen(minDistancePx);
 }
 
 void App::updateEditDrag(Point screenPos, bool shift) {
     updatePenStraightAnchor(shift);
-    selEndImage_ = dragEndImage(screenPos, shift);
+    drag_.setEndImage(dragEndImage(screenPos, shift));
     // 手書きは通過点を溜める(bbox ではなく軌跡そのものが図形になる)。
     // 間引きは画面上の見た目基準なので、ズームに応じて画像座標へ換算する
     extendPenPoints(kPenMinDistancePx / std::max(viewport_.zoom(), 0.001f));
@@ -962,13 +944,11 @@ void App::updateEditDrag(Point screenPos, bool shift) {
 }
 
 void App::endEditDrag(Point screenPos, bool shift) {
-    if (!selecting_) return;
-    selecting_ = false;
+    if (!drag_.dragging()) return;
+    drag_.end();
     updatePenStraightAnchor(shift);
-    selEndImage_ = dragEndImage(screenPos, shift);
-    const float dx = screenPos.x - selStartScreen_.x;
-    const float dy = screenPos.y - selStartScreen_.y;
-    if (dx * dx + dy * dy < PointerState::kDragThresholdPx * PointerState::kDragThresholdPx) {
+    drag_.setEndImage(dragEndImage(screenPos, shift));
+    if (!drag_.movedEnough(screenPos, PointerState::kDragThresholdPx)) {
         // 単なるクリック(移動量が小さい)なので何も作らない。プレビューを消すだけで、
         // メニューを出すかは onMouseUp が決める(メニューは常に右クリック)
         host_.requestRedraw();
@@ -1684,10 +1664,12 @@ bool App::applyEditChoice(const EditMenuEntry& entry) {
 bool App::applyCrop() {
     if (!current_) return false;
     // 部分的にかかったピクセルも含める(floor/ceil)
-    const int x0 = static_cast<int>(std::floor(std::min(selStartImage_.x, selEndImage_.x)));
-    const int y0 = static_cast<int>(std::floor(std::min(selStartImage_.y, selEndImage_.y)));
-    const int x1 = static_cast<int>(std::ceil(std::max(selStartImage_.x, selEndImage_.x)));
-    const int y1 = static_cast<int>(std::ceil(std::max(selStartImage_.y, selEndImage_.y)));
+    const Point p1 = drag_.startImage();
+    const Point p2 = drag_.endImage();
+    const int x0 = static_cast<int>(std::floor(std::min(p1.x, p2.x)));
+    const int y0 = static_cast<int>(std::floor(std::min(p1.y, p2.y)));
+    const int x1 = static_cast<int>(std::ceil(std::max(p1.x, p2.x)));
+    const int y1 = static_cast<int>(std::ceil(std::max(p1.y, p2.y)));
     auto cropped = cropImage(*current_, {x0, y0, x1 - x0, y1 - y0});
     if (!cropped) return false;
     pushUndo();
@@ -1726,10 +1708,12 @@ void App::requestOcr(const std::shared_ptr<DecodedImage>& image) {
 bool App::applyOcrSelection() {
     if (!current_) return false;
     // トリミングと同じ丸め方(部分的にかかったピクセルも含める)
-    const int x0 = static_cast<int>(std::floor(std::min(selStartImage_.x, selEndImage_.x)));
-    const int y0 = static_cast<int>(std::floor(std::min(selStartImage_.y, selEndImage_.y)));
-    const int x1 = static_cast<int>(std::ceil(std::max(selStartImage_.x, selEndImage_.x)));
-    const int y1 = static_cast<int>(std::ceil(std::max(selStartImage_.y, selEndImage_.y)));
+    const Point p1 = drag_.startImage();
+    const Point p2 = drag_.endImage();
+    const int x0 = static_cast<int>(std::floor(std::min(p1.x, p2.x)));
+    const int y0 = static_cast<int>(std::floor(std::min(p1.y, p2.y)));
+    const int x1 = static_cast<int>(std::ceil(std::max(p1.x, p2.x)));
+    const int y1 = static_cast<int>(std::ceil(std::max(p1.y, p2.y)));
     auto region = cropImage(*current_, {x0, y0, x1 - x0, y1 - y0});
     if (!region) {
         showMessage("選択した範囲が画像の外です");
@@ -1765,8 +1749,8 @@ void App::onOcrCompleted() {
 AnnotationSpec App::makeAnnotationSpec(AnnotationSpec::Kind kind) const {
     AnnotationSpec spec;
     spec.kind = kind;
-    spec.p1 = selStartImage_;
-    spec.p2 = selEndImage_;
+    spec.p1 = drag_.startImage();
+    spec.p2 = drag_.endImage();
     spec.colorRGB = editColorRGB_;
     spec.fillRGB = editFillRGB_;
     spec.fillAlpha = editFillAlpha_;
@@ -1779,7 +1763,7 @@ AnnotationSpec App::makeAnnotationSpec(AnnotationSpec::Kind kind) const {
     spec.borderWidth = editBorderWidth_;
     if (kind == AnnotationSpec::Kind::Pen) {
         // 軌跡そのものが図形。p1/p2 は選択領域ではなく点列の bbox に合わせる
-        spec.points = penPoints_;
+        spec.points = drag_.penPoints();
         updatePenBounds(spec);
         if (tool_ == EditTool::Marker) {
             spec.strokeWidth = editStrokeWidth_ * kMarkerWidthScale;
@@ -1805,7 +1789,7 @@ AnnotationSpec App::makeAnnotationSpec(AnnotationSpec::Kind kind) const {
 bool App::previewVisible() const {
     // トリミングは切り出す範囲、テキストは中身の無い箱、文字認識は読み取る範囲で、
     // どれも実物を描けない。その 3 つはラバーバンド(App::selection)に任せる
-    return selecting_ && current_ != nullptr && tool_ != EditTool::Crop &&
+    return drag_.dragging() && current_ != nullptr && tool_ != EditTool::Crop &&
            tool_ != EditTool::Text && tool_ != EditTool::Ocr;
 }
 
@@ -1869,7 +1853,7 @@ void App::beginTextEdit(size_t index, EditSnapshot before, bool created) {
     textEdit_.begin(index, created, annotations_[index].text, annotations_[index].styles);
     history_.beginTextEdit(std::move(before));
     selected_ = index;
-    objectDrag_ = ObjectDrag::None;
+    objectDrag_.end();
     notifyCaretMoved();
 }
 
@@ -2131,7 +2115,7 @@ void App::deleteSelectedAnnotation() {
     pushUndo();
     annotations_.erase(annotations_.begin() + static_cast<std::ptrdiff_t>(*selected_));
     selected_.reset();
-    objectDrag_ = ObjectDrag::None;
+    objectDrag_.end();
     markEdited();
     host_.requestRedraw();
 }
@@ -2439,7 +2423,7 @@ bool App::restoreFrom(std::optional<EditSnapshot> state) {
     current_ = std::move(state->image);
     annotations_ = std::move(state->annotations);
     selected_.reset();  // index が指す対象が変わりうるため選択は解除する
-    objectDrag_ = ObjectDrag::None;
+    objectDrag_.end();
     // トリミングの取り消しでサイズが戻るときだけビューを再設定する(回転等を保つ)
     if (sizeChanged) {
         viewport_.setImage(
@@ -2454,12 +2438,10 @@ void App::discardEdits() {
         textEdit_.end();
         host_.setTextEditing(false, {}, 0);
     }
-    selecting_ = false;
+    drag_.reset();
     selected_.reset();
-    objectDrag_ = ObjectDrag::None;
+    objectDrag_.end();
     annotations_.clear();
-    penPoints_.clear();
-    penStraightAnchor_.reset();
     if (history_.empty() && !edited_) return;
     history_.clear();
     if (edited_) {
@@ -2477,30 +2459,30 @@ Point App::clampToImage(Point imagePos) const {
 Point App::dragEndImage(Point screenPos, bool shift) const {
     const Point p = clampToImage(imageToScreen().inverted().apply(screenPos));
     // 連番マーカーは常に円にしたいので、Shift の有無によらず正方形へ寄せる
-    if (tool_ == EditTool::Number) return constrainToSquare(selStartImage_, p);
+    if (tool_ == EditTool::Number) return constrainToSquare(drag_.startImage(), p);
     if (!shift) return p;
     // 手書きは軌跡そのものが図形なので、選択領域の形ではなく線の向きを揃える。
     // 起点は Shift を押した時点の点(それまでに描いた軌跡はそのまま残る)
     if (penToolActive()) {
-        if (!penStraightAnchor_ || *penStraightAnchor_ >= penPoints_.size()) return p;
-        return constrainToAxis(penPoints_[*penStraightAnchor_], p);
+        const auto anchor = drag_.straightAnchorPoint();
+        return anchor ? constrainToAxis(*anchor, p) : p;
     }
     // 直線・矢印は bbox ではなく線の向きを揃えたいので、正方形化(=45 度固定)
     // ではなく水平・垂直・45 度へのスナップにする
     if (tool_ == EditTool::Line || tool_ == EditTool::Arrow) {
-        return constrainToAxis(selStartImage_, p);
+        return constrainToAxis(drag_.startImage(), p);
     }
-    return constrainToSquare(selStartImage_, p);
+    return constrainToSquare(drag_.startImage(), p);
 }
 
 SelectionView App::selection() const {
     SelectionView sel;
     // 図形ツールはプレビューで実物を描くので、ラバーバンドは出さない
-    sel.visible = selecting_ && current_ != nullptr && !previewVisible();
+    sel.visible = drag_.dragging() && current_ != nullptr && !previewVisible();
     if (!sel.visible) return sel;
     const Matrix3x2 m = imageToScreen();
-    sel.p1 = m.apply(selStartImage_);
-    sel.p2 = m.apply(selEndImage_);
+    sel.p1 = m.apply(drag_.startImage());
+    sel.p2 = m.apply(drag_.endImage());
     sel.borderRGB = 0x3399FF;
     sel.fillARGB = 0x303399FF;  // 半透明の塗り
     return sel;
@@ -2511,8 +2493,8 @@ SelectionView App::selection() const {
 NavArrowsState App::navArrowsGeometry() const {
     if (!navArrowsEnabled_ || !pointer_.inside() || list_.empty()) return {};
     // ドラッグ中とテキスト編集中は出さない(操作の途中で押せてしまうと編集が消える)
-    if (pointer_.panning() || selecting_ || sidebar_.resizing() || textEdit_.active() ||
-        textEdit_.mouseSelecting() || objectDrag_ != ObjectDrag::None) {
+    if (pointer_.panning() || drag_.dragging() || sidebar_.resizing() || textEdit_.active() ||
+        textEdit_.mouseSelecting() || objectDrag_.active()) {
         return {};
     }
     const float offset = sidebarOffset();
@@ -2626,13 +2608,13 @@ void App::panBy(float dx, float dy) {
 }
 
 bool App::onShiftChanged(bool shift) {
-    if (selecting_) {
+    if (drag_.dragging()) {
         updateEditDrag(pointer_.lastScreen(), shift);
         return true;
     }
     // オブジェクトのハンドルを掴んでいる間も同じ(端点スナップ・回転スナップが追従する)。
     // 位置は変わらないので、移動量 0 の onMouseMove として処理すればよい
-    if (objectDrag_ != ObjectDrag::None) {
+    if (objectDrag_.active()) {
         onMouseMove(pointer_.lastScreen(), shift);
         return true;
     }
@@ -2650,7 +2632,7 @@ void App::onMouseMove(Point screenPos, bool shift) {
     // パン役のボタンで何も掴まずにドラッグしている間は画像を動かす
     if (pointer_.panning()) panBy(delta.x, delta.y);
     // 編集ドラッグ中は選択領域とプレビューを更新する(ホバー表示の更新も続ける)
-    if (selecting_) updateEditDrag(screenPos, shift);
+    if (drag_.dragging()) updateEditDrag(screenPos, shift);
     // テキスト編集中のドラッグは範囲選択(キャレット側だけを動かす)
     if (textEdit_.mouseSelecting()) {
         const Point imagePos = imageToScreen().inverted().apply(screenPos);
@@ -2660,34 +2642,32 @@ void App::onMouseMove(Point screenPos, bool shift) {
         return;
     }
     // 注釈の移動・回転ドラッグ中はホバー表示より優先する
-    if (objectDrag_ != ObjectDrag::None && selected_ && *selected_ < annotations_.size()) {
+    if (objectDrag_.active() && selected_ && *selected_ < annotations_.size()) {
         AnnotationSpec& spec = annotations_[*selected_];
-        if (objectDrag_ == ObjectDrag::Move) {
+        const AnnotationSpec& orig = objectDrag_.origSpec();
+        if (objectDrag_.mode() == ObjectDragMode::Move) {
             const Point imagePos = imageToScreen().inverted().apply(screenPos);
-            const float dx = imagePos.x - dragStartImage_.x;
-            const float dy = imagePos.y - dragStartImage_.y;
+            const auto [dx, dy] = objectDrag_.moveDelta(imagePos);
             pushDragUndoOnce();
-            spec.p1 = {dragOrigSpec_.p1.x + dx, dragOrigSpec_.p1.y + dy};
-            spec.p2 = {dragOrigSpec_.p2.x + dx, dragOrigSpec_.p2.y + dy};
+            spec.p1 = {orig.p1.x + dx, orig.p1.y + dy};
+            spec.p2 = {orig.p2.x + dx, orig.p2.y + dy};
             // 手書きは点列が実体なので bbox と一緒に動かす
-            spec.points = dragOrigSpec_.points;
+            spec.points = orig.points;
             for (Point& p : spec.points) {
                 p.x += dx;
                 p.y += dy;
             }
-        } else if (objectDrag_ == ObjectDrag::Rotate) {
+        } else if (objectDrag_.mode() == ObjectDragMode::Rotate) {
             const Point center = imageToScreen().apply(annotationCenter(spec));
-            float angle = dragOrigSpec_.angleDeg + angleDegFrom(center, screenPos) -
-                          dragStartAngleDeg_;
+            float angle = objectDrag_.rotatedAngleDeg(angleDegFrom(center, screenPos));
             if (shift) angle = snapAngleDeg(angle, kAngleSnapDeg);
             pushDragUndoOnce();
             spec.angleDeg = normalizeAngleDeg(angle);
         } else {
             const Point imagePos = imageToScreen().inverted().apply(screenPos);
             pushDragUndoOnce();
-            AnnotationSpec resized =
-                resizeAnnotation(dragOrigSpec_, dragResizeHandle_, imagePos,
-                                 resizeKeepsAspect(dragOrigSpec_, shift));
+            AnnotationSpec resized = resizeAnnotation(orig, objectDrag_.handle(), imagePos,
+                                                      resizeKeepsAspect(orig, shift));
             spec.p1 = resized.p1;
             spec.p2 = resized.p2;
             spec.points = std::move(resized.points);  // 手書きは点列も拡縮されている

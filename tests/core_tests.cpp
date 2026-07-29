@@ -17,6 +17,7 @@
 #include "core/config.h"
 #include "core/dib.h"
 #include "core/edit.h"
+#include "core/edit_drag_state.h"
 #include "core/edit_history.h"
 #include "core/exif.h"
 #include "core/geometry.h"
@@ -27,6 +28,7 @@
 #include "core/keymap.h"
 #include "core/mousemap.h"
 #include "core/nav_arrows.h"
+#include "core/object_drag_state.h"
 #include "core/ocr_service.h"
 #include "core/ocr_text.h"
 #include "core/pixel_convert.h"
@@ -3175,6 +3177,109 @@ void testTextEditState() {
     CHECK((styles.displayStyles()[0] == TextStyleRun{4, 6, true, false, false, false, 0}));
     styles.resetComposition();
     CHECK((styles.displayStyles()[0] == TextStyleRun{2, 4, true, false, false, false, 0}));
+}
+
+void testEditDragState() {
+    // 開始で始点と終点は同じ。図形ツールでは軌跡を溜めない
+    EditDragState drag;
+    CHECK(!drag.dragging() && drag.penPoints().empty());
+    drag.begin({100, 100}, {10, 20}, false);
+    CHECK(drag.dragging());
+    CHECK(nearly(drag.startImage().x, 10) && nearly(drag.startImage().y, 20));
+    CHECK(nearly(drag.endImage().x, 10) && nearly(drag.endImage().y, 20));
+    CHECK(drag.penPoints().empty());
+    drag.setEndImage({30, 40});
+    CHECK(nearly(drag.endImage().x, 30) && nearly(drag.startImage().x, 10));  // 始点は不変
+
+    // 閾値の判定は押下位置(スクリーン座標)から。ちょうど閾値なら動いたとみなす
+    CHECK(!drag.movedEnough({102, 102}, 4.0f));  // 距離 2.83
+    CHECK(drag.movedEnough({104, 100}, 4.0f));
+    CHECK(drag.movedEnough({100, 96}, 4.0f));
+
+    // 手書きは始点を軌跡の 1 点目に置く。近すぎる点は捨て、遠い点だけ足す
+    EditDragState pen;
+    pen.begin({0, 0}, {5, 5}, true);
+    CHECK(pen.penPoints().size() == 1 && nearly(pen.penPoints()[0].x, 5));
+    pen.setEndImage({6, 5});
+    pen.extendPen(2.0f);  // 距離 1 なので捨てる
+    CHECK(pen.penPoints().size() == 1);
+    pen.setEndImage({10, 5});
+    pen.extendPen(2.0f);
+    CHECK(pen.penPoints().size() == 2 && nearly(pen.penPoints()[1].x, 10));
+
+    // 終了しても軌跡は残る(確定処理が後から図形へ移す)。破棄では消える
+    pen.end();
+    CHECK(!pen.dragging() && pen.penPoints().size() == 2);
+    pen.reset();
+    CHECK(!pen.dragging() && pen.penPoints().empty());
+
+    // 直線アンカーは押し始めた時点の末尾を指し、押している間は動かない
+    EditDragState line;
+    line.anchorStraight();  // 軌跡が空なら付かない
+    CHECK(!line.straightAnchorPoint());
+    line.begin({0, 0}, {0, 0}, true);
+    for (float x : {10.0f, 20.0f}) {
+        line.setEndImage({x, 0});
+        line.extendPen(1.0f);
+    }
+    CHECK(line.penPoints().size() == 3);
+    line.anchorStraight();
+    line.setEndImage({20, 30});
+    line.anchorStraight();  // 押している間に呼び直しても動かない
+    CHECK(line.straightAnchorPoint() && nearly(line.straightAnchorPoint()->x, 20));
+
+    // Shift 中はアンカーから先を 1 本に引き直す(押す前の軌跡は残る)
+    line.extendPen(1.0f);
+    CHECK(line.penPoints().size() == 4 && nearly(line.penPoints()[3].y, 30));
+    line.setEndImage({20, 50});
+    line.extendPen(1.0f);
+    CHECK(line.penPoints().size() == 4 && nearly(line.penPoints()[3].y, 50));  // 増えない
+
+    // 離すと以後は通常どおり点が増える
+    line.resetStraightAnchor();
+    CHECK(!line.straightAnchorPoint());
+    line.setEndImage({20, 70});
+    line.extendPen(1.0f);
+    CHECK(line.penPoints().size() == 5);
+
+    // 開始し直すと軌跡もアンカーも捨てる
+    line.begin({0, 0}, {1, 1}, true);
+    CHECK(line.penPoints().size() == 1 && !line.straightAnchorPoint());
+}
+
+void testObjectDragState() {
+    AnnotationSpec spec;
+    spec.kind = AnnotationSpec::Kind::Rect;
+    spec.p1 = {10, 20};
+    spec.p2 = {30, 40};
+    spec.angleDeg = 45;
+
+    ObjectDragState drag;
+    CHECK(!drag.active() && drag.mode() == ObjectDragMode::None);
+
+    // 移動: 掴んだ位置からの差分を返す(基準は開始時の写しなので途中経過に依らない)
+    drag.beginMove({15, 25}, spec);
+    CHECK(drag.active() && drag.mode() == ObjectDragMode::Move);
+    CHECK(nearly(drag.origSpec().p1.x, 10) && nearly(drag.origSpec().p2.y, 40));
+    CHECK(nearly(drag.moveDelta({20, 25}).x, 5) && nearly(drag.moveDelta({20, 25}).y, 0));
+    CHECK(nearly(drag.moveDelta({5, 5}).x, -10) && nearly(drag.moveDelta({5, 5}).y, -20));
+    spec.p1 = {0, 0};  // 掴んだ後に注釈が変わっても基準は動かない
+    CHECK(nearly(drag.origSpec().p1.x, 10));
+    spec.p1 = {10, 20};
+
+    // 回転: 開始時の角度に、掴んでからのポインタの回転量を足す
+    drag.beginRotate(spec, 90);
+    CHECK(drag.mode() == ObjectDragMode::Rotate);
+    CHECK(nearly(drag.rotatedAngleDeg(90), 45));    // 動かしていなければそのまま
+    CHECK(nearly(drag.rotatedAngleDeg(120), 75));   // 30 度ぶん回した
+    CHECK(nearly(drag.rotatedAngleDeg(0), -45));    // 正規化は呼び出し側の仕事
+
+    // サイズ変更: 掴んだハンドルを覚える
+    drag.beginResize(spec, ResizeHandle::TopLeft);
+    CHECK(drag.mode() == ObjectDragMode::Resize && drag.handle() == ResizeHandle::TopLeft);
+
+    drag.end();
+    CHECK(!drag.active() && drag.mode() == ObjectDragMode::None);
 }
 
 void testAnnotationGeometry() {
@@ -6382,6 +6487,8 @@ int main() {
     testSidebarState();
     testPointerState();
     testTextEditState();
+    testEditDragState();
+    testObjectDragState();
     testAppSidebar();
     testAppSidebarResize();
     testAppHelpSidebar();
