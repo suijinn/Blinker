@@ -401,7 +401,7 @@ void testNavArrows() {
 void testHelpLines() {
     const Keymap km = Keymap::defaults();
     const Mousemap mm = Mousemap::defaults();
-    CHECK(keysLabel(km, Command::NextImage) == "Right Down PageDown Space");
+    CHECK(keysLabel(km, Command::NextImage) == "Right Down PageDown");
     CHECK(keysLabel(km, Command::ToggleHelp) == "F1");
     CHECK(keysLabel(km, Command::SelectToolArrow).empty());  // 既定では未割り当て
     CHECK(mouseLabel(mm, Command::NextImage) == "サイド(進む) チルト→ Ctrl+ホイール↓");
@@ -420,7 +420,9 @@ void testHelpLines() {
 
     CHECK(hasHeader("表示"));
     CHECK(hasHeader("マウス"));
-    CHECK(has("次の画像  Right Down PageDown Space"));
+    CHECK(has("次の画像  Right Down PageDown")
+          && has("アニメーション再生 / 一時停止  Space")
+          && has("次のフレーム / ページ  Shift+Right"));
     CHECK(has("この操作一覧  F1"));
     CHECK(has("右 90 度回転  R"));
     CHECK(has("パスをコピー  Ctrl+Shift+C"));
@@ -1110,10 +1112,16 @@ public:
         return colorChoice;
     }
     void startTimer(unsigned milliseconds) override { lastTimerMs = milliseconds; }
+    void setFrameTimer(unsigned milliseconds) override {
+        lastFrameTimerMs = milliseconds;
+        ++frameTimerCalls;
+    }
     void quit() override {}
 
     bool fullscreen = false;
     unsigned lastTimerMs = 0;
+    unsigned lastFrameTimerMs = 0;  // アニメーション用タイマー(0 = 停止)
+    int frameTimerCalls = 0;
     std::string lastTitle;
     std::optional<std::filesystem::path> savePath;  // 保存ダイアログの応答 (nullopt = キャンセル)
     int saveDialogCount = 0;
@@ -2654,7 +2662,7 @@ void testAppHelpSidebar() {
     CHECK(sb.items[0].text == "表示");
     CHECK(sb.items[0].current);  // 見出しはハイライトで描く
     // 中身はファイル名ではなくキー一覧
-    CHECK(sb.items[1].text == "次の画像  Right Down PageDown Space");
+    CHECK(sb.items[1].text == "次の画像  Right Down PageDown");
     // 30 ファイルより行数が多いので、内容の高さもファイル一覧とは別物になる
     CHECK(sb.contentHeight > 30 * 24);
 
@@ -5201,6 +5209,446 @@ void testAppOcr() {
     CHECK(ocrEngine.lastFirstPixel == (std::array<uint8_t, 4>{255, 255, 255, 255}));
 }
 
+// 指定色で塗りつぶした画像を作る(合成結果の判別用。PBGRA・事前乗算)
+std::shared_ptr<DecodedImage> solidImage(uint32_t width, uint32_t height, uint8_t blue,
+                                         uint8_t alpha) {
+    auto image = std::make_shared<DecodedImage>();
+    image->width = width;
+    image->height = height;
+    image->pixels.resize(static_cast<size_t>(width) * height * 4);
+    for (size_t i = 0; i < image->pixels.size(); i += 4) {
+        image->pixels[i + 0] = blue;
+        image->pixels[i + 1] = 0;
+        image->pixels[i + 2] = 0;
+        image->pixels[i + 3] = alpha;
+    }
+    return image;
+}
+
+void testAnimationCore() {
+    // 遅延の正規化: 小さすぎる指定は既定値へ読み替える(そのまま従うと数百 fps になる)
+    CHECK(normalizedDelayMs(0, 20, 100) == 100);
+    CHECK(normalizedDelayMs(10, 20, 100) == 100);
+    CHECK(normalizedDelayMs(20, 20, 100) == 20);   // 閾値ちょうどは読み替えない
+    CHECK(normalizedDelayMs(500, 20, 100) == 500);
+    CHECK(normalizedDelayMs(0, 0, 100) == 1);      // 閾値 0 でも 0ms は返さない
+
+    // 無限ループ (loopCount = 0): 末尾の次は先頭へ戻り、再生は続く
+    PlaybackState infinite;
+    infinite.playing = true;
+    CHECK(advanceFrame(infinite, 3, 0) && infinite.index == 1);
+    CHECK(advanceFrame(infinite, 3, 0) && infinite.index == 2);
+    CHECK(advanceFrame(infinite, 3, 0) && infinite.index == 0 && infinite.loopsDone == 1);
+    CHECK(infinite.playing);
+
+    // 回数指定: 2 周し終えたら最後のフレームを出したまま止まる
+    PlaybackState limited;
+    limited.playing = true;
+    CHECK(advanceFrame(limited, 2, 2) && limited.index == 1);
+    CHECK(advanceFrame(limited, 2, 2) && limited.index == 0 && limited.loopsDone == 1);
+    CHECK(advanceFrame(limited, 2, 2) && limited.index == 1);
+    CHECK(!advanceFrame(limited, 2, 2));  // 2 周目の末尾
+    CHECK(!limited.playing && limited.index == 1 && limited.loopsDone == 2);
+
+    // 1 フレームしかないものは再生しない
+    PlaybackState single;
+    single.playing = true;
+    CHECK(!advanceFrame(single, 1, 0) && !single.playing);
+
+    // --- 合成 ---
+    const auto blue = solidImage(2, 2, 255, 255);          // 不透明
+    const auto clear = solidImage(2, 2, 0, 0);             // 完全透明
+    // 指定座標の青成分とアルファを調べる(CHECK はマクロなので、比較まで関数の中で行う)
+    const auto pixelIs = [](const DecodedImage& img, uint32_t x, uint32_t y, int blue,
+                            int alpha) {
+        const size_t i = (static_cast<size_t>(y) * img.width + x) * 4;
+        return img.pixels[i + 0] == blue && img.pixels[i + 3] == alpha;
+    };
+
+    // None: 描いたものが次のフレームにも残る
+    AnimationCompositor keep(4, 4);
+    const auto k0 = keep.addFrame(*blue, 0, 0, FrameBlend::Over, FrameDisposal::None);
+    CHECK(k0 && k0->width == 4 && k0->height == 4);
+    CHECK(pixelIs(*k0, 0, 0, 255, 255));
+    CHECK(pixelIs(*k0, 3, 3, 0, 0));  // 触っていない所は透明
+    const auto k1 = keep.addFrame(*clear, 2, 2, FrameBlend::Over, FrameDisposal::None);
+    CHECK(pixelIs(*k1, 0, 0, 255, 255));  // 透明を重ねても残る
+
+    // Background: そのフレームの矩形だけが透明へ戻る
+    AnimationCompositor background(4, 4);
+    background.addFrame(*blue, 0, 0, FrameBlend::Over, FrameDisposal::Background);
+    const auto b1 = background.addFrame(*clear, 2, 2, FrameBlend::Over, FrameDisposal::None);
+    CHECK(pixelIs(*b1, 0, 0, 0, 0));  // 消えている
+
+    // Previous: 描く前のキャンバスへ戻る(1 枚目の絵が復活する)
+    AnimationCompositor previous(4, 4);
+    previous.addFrame(*blue, 0, 0, FrameBlend::Over, FrameDisposal::None);
+    previous.addFrame(*blue, 2, 2, FrameBlend::Over, FrameDisposal::Previous);
+    const auto p2 = previous.addFrame(*clear, 0, 0, FrameBlend::Over, FrameDisposal::None);
+    CHECK(pixelIs(*p2, 0, 0, 255, 255));  // 1 枚目は残る
+    CHECK(pixelIs(*p2, 2, 2, 0, 0));      // 2 枚目は戻された
+
+    // Source: 透明もそのまま置き換える(Over との違い)
+    AnimationCompositor source(4, 4);
+    source.addFrame(*blue, 0, 0, FrameBlend::Over, FrameDisposal::None);
+    const auto s1 = source.addFrame(*clear, 0, 0, FrameBlend::Source, FrameDisposal::None);
+    CHECK(pixelIs(*s1, 0, 0, 0, 0));
+
+    // キャンバスからはみ出す配置でも落ちない(切り捨てる)
+    AnimationCompositor clipped(4, 4);
+    CHECK(clipped.addFrame(*blue, 3, 3, FrameBlend::Over, FrameDisposal::Background) != nullptr);
+    CHECK(clipped.addFrame(*blue, -1, -1, FrameBlend::Over, FrameDisposal::None) != nullptr);
+    CHECK(clipped.addFrame(*blue, 90, 90, FrameBlend::Over, FrameDisposal::None) != nullptr);
+
+    // 拡張子での絞り込み(これが true のときだけ probeSequence が呼ばれる)
+    CHECK(mayHaveMultipleFrames("a.gif") && mayHaveMultipleFrames("a.TIF"));
+    CHECK(mayHaveMultipleFrames("a.tiff") && mayHaveMultipleFrames("a.ico"));
+    // APNG / アニメ WebP は非対応なので調べない(WIC がフレームを列挙しないため)
+    CHECK(!mayHaveMultipleFrames("a.png") && !mayHaveMultipleFrames("a.webp"));
+    CHECK(!mayHaveMultipleFrames("a.jpg") && !mayHaveMultipleFrames("a"));
+
+    // [animation] の読み取り
+    const Config config = Config::parse(
+        "[animation]\nautoplay = false\nloop = false\nmin_delay_ms = 30\n"
+        "default_delay_ms = 120\nmax_memory_mb = 64\nmax_frames = 5\n");
+    const AnimationOptions options = animationOptionsFromConfig(config);
+    CHECK(!options.autoplay && !options.loopForever);
+    CHECK(options.minDelayMs == 30 && options.defaultDelayMs == 120);
+    const AnimationLimits limits = animationLimitsFromConfig(config);
+    CHECK(limits.maxBytes == (size_t{64} << 20) && limits.maxFrames == 5);
+}
+
+// 多ページ (TIFF / ICO) とアニメーション (GIF) を返すデコーダ。
+// 拡張子で振る舞いを変え、フレームごとに違う色を返して取り違えを検出できるようにする
+class MultiFrameDecoder final : public IImageDecoder {
+public:
+    std::shared_ptr<DecodedImage> decode(const std::filesystem::path& path,
+                                         std::string* = nullptr) override {
+        // ICO の index 0 は「最大サイズ」= probeSequence の並びの先頭と一致させる
+        if (path.extension() == ".ico") return solidImage(32, 32, 10, 255);
+        return solidImage(200, 100, 10, 255);
+    }
+
+    SequenceInfo probeSequence(const std::filesystem::path& path) override {
+        ++probeCount;
+        SequenceInfo info;
+        const std::string ext = path.extension().string();
+        if (ext == ".tif") {
+            info.kind = SequenceKind::Pages;
+            info.frameCount = 3;
+        } else if (ext == ".ico") {
+            info.kind = SequenceKind::Pages;
+            info.frameCount = 2;
+            info.labels = {"32 x 32", "16 x 16"};
+        } else if (ext == ".gif") {
+            info.kind = SequenceKind::Animation;
+            info.frameCount = 3;
+            info.loopCount = 0;  // 無限
+        }
+        return info;
+    }
+
+    std::shared_ptr<DecodedImage> decodePage(const std::filesystem::path& path,
+                                             uint32_t index, std::string*) override {
+        ++pageCount;
+        if (path.extension() == ".ico") return solidImage(16, 16, 60, 255);
+        return solidImage(200, 100, static_cast<uint8_t>(20 + index), 255);
+    }
+
+    bool decodeAnimation(const std::filesystem::path& path, const AnimationLimits&,
+                         ImageSequence& out, std::string*) override {
+        if (path.extension() != ".gif") return false;
+        ++animationCount;
+        if (tooLarge) {
+            out.truncated = true;  // 上限超過(App は静止画として案内する)
+            return false;
+        }
+        out.kind = SequenceKind::Animation;
+        out.loopCount = 0;
+        const uint32_t delays[] = {50, 0, 200};  // 0 は既定値 (100ms) へ読み替えられる
+        for (uint32_t i = 0; i < 3; ++i) {
+            out.frames.push_back(FrameEntry{
+                solidImage(200, 100, static_cast<uint8_t>(100 + i), 255), delays[i], {}});
+        }
+        return true;
+    }
+
+    bool tooLarge = false;
+    int probeCount = 0;
+    int pageCount = 0;
+    int animationCount = 0;
+};
+
+// 現在のフレームを見分けるための色(solidImage の blue 成分)
+uint8_t frameTag(const App& app) {
+    return app.currentImage() ? app.currentImage()->pixels[0] : 0;
+}
+
+void testAppMultiPage() {
+    MultiFrameDecoder decoder;
+    ImageCache cache(decoder);
+    FakeHost host;
+    FakeFileSystem fileSystem;
+    FakeClipboard clipboard;
+    FakeEncoder encoder;
+    FakeAnnotationRasterizer rasterizer;
+    FakeOcrEngine ocrEngine;
+    OcrService ocrService(ocrEngine);
+    ScanService scanService(fileSystem);
+    FakePrinter printer;
+    App app(host, fileSystem, cache, clipboard, encoder, rasterizer, ocrService, printer,
+            scanService);
+    app.onResize(800, 600);
+
+    std::mutex mutex;
+    std::condition_variable cv;
+    int decoded = 0;
+    cache.setOnDecoded([&](const std::filesystem::path&) {
+        std::lock_guard lock(mutex);
+        ++decoded;
+        cv.notify_all();
+    });
+    const auto pump = [&](int count) {
+        std::unique_lock lock(mutex);
+        CHECK(cv.wait_for(lock, std::chrono::seconds(5), [&] { return decoded >= count; }));
+        lock.unlock();
+        app.onDecodeCompleted();
+    };
+
+    const std::filesystem::path path = "C:/pics/doc.tif";
+    fileSystem.files = {path};
+    app.openPath(path);
+    pump(1);  // 先頭ページのデコード完了 → 表示 → フレーム構成の調査を予約
+    CHECK(frameTag(app) == 10);
+    pump(2);  // 調査完了 → 3 ページあることが分かる
+    CHECK(decoder.probeCount == 1);
+    CHECK(app.statusBar().leftText.find("ページ 1/3") != std::string::npos);
+
+    // 次のページ: デコードを待つ間は前のページを出したままページ番号だけ進む
+    app.execute(Command::NextFrame);
+    CHECK(app.statusBar().leftText.find("ページ 2/3") != std::string::npos);
+    CHECK(frameTag(app) == 10);
+    pump(3);
+    CHECK(frameTag(app) == 21);  // 2 ページ目の絵に入れ替わった
+    CHECK(decoder.pageCount == 1);
+
+    // 前のページへ戻る。デコード済みなので待たずに切り替わる
+    app.execute(Command::PrevFrame);
+    CHECK(frameTag(app) == 10);
+    CHECK(decoder.pageCount == 1);  // 再デコードは起きない
+    app.execute(Command::PrevFrame);
+    CHECK(app.statusBar().leftText == "最初のページです");
+    app.onTimer();
+
+    // 末尾では折り返さない(ファイル遷移もしない)
+    app.execute(Command::NextFrame);  // デコード済みのページなので待たずに切り替わる
+    CHECK(frameTag(app) == 21);
+    app.execute(Command::NextFrame);  // 3 ページ目は未デコード
+    pump(4);
+    CHECK(frameTag(app) == 22);
+    CHECK(decoder.pageCount == 2);
+    CHECK(app.statusBar().leftText.find("ページ 3/3") != std::string::npos);
+    app.execute(Command::NextFrame);
+    CHECK(app.statusBar().leftText == "最後のページです");
+    app.onTimer();
+
+    // 多ページの上書き保存は断る(表示中の 1 枚で潰すと残りが消える)。
+    // 縮小画像と同じく、確認ダイアログを出す前に断ること
+    app.execute(Command::SaveImage);
+    CHECK(host.confirmCount == 0);
+    CHECK(encoder.encodeCount == 0);
+    CHECK(app.statusBar().leftText.find("ページが 3 枚あります") != std::string::npos);
+    app.onTimer();
+
+    // アニメーションではないので再生できない
+    app.execute(Command::TogglePlay);
+    CHECK(app.statusBar().leftText == "この画像はアニメーションではありません");
+    CHECK(host.lastFrameTimerMs == 0);
+}
+
+void testAppIcoSizes() {
+    MultiFrameDecoder decoder;
+    ImageCache cache(decoder);
+    FakeHost host;
+    FakeFileSystem fileSystem;
+    FakeClipboard clipboard;
+    FakeEncoder encoder;
+    FakeAnnotationRasterizer rasterizer;
+    FakeOcrEngine ocrEngine;
+    OcrService ocrService(ocrEngine);
+    ScanService scanService(fileSystem);
+    FakePrinter printer;
+    App app(host, fileSystem, cache, clipboard, encoder, rasterizer, ocrService, printer,
+            scanService);
+    app.onResize(800, 600);
+
+    std::mutex mutex;
+    std::condition_variable cv;
+    int decoded = 0;
+    cache.setOnDecoded([&](const std::filesystem::path&) {
+        std::lock_guard lock(mutex);
+        ++decoded;
+        cv.notify_all();
+    });
+    const auto pump = [&](int count) {
+        std::unique_lock lock(mutex);
+        CHECK(cv.wait_for(lock, std::chrono::seconds(5), [&] { return decoded >= count; }));
+        lock.unlock();
+        app.onDecodeCompleted();
+    };
+
+    const std::filesystem::path path = "C:/pics/app.ico";
+    fileSystem.files = {path};
+    app.openPath(path);
+    pump(1);
+    pump(2);
+    // index 0 は最大サイズ(ファイル内の先頭ではない)。サイズを表示名に出す
+    CHECK(app.currentImage() && app.currentImage()->width == 32);
+    CHECK(app.statusBar().leftText.find("ページ 1/2 (32 x 32)") != std::string::npos);
+
+    // 大きさの違うページへ移ったらフィットし直す(アニメーションと違い canvas が変わる)
+    app.execute(Command::NextFrame);
+    pump(3);
+    CHECK(app.currentImage() && app.currentImage()->width == 16);
+    CHECK(app.statusBar().leftText.find("ページ 2/2 (16 x 16)") != std::string::npos);
+}
+
+void testAppAnimation() {
+    MultiFrameDecoder decoder;
+    ImageCache cache(decoder);
+    FakeHost host;
+    FakeFileSystem fileSystem;
+    FakeClipboard clipboard;
+    FakeEncoder encoder;
+    FakeAnnotationRasterizer rasterizer;
+    FakeOcrEngine ocrEngine;
+    OcrService ocrService(ocrEngine);
+    ScanService scanService(fileSystem);
+    FakePrinter printer;
+    App app(host, fileSystem, cache, clipboard, encoder, rasterizer, ocrService, printer,
+            scanService);
+    app.onResize(800, 600);
+
+    std::mutex mutex;
+    std::condition_variable cv;
+    int decoded = 0;
+    cache.setOnDecoded([&](const std::filesystem::path&) {
+        std::lock_guard lock(mutex);
+        ++decoded;
+        cv.notify_all();
+    });
+    const auto pump = [&](int count) {
+        std::unique_lock lock(mutex);
+        CHECK(cv.wait_for(lock, std::chrono::seconds(5), [&] { return decoded >= count; }));
+        lock.unlock();
+        app.onDecodeCompleted();
+    };
+
+    const std::filesystem::path path = "C:/pics/anim.gif";
+    fileSystem.files = {path};
+    app.openPath(path);
+    pump(1);  // 先頭フレーム。この時点ではまだ静止画に見える
+    CHECK(app.statusBar().leftText.find("フレーム") == std::string::npos);
+    CHECK(host.lastFrameTimerMs == 0);
+
+    pump(2);  // 調査 → 全フレーム展開まで終わる(調査だけでは通知しない)
+    CHECK(decoder.animationCount == 1);
+    CHECK(app.statusBar().leftText.find("フレーム 1/3 再生中") != std::string::npos);
+    CHECK(frameTag(app) == 100);  // 展開後の先頭フレームへ差し替わっている
+    CHECK(host.lastFrameTimerMs == 50);  // 既定で自動再生。1 枚目の表示時間
+
+    // タイマー満了でコマが進み、次の時間が張り直される
+    app.onFrameTimer();
+    CHECK(frameTag(app) == 101);
+    CHECK(host.lastFrameTimerMs == 100);  // 遅延 0 は既定値へ読み替える
+    CHECK(app.statusBar().leftText.find("フレーム 2/3") != std::string::npos);
+    app.onFrameTimer();
+    CHECK(frameTag(app) == 102);
+    CHECK(host.lastFrameTimerMs == 200);
+    app.onFrameTimer();  // 無限ループなので先頭へ戻る
+    CHECK(frameTag(app) == 100);
+    CHECK(host.lastFrameTimerMs == 50);
+
+    // Space で一時停止 → タイマーが止まる
+    CHECK(app.onKey({KeyCode::Space}));
+    CHECK(host.lastFrameTimerMs == 0);
+    CHECK(app.statusBar().leftText.find("フレーム 1/3 停止中") != std::string::npos);
+    app.onFrameTimer();  // 止まっている間の満了は無視する
+    CHECK(frameTag(app) == 100);
+
+    // 手動送りは折り返さず、送った先で止まったまま
+    app.execute(Command::NextFrame);
+    CHECK(frameTag(app) == 101);
+    CHECK(host.lastFrameTimerMs == 0);
+
+    // 再開 → 現在のフレームの時間から
+    CHECK(app.onKey({KeyCode::Space}));
+    CHECK(host.lastFrameTimerMs == 100);
+
+    // 編集を始めたら再生は止まり、そのフレームの静止画になる
+    app.onMouseDown(MouseButton::Right, {380, 280});
+    app.onMouseMove({430, 320});
+    app.onMouseUp(MouseButton::Right, {430, 320});
+    CHECK(app.annotations().specs->size() == 1);
+    CHECK(host.lastFrameTimerMs == 0);
+    app.execute(Command::TogglePlay);
+    CHECK(app.statusBar().leftText.find("編集中は再生できません") == 0);
+    app.onTimer();
+
+    // 複数フレームの画像も上書き保存は断る
+    app.execute(Command::SaveImage);
+    CHECK(host.confirmCount == 0);
+    CHECK(encoder.encodeCount == 0);
+    CHECK(app.statusBar().leftText.find("フレームが 3 枚あります") != std::string::npos);
+}
+
+void testAppAnimationTooLarge() {
+    MultiFrameDecoder decoder;
+    decoder.tooLarge = true;
+    ImageCache cache(decoder);
+    FakeHost host;
+    FakeFileSystem fileSystem;
+    FakeClipboard clipboard;
+    FakeEncoder encoder;
+    FakeAnnotationRasterizer rasterizer;
+    FakeOcrEngine ocrEngine;
+    OcrService ocrService(ocrEngine);
+    ScanService scanService(fileSystem);
+    FakePrinter printer;
+    App app(host, fileSystem, cache, clipboard, encoder, rasterizer, ocrService, printer,
+            scanService);
+    app.onResize(800, 600);
+
+    std::mutex mutex;
+    std::condition_variable cv;
+    int decoded = 0;
+    cache.setOnDecoded([&](const std::filesystem::path&) {
+        std::lock_guard lock(mutex);
+        ++decoded;
+        cv.notify_all();
+    });
+    const auto pump = [&](int count) {
+        std::unique_lock lock(mutex);
+        CHECK(cv.wait_for(lock, std::chrono::seconds(5), [&] { return decoded >= count; }));
+        lock.unlock();
+        app.onDecodeCompleted();
+    };
+
+    const std::filesystem::path path = "C:/pics/huge.gif";
+    fileSystem.files = {path};
+    app.openPath(path);
+    pump(1);
+    pump(2);
+    // 途中まで再生すると不具合にしか見えないので、静止画として理由を案内する
+    CHECK(app.statusBar().leftText.find("静止画として表示") != std::string::npos);
+    CHECK(host.lastFrameTimerMs == 0);
+    app.onTimer();
+    CHECK(app.statusBar().leftText.find("フレーム") == std::string::npos);
+    // 1 枚しかないので上書き保存は通常どおり可能(拡張子が対応していれば)
+    app.execute(Command::SaveImage);
+    CHECK(app.statusBar().leftText.find("フレームが") == std::string::npos);
+}
+
 } // namespace
 
 void testSortOrder() {
@@ -5604,6 +6052,11 @@ int main() {
     testAppSortOrder();
     testAppRecursive();
     testAppResize();
+    testAnimationCore();
+    testAppMultiPage();
+    testAppIcoSizes();
+    testAppAnimation();
+    testAppAnimationTooLarge();
 
     if (g_failures == 0) {
         std::cout << "all tests passed\n";

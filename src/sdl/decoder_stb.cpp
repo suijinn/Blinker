@@ -1,5 +1,6 @@
 #include "sdl/decoder_stb.h"
 
+#include <cstdlib>
 #include <format>
 #include <fstream>
 #include <limits>
@@ -7,6 +8,8 @@
 #include <vector>
 
 #include "core/exif.h"
+#include "core/str_util.h"
+#include "core/unicode.h"
 #include "stb/stb_image.h"
 
 namespace blinker {
@@ -74,6 +77,74 @@ std::shared_ptr<DecodedImage> DecoderStb::decode(const std::filesystem::path& pa
     // stb_image は EXIF を読まないので、向きは自前で解析して適用する
     applyExifOrientation(*image, readExifOrientation(bytes.data(), bytes.size()));
     return image;
+}
+
+SequenceInfo DecoderStb::probeSequence(const std::filesystem::path& path) {
+    SequenceInfo info;
+    // stb_image にはフレーム数だけを安く数える API が無いので、拡張子で当たりを付ける。
+    // 実際に 1 フレームしか無ければ decodeAnimation が false を返して静止画のまま残る
+    if (toLower(pathToUtf8(path.extension())) != ".gif") return info;
+    info.kind = SequenceKind::Animation;
+    info.frameCount = 2;  // 「2 以上かもしれない」という意味しか持たない(decoder.h 参照)
+    info.loopCount = 0;   // stb は NETSCAPE 拡張を返さないので無限ループ扱い
+    return info;
+}
+
+bool DecoderStb::decodeAnimation(const std::filesystem::path& path,
+                                 const AnimationLimits& limits, ImageSequence& out,
+                                 std::string* error) {
+    const std::vector<uint8_t> bytes = readAllBytes(path);
+    if (bytes.empty()) {
+        if (error) *error = "ファイル読み込み失敗";
+        return false;
+    }
+    int* delays = nullptr;
+    int w = 0, h = 0, frameCount = 0, comp = 0;
+    // 全フレームが 1 つの確保にまとめて返る(Disposal は stb 側で処理済み)
+    stbi_uc* data = stbi_load_gif_from_memory(bytes.data(), static_cast<int>(bytes.size()),
+                                              &delays, &w, &h, &frameCount, &comp, 4);
+    if (!data) {
+        if (error) {
+            const char* reason = stbi_failure_reason();
+            *error = std::format("GIF展開失敗 ({})", reason ? reason : "原因不明");
+        }
+        return false;
+    }
+    struct Guard {  // 早期 return が多いので確実に解放する
+        stbi_uc* pixels;
+        int* delays;
+        ~Guard() {
+            stbi_image_free(pixels);
+            // 遅延の配列は stb の既定アロケータ (malloc) で確保される。
+            // STBI_FREE は実装 TU (stb_impl.cpp) の中だけのマクロなのでここでは使えない
+            std::free(delays);
+        }
+    } guard{data, delays};
+
+    if (w <= 0 || h <= 0 || frameCount < 2) return false;  // 静止画のまま扱う
+    const size_t totalBytes = static_cast<size_t>(w) * h * 4 * frameCount;
+    if (static_cast<uint32_t>(frameCount) > limits.maxFrames || totalBytes > limits.maxBytes) {
+        if (error) *error = std::format("展開が上限を超える ({} フレーム)", frameCount);
+        out.truncated = true;
+        return false;
+    }
+
+    out.kind = SequenceKind::Animation;
+    out.loopCount = 0;  // 無限ループ(stb はループ回数を返さない)
+    out.frames.clear();
+    out.frames.reserve(static_cast<size_t>(frameCount));
+    const size_t frameStride = static_cast<size_t>(w) * h * 4;
+    for (int i = 0; i < frameCount; ++i) {
+        auto image = imageFromRgba(data + frameStride * static_cast<size_t>(i), w, h);
+        if (!image) {
+            if (error) *error = std::format("PBGRA変換 ({} x {})", w, h);
+            return false;
+        }
+        // stb の遅延はミリ秒。0 のフレームは App 側で既定値へ読み替えられる
+        out.frames.push_back(
+            FrameEntry{std::move(image), delays ? static_cast<uint32_t>(delays[i]) : 0, {}});
+    }
+    return true;
 }
 
 std::shared_ptr<DecodedImage> decodeFromMemory(const uint8_t* data, size_t size) {

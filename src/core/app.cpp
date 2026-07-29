@@ -223,6 +223,8 @@ void App::applyConfig(const Config& config) {
         std::clamp(config.getInt("view", "sidebar_width", static_cast<int>(sidebarWidth_)),
                    static_cast<int>(kMinSidebarWidth), static_cast<int>(kMaxSidebarWidth)));
     helpHintEnabled_ = config.getBool("view", "help_hint", helpHintEnabled_);
+    // アニメーションの再生設定(展開の上限は ImageCache 側で読む)
+    animationOptions_ = animationOptionsFromConfig(config);
     // 一覧の並び順と再帰。applyConfig は openPath より前に呼ばれるので最初の列挙から効く
     if (const auto key = sortKeyFromIniName(config.get("view", "sort"))) sortOrder_.key = *key;
     sortOrder_.descending = config.getBool("view", "sort_descending", sortOrder_.descending);
@@ -403,6 +405,15 @@ void App::execute(Command command) {
         break;
     case Command::LastImage:
         navigate(list_.last());
+        break;
+    case Command::TogglePlay:
+        executeTogglePlay();
+        break;
+    case Command::NextFrame:
+        stepFrame(1);
+        break;
+    case Command::PrevFrame:
+        stepFrame(-1);
         break;
     case Command::ZoomIn:
         viewport_.zoomStep(true);
@@ -2199,6 +2210,7 @@ bool App::executePasteImage() {
         return false;
     }
     discardEdits();
+    resetSequence();  // 貼り付け画像は 1 枚きり(再生中なら止まる)
     current_ = std::move(image);
     clipboardImage_ = true;
     displayedPath_.clear();  // 一覧に戻ったとき必ず再取得させる
@@ -2270,6 +2282,15 @@ void App::executeSaveOverwrite() {
     // 貼り付け画像には上書き先のファイルが無いので、保存先を尋ねる方へ回す
     if (clipboardImage_ || list_.empty()) {
         executeSaveAs();
+        return;
+    }
+    // 表示中の 1 枚で上書きすると、残りのページ / フレームが消える。縮小して取り込んだ
+    // 画像と同じく、確認ダイアログを出す前に断る(名前を付けて保存は許す)
+    if (multiFrame()) {
+        showMessage(std::format(
+            "この画像は{}が {} 枚あります。上書きすると表示中の 1 枚だけになるので、"
+            "名前を付けて保存を使ってください",
+            frameUnitLabel(), sequence_->frames.size()));
         return;
     }
     if (const std::string reason = overwriteBlockedReason(*current_); !reason.empty()) {
@@ -2410,6 +2431,9 @@ void App::pushUndo() {
 }
 
 void App::pushUndoState(UndoState state) {
+    // 編集を始めたらアニメーションは止める。以後は「そのフレームの静止画」を触っている
+    // ことになる(再生を続けると編集した画素が次のフレームで消えてしまう)
+    stopPlayback();
     undoStack_.push_back(std::move(state));
     if (undoStack_.size() > kUndoLimit) undoStack_.erase(undoStack_.begin());
     // 新しい編集をした時点で、やり直せる先(分岐した未来)は無くなる
@@ -2749,19 +2773,152 @@ void App::onDecodeCompleted() {
     // 表示すべき画像がまだ画面に出ていなければ取得を再試行する
     if (displayedPath_ == list_.current() && (current_ || loadFailed_)) {
         adoptRefinedImage();  // 表示中の画像が良い版に差し替わっていれば拾う
+        adoptSequence();      // 調査・展開で増えたフレームがあれば拾う
         return;
     }
     refreshCurrent();
 }
 
+void App::onFrameTimer() {
+    if (!playback_.playing || !sequence_) return;
+    // ini の loop = true(既定)ならファイルのループ回数を無視して回し続ける
+    const int loops = animationOptions_.loopForever ? 0 : sequence_->loopCount;
+    if (advanceFrame(playback_, sequence_->frames.size(), loops)) {
+        showFrame(playback_.index);
+        scheduleFrameTimer();
+        return;
+    }
+    // 繰り返しが尽きた(advanceFrame が再生を止めた)。最後のフレームを出したまま停止する
+    host_.setFrameTimer(0);
+    host_.requestRedraw();
+}
+
 void App::adoptRefinedImage() {
     if (!current_ || displayedPath_.empty()) return;
+    // 多フレームの画像では tryGet が返すのは先頭フレーム。別のフレームを表示している
+    // ときに拾うと絵が飛ぶので、フレーム列は adoptSequence に任せる
+    if (multiFrame()) return;
     auto latest = cache_.tryGet(displayedPath_);
     if (!latest || latest == current_) return;
     // 大きさが変わる差し替えは来ない想定だが、来たら座標系が食い違うので拒む
     if (latest->width != current_->width || latest->height != current_->height) return;
     current_ = std::move(latest);
     host_.requestRedraw();  // ズーム・パン・注釈はそのまま(画素だけ入れ替わる)
+}
+
+void App::adoptSequence() {
+    if (displayedPath_.empty() || clipboardImage_ || edited_) return;
+    auto latest = cache_.tryGetSequence(displayedPath_);
+    if (!latest || latest == sequence_) return;
+    const size_t before = sequence_ ? sequence_->frames.size() : 0;
+    sequence_ = std::move(latest);
+    if (playback_.index >= sequence_->frames.size()) playback_.index = 0;
+    if (sequence_->truncated) {
+        showMessage("フレーム数が多いため、先頭のフレームだけを静止画として表示しています");
+    }
+    // 展開後の先頭フレームは論理画面いっぱいに合成されていて、デコード直後のもの
+    // (GIF の先頭フレームは画面より小さいことがある)と大きさが違いうる
+    showFrame(playback_.index);
+    if (sequence_->frames.size() != before) {
+        if (animationOptions_.autoplay) setPlaying(true);  // アニメでなければ何もしない
+        host_.requestRedraw();  // ステータスバーのフレーム数表示
+    }
+}
+
+void App::resetSequence() {
+    stopPlayback();
+    sequence_.reset();
+    playback_ = {};
+}
+
+void App::stopPlayback() {
+    if (!playback_.playing) return;
+    playback_.playing = false;
+    host_.setFrameTimer(0);
+}
+
+void App::setPlaying(const bool play) {
+    if (play && !(sequence_ && sequence_->kind == SequenceKind::Animation && multiFrame())) {
+        return;  // アニメーションでないものは再生しない
+    }
+    if (playback_.playing == play) return;
+    playback_.playing = play;
+    if (play) {
+        playback_.loopsDone = 0;
+        scheduleFrameTimer();
+    } else {
+        host_.setFrameTimer(0);
+    }
+    host_.requestRedraw();  // ステータスバーの「再生中 / 停止中」表示
+}
+
+void App::scheduleFrameTimer() {
+    if (!playback_.playing || !sequence_ || playback_.index >= sequence_->frames.size()) return;
+    host_.setFrameTimer(normalizedDelayMs(sequence_->frames[playback_.index].delayMs,
+                                          animationOptions_.minDelayMs,
+                                          animationOptions_.defaultDelayMs));
+}
+
+void App::showFrame(const size_t index) {
+    if (!sequence_ || index >= sequence_->frames.size()) return;
+    playback_.index = index;
+    const std::shared_ptr<DecodedImage>& image = sequence_->frames[index].image;
+    if (!image) {
+        // 未デコードのページ。読み込みを頼み、前のフレームを出したまま待つ
+        cache_.requestFrame(displayedPath_, static_cast<uint32_t>(index));
+        host_.requestRedraw();  // ステータスバーのページ番号だけ先に進む
+        return;
+    }
+    if (current_ == image) return;
+    // ページごとに大きさが違う場合(ICO のサイズ違いなど)だけフィットし直す。
+    // アニメーションは全フレームが同じ論理画面なのでズーム・パンが保たれる
+    const bool sizeChanged =
+        !current_ || current_->width != image->width || current_->height != image->height;
+    current_ = image;
+    if (sizeChanged) {
+        viewport_.setImage(
+            {static_cast<float>(current_->width), static_cast<float>(current_->height)});
+    }
+    updateTitle();
+    host_.requestRedraw();
+}
+
+bool App::multiFrame() const { return sequence_ && sequence_->frames.size() > 1; }
+
+std::string_view App::frameUnitLabel() const {
+    return sequence_ && sequence_->kind == SequenceKind::Animation ? "フレーム" : "ページ";
+}
+
+void App::executeTogglePlay() {
+    if (!sequence_ || sequence_->kind != SequenceKind::Animation || !multiFrame()) {
+        showMessage("この画像はアニメーションではありません");
+        return;
+    }
+    if (edited_) {
+        showMessage("編集中は再生できません(元に戻すと再生できます)");
+        return;
+    }
+    setPlaying(!playback_.playing);
+}
+
+void App::stepFrame(const int delta) {
+    if (!multiFrame()) {
+        showMessage("この画像は 1 フレームしかありません");
+        return;
+    }
+    const size_t count = sequence_->frames.size();
+    if (delta > 0 && playback_.index + 1 >= count) {
+        showMessage(std::format("最後の{}です", frameUnitLabel()));
+        return;
+    }
+    if (delta < 0 && playback_.index == 0) {
+        showMessage(std::format("最初の{}です", frameUnitLabel()));
+        return;
+    }
+    setPlaying(false);  // 手で送ったら一時停止する(送った先を見たいはずなので)
+    discardEdits();     // フレーム切替は画像切替と同じ扱いにする(規則を増やさない)
+    showFrame(delta > 0 ? playback_.index + 1 : playback_.index - 1);
+    host_.requestRedraw();
 }
 
 void App::navigate(bool moved) {
@@ -2774,6 +2931,7 @@ void App::navigate(bool moved) {
 
 void App::refreshCurrent() {
     discardEdits();
+    resetSequence();          // 前の画像のフレーム列と再生状態を捨てる
     clipboardImage_ = false;  // 表示をフォルダ一覧由来に戻す
     if (list_.empty()) {
         current_.reset();
@@ -2794,6 +2952,14 @@ void App::refreshCurrent() {
         loadError_.clear();
         viewport_.setImage(
             {static_cast<float>(current_->width), static_cast<float>(current_->height)});
+        // 表示に採用した時点でフレーム構成を調べる(先読みでは調べていない)。
+        // 既に調査・展開済みならその場で受け取り、まだなら完了通知で adoptSequence が拾う
+        cache_.requestSequence(path);
+        sequence_ = cache_.tryGetSequence(path);
+        if (multiFrame()) {
+            showFrame(0);
+            if (animationOptions_.autoplay) setPlaying(true);
+        }
     } else if (failed) {
         current_.reset();
         displayedPath_ = path;
@@ -2952,6 +3118,18 @@ StatusBarView App::statusBar() const {
                 ? std::format("{} x {} px (元 {} x {} を縮小表示)", current_->width,
                               current_->height, current_->sourceWidth, current_->sourceHeight)
                 : std::format("{} x {} px", current_->width, current_->height);
+        // 何枚目を見ているのかはタイトルの [i/n](フォルダ内の位置)では分からない
+        if (multiFrame()) {
+            text += std::format("  |  {} {}/{}", frameUnitLabel(), playback_.index + 1,
+                                sequence_->frames.size());
+            if (const std::string& label = sequence_->frames[playback_.index].label;
+                !label.empty()) {
+                text += std::format(" ({})", label);
+            }
+            if (sequence_->kind == SequenceKind::Animation) {
+                text += playback_.playing ? " 再生中" : " 停止中";
+            }
+        }
         // なぜ隣のフォルダの画像が出てくるのか分からなくなるので、再帰中は常に見せる
         if (recursive_) text += "  |  サブフォルダ含む";
         text += std::format("  |  ツール: {}", toolLabel(tool_));

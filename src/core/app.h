@@ -9,6 +9,7 @@
 #include <utility>
 #include <vector>
 
+#include "core/animation.h"
 #include "core/annotation_edit.h"
 #include "core/command.h"
 #include "core/config.h"
@@ -194,6 +195,16 @@ public:
      * @param[in] milliseconds 満了までの時間(ミリ秒)。満了で App::onTimer が呼ばれる。
      */
     virtual void startTimer(unsigned milliseconds) = 0;
+
+    /**
+     * @brief アニメーションの次のフレームまでのタイマーを設定する。
+     * @param[in] milliseconds 満了までの時間(ミリ秒)。満了で App::onFrameTimer が呼ばれる。
+     *                         0 なら動いているタイマーを止める。
+     * @note **startTimer とは別のタイマーにすること。** あちらはステータスバーの通知を
+     *       消すためのもので、実装は同じ ID を張り直して満了時に止める。共用すると
+     *       再生中に通知が出た瞬間にアニメーションが止まる。
+     */
+    virtual void setFrameTimer(unsigned milliseconds) = 0;
 
     /// @brief アプリケーションの終了を要求する。
     virtual void quit() = 0;
@@ -483,6 +494,16 @@ public:
     void onTimer();
 
     /**
+     * @brief アニメーション用タイマーの満了を通知する。
+     *
+     * 次のフレームへ進めて表示し、次のタイマーを張り直す。末尾に達して繰り返しが
+     * 尽きたら再生を止める。
+     *
+     * @note 再生中でなければ何もしない。UI スレッドで呼ぶこと。
+     */
+    void onFrameTimer();
+
+    /**
      * @brief デコード完了を通知する。
      * @note UI スレッドで呼ぶこと(ワーカースレッドから直接呼んではならない)。
      */
@@ -663,6 +684,62 @@ private:
      * 編集中(`edited_`)は呼ばれない — 利用者の編集を捨てないため。
      */
     void adoptRefinedImage();
+
+    // --- フレーム列(アニメーション / 多ページ TIFF / ICO の複数サイズ) ---
+
+    /**
+     * @brief キャッシュ側で増えたフレーム構成を拾って表示へ反映する。
+     *
+     * フレーム構成は「先頭 1 枚だけ」→「調査後」→「全フレーム展開後」と段階的に
+     * 差し替わる(ImageCache のコピーオンライト)。完了通知のたびに取り直す。
+     */
+    void adoptSequence();
+
+    /// @brief フレーム列と再生状態を捨て、タイマーを止める(画像切替・貼り付け時)。
+    void resetSequence();
+
+    /**
+     * @brief 指定フレームを表示に反映する。
+     * @param[in] index 表示するフレーム番号。範囲外なら何もしない。
+     * @note 未デコードのページなら読み込みを予約し、前のフレームを表示したまま待つ。
+     *       大きさが変わる場合(ICO のサイズ違いなど)だけフィットし直す。
+     */
+    void showFrame(size_t index);
+
+    /**
+     * @brief 再生を開始・停止する。
+     * @param[in] play true で再生。アニメーションでない場合は何もしない。
+     */
+    void setPlaying(bool play);
+
+    /// @brief 再生中なら止めてタイマーを解除する(編集の開始・画像切替)。
+    void stopPlayback();
+
+    /// @brief 現在のフレームの表示時間で次のタイマーを張る。
+    void scheduleFrameTimer();
+
+    /// @brief 再生 / 一時停止を切り替える (Command::TogglePlay)。
+    void executeTogglePlay();
+
+    /**
+     * @brief フレーム / ページを手動で送る (Command::NextFrame / PrevFrame)。
+     * @param[in] delta +1 で次、-1 で前。
+     * @note 端では折り返さず通知を出す(末尾に着いたことが分からなくなるため)。
+     *       ファイル間の移動もしない(画像遷移とは完全に分けてある)。
+     */
+    void stepFrame(int delta);
+
+    /**
+     * @brief 表示中のファイルが 2 フレーム以上を持つかを返す。
+     * @return フレーム / ページが複数あれば true。
+     */
+    bool multiFrame() const;
+
+    /**
+     * @brief フレームの数え方の呼び名を返す。
+     * @return アニメーションなら "フレーム"、多ページなら "ページ"。
+     */
+    std::string_view frameUnitLabel() const;
 
     /// @brief 表示変換の変更をタイトル・再描画へ反映する。
     void onViewChanged();
@@ -1329,6 +1406,11 @@ private:
     bool listTruncated_ = false;   ///< 列挙が kMaxListFiles で打ち切られたか
     Viewport viewport_;
     std::shared_ptr<DecodedImage> current_;
+    /// 表示中ファイルのフレーム構成。current_ は常にこの中の 1 フレームを指す
+    /// (保存・コピー・印刷・文字認識・描画はすべて current_ を見ているので影響を受けない)
+    std::shared_ptr<const ImageSequence> sequence_;
+    PlaybackState playback_;             ///< 表示中のフレーム番号と再生状態
+    AnimationOptions animationOptions_;  ///< 再生の設定([animation] セクション)
     std::filesystem::path displayedPath_;  ///< current_ がどのパスの画像か
     bool clipboardImage_ = false;  ///< current_ が貼り付け画像(フォルダ一覧とは独立)
     bool loadFailed_ = false;

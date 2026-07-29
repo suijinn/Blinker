@@ -23,6 +23,9 @@ enum class Command {
     PrevImage,         ///< 前の画像へ
     FirstImage,        ///< 一覧の先頭へ
     LastImage,         ///< 一覧の末尾へ
+    TogglePlay,        ///< アニメーションの再生 / 一時停止
+    NextFrame,         ///< 次のフレーム / ページへ(ファイルは移動しない)
+    PrevFrame,         ///< 前のフレーム / ページへ(同上)
     ZoomIn,            ///< 拡大
     ZoomOut,           ///< 縮小
     ZoomFit,           ///< ウィンドウにフィット

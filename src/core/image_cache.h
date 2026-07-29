@@ -12,8 +12,11 @@
 #include <unordered_map>
 #include <vector>
 
+#include <utility>
+
 #include "core/config.h"
 #include "platform/decoder.h"
+#include "platform/image_formats.h"
 
 /**
  * @file image_cache.h
@@ -65,20 +68,30 @@ struct PathHash {
 /**
  * @brief デコード済み画像の LRU キャッシュ + 非同期先読み。
  *
+ * エントリの単位は**ファイル 1 つ**で、値は `ImageSequence`(1 枚以上のフレーム)。
+ * 通常の画像は 1 フレームだけの列になるので、既存の tryGet / requestNow の使い方は
+ * 変わらない。多ページ TIFF・ICO・アニメーション GIF だけがフレームを増やす。
+ *
  * ワーカースレッド 1 本がデコードを担う。setOnDecoded で登録したコールバックは
  * ワーカースレッド上で呼ばれるため、受け側(win 層)は UI スレッドへの通知
  * (PostMessage 等)に変換すること。
+ *
+ * @note 格納した `ImageSequence` は**書き換えない**。フレームが増えるたびに作り直して
+ *       差し替える(コピーオンライト)ので、UI スレッドが持ち出した shared_ptr は
+ *       ロックなしで読み続けられる。
  */
 class ImageCache {
 public:
     /**
      * @brief キャッシュを構築し、ワーカースレッドを起動する。
-     * @param[in] decoder デコードに使う実装。本オブジェクトより長生きすること。
-     * @param[in] limits  保持量の上限。省略時は ImageCacheLimits の既定値。
+     * @param[in] decoder   デコードに使う実装。本オブジェクトより長生きすること。
+     * @param[in] limits    保持量の上限。省略時は ImageCacheLimits の既定値。
+     * @param[in] animation アニメーションを展開するときの上限。省略時は既定値。
      * @note maxItems は 2 未満を渡しても 2 として扱う(表示中の 1 枚しか持てないと
      *       前後へ移るたびに再デコードになる)。
      */
-    explicit ImageCache(IImageDecoder& decoder, ImageCacheLimits limits = {});
+    explicit ImageCache(IImageDecoder& decoder, ImageCacheLimits limits = {},
+                        AnimationLimits animation = {});
 
     /// @brief ワーカースレッドを停止して待ち合わせる。
     ~ImageCache();
@@ -99,10 +112,37 @@ public:
                                          bool* failed = nullptr, std::string* error = nullptr);
 
     /**
+     * @brief キャッシュ済みならフレーム構成を返す(デコードは行わない)。
+     * @param[in] path 取得する画像のパス。
+     * @return フレーム構成。未デコード・失敗時は nullptr。
+     * @note 返した後にフレームが増えても、この shared_ptr が指す中身は変わらない。
+     *       増えると完了通知が来るので、そのたびに取り直すこと。
+     */
+    std::shared_ptr<const ImageSequence> tryGetSequence(const std::filesystem::path& path);
+
+    /**
      * @brief 表示対象を最優先でデコード予約する。
      * @param[in] path デコードする画像のパス。
      */
     void requestNow(const std::filesystem::path& path);
+
+    /**
+     * @brief 表示中になったパスのフレーム構成を調べるよう予約する。
+     *
+     * 多フレームになりうる拡張子(`mayHaveMultipleFrames`)でなければ何もしない。
+     * 先読みでデコードした画像は構成を調べていないので、表示に採用した時点で呼ぶこと。
+     * アニメーションと分かった場合は続けて全フレームの展開も予約される。
+     *
+     * @param[in] path 対象のパス。未デコードなら何もしない(デコード後に呼び直すこと)。
+     */
+    void requestSequence(const std::filesystem::path& path);
+
+    /**
+     * @brief 独立ページ(多ページ TIFF・ICO)のデコードを予約する。
+     * @param[in] path  対象のパス。
+     * @param[in] index ページ番号(0 起点)。範囲外・デコード済みなら何もしない。
+     */
+    void requestFrame(const std::filesystem::path& path, uint32_t index);
 
     /**
      * @brief 1 件のキャッシュを捨てる(ファイルが書き換わったとき)。
@@ -130,28 +170,41 @@ public:
     void setOnDecoded(std::function<void(const std::filesystem::path&)> callback);
 
 private:
-    /// @brief キャッシュ 1 件分のエントリ。
+    /// @brief キャッシュ 1 件分のエントリ(= ファイル 1 つ)。
     struct Entry {
-        std::shared_ptr<DecodedImage> image;  ///< デコード結果。失敗時は nullptr
+        std::shared_ptr<const ImageSequence> sequence;  ///< フレーム構成。失敗時は nullptr
         bool failed = false;                  ///< デコードに失敗したパスか
         std::string error;                    ///< 失敗理由(成功時は空)
         bool refined = true;  ///< 色変換のための読み直しが済んだ(または不要)か
+        bool probed = false;  ///< フレーム構成を調べ終えた(または調べる必要がない)か
         std::list<std::filesystem::path>::iterator lruIt;  ///< lru_ 内の自分の位置
+    };
+
+    /// @brief ワーカースレッドが処理する仕事の種類。
+    enum class TaskKind {
+        Decode,     ///< 先頭フレームのデコード(表示・先読み)
+        Probe,      ///< フレーム構成の調査
+        Page,       ///< 独立ページのデコード
+        Animation,  ///< アニメーションの全フレーム展開
+        Refine,     ///< 色変換のための読み直し
     };
 
     /// @brief ワーカースレッドが処理する 1 件の仕事。
     struct Task {
-        std::filesystem::path path;  ///< 対象のパス。空なら仕事なし
-        bool refine = false;         ///< true なら色変換のための読み直し
+        std::filesystem::path path;         ///< 対象のパス。空なら仕事なし
+        TaskKind kind = TaskKind::Decode;   ///< 仕事の種類
+        uint32_t frame = 0;                 ///< Page のときのページ番号
     };
 
-    /// @brief ワーカースレッドの本体。予約されたパスを順にデコードする。
+    /// @brief ワーカースレッドの本体。予約された仕事を順に処理する。
     void workerLoop();
 
     /**
-     * @brief 次の仕事を選ぶ(urgent_ → prefetch_ → refine_ の順)。
+     * @brief 次の仕事を選ぶ。
      *
-     * 色変換の読み直しは最も優先度が低い。表示や先読みを待たせないため。
+     * 優先順位は urgent_ → probe_ → prefetch_ → page_ → animation_ → refine_。
+     * 調査は安くて表示(ページ数の案内)を待たせるので先読みより上、全フレーム展開は
+     * 前後への移動の軽さを優先して先読みより下、色変換の読み直しは従来どおり最後。
      *
      * @return 処理する仕事。候補がなければ path が空。
      * @pre mutex_ をロック済みであること。
@@ -179,6 +232,45 @@ private:
                      std::string error);
 
     /**
+     * @brief 調査結果をエントリへ反映し、フレームの枠を用意する。
+     * @param[in] path 対象のパス。既に捨てられていれば何もしない。
+     * @param[in] info 調査結果。
+     * @return フレーム構成が変わったら true(呼び出し側は完了通知を出す)。
+     * @pre mutex_ をロック済みであること。
+     */
+    bool storeProbedLocked(const std::filesystem::path& path, const SequenceInfo& info);
+
+    /**
+     * @brief 展開したアニメーションをエントリへ反映する。
+     * @param[in] path      対象のパス。既に捨てられていれば何もしない。
+     * @param[in] sequence  展開結果。上限超過・失敗なら nullptr(静止画へ落とす)。
+     * @param[in] truncated 上限超過で諦めた場合に true(App が理由を案内する)。
+     * @return 表示に反映すべき変化があれば true(呼び出し側は完了通知を出す)。
+     * @pre mutex_ をロック済みであること。
+     */
+    bool storeAnimationLocked(const std::filesystem::path& path,
+                              std::shared_ptr<const ImageSequence> sequence, bool truncated);
+
+    /**
+     * @brief デコードしたページをエントリへ反映する。
+     * @param[in] path  対象のパス。既に捨てられていれば何もしない。
+     * @param[in] index ページ番号。
+     * @param[in] image デコード結果。nullptr なら何もしない。
+     * @return 埋められたら true(呼び出し側は完了通知を出す)。
+     * @pre mutex_ をロック済みであること。
+     */
+    bool storePageLocked(const std::filesystem::path& path, uint32_t index,
+                         std::shared_ptr<DecodedImage> image);
+
+    /**
+     * @brief エントリのフレーム構成を差し替え、バイト数の集計を合わせる。
+     * @param[in,out] entry    差し替えるエントリ。
+     * @param[in]     sequence 新しいフレーム構成。
+     * @pre mutex_ をロック済みであること。
+     */
+    void replaceSequenceLocked(Entry& entry, std::shared_ptr<const ImageSequence> sequence);
+
+    /**
      * @brief 上限を超えた分を LRU 順に破棄する。
      * @pre mutex_ をロック済みであること。
      */
@@ -187,6 +279,7 @@ private:
     IImageDecoder& decoder_;
     const size_t maxBytes_;
     const size_t maxItems_;
+    const AnimationLimits animationLimits_;
 
     mutable std::mutex mutex_;
     std::condition_variable wake_;
@@ -195,7 +288,11 @@ private:
     std::list<std::filesystem::path> lru_;  ///< 先頭が最近使用
     size_t totalBytes_ = 0;
     std::deque<std::filesystem::path> urgent_;
+    std::deque<std::filesystem::path> probe_;      ///< フレーム構成を調べる待ち行列
     std::vector<std::filesystem::path> prefetch_;
+    /// 独立ページのデコード待ち行列(パスとページ番号)
+    std::deque<std::pair<std::filesystem::path, uint32_t>> page_;
+    std::deque<std::filesystem::path> animation_;  ///< 全フレーム展開の待ち行列
     /// 色変換のために読み直す待ち行列(`DecodedImage::colorPending` が立った分)
     std::deque<std::filesystem::path> refine_;
     std::function<void(const std::filesystem::path&)> onDecoded_;

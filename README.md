@@ -7,6 +7,8 @@
 - **軽快**: 数百 KB の単一実行ファイル。起動即表示、フォルダ内の画像を先読みして瞬時に遷移
 - **キーボード中心**: すべての操作にショートカットキー。`blinker.ini` で自由に変更可能
 - **対応形式**: JPEG / PNG / BMP / GIF / TIFF / ICO / JXR。Windows 11 なら HEIC / WebP / AVIF も(OS コーデック経由)
+- **アニメーションと多ページ**: アニメーション GIF を再生(`Space` で再生 / 一時停止)。
+  多ページ TIFF と ICO の複数サイズは `Shift+←` / `Shift+→` でページ送り(ICO は最大サイズから開く)
 - **文字認識 (OCR)**: 画像内の文字を読み取ってクリップボードへ。Windows 内蔵の認識器を使うので追加インストール不要
 - **拡張しやすい設計**: プラットフォーム非依存の core 層と Win32 実装層を分離(詳細は [docs/architecture.md](docs/architecture.md))
 

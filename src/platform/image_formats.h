@@ -42,4 +42,31 @@ inline bool isImageFile(const std::filesystem::path& path) {
            kImageExtensions.end();
 }
 
+/**
+ * @brief 1 ファイルに複数のフレームを持ちうる拡張子の一覧(小文字、先頭ドット付き)。
+ *
+ * アニメーション GIF、多ページ TIFF、複数サイズを持つ ICO。**APNG とアニメーション
+ * WebP は非対応**(WIC の PNG / WebP デコーダがフレームを列挙しないため、対応するには
+ * 自前のデマルチプレクサが要る)なので、png と webp はここに入れない。
+ */
+inline constexpr std::array<std::string_view, 4> kMultiFrameExtensions = {
+    ".gif", ".tif", ".tiff", ".ico",
+};
+
+/**
+ * @brief 複数フレームを持ちうる形式かを拡張子だけで判定する。
+ *
+ * ImageCache はこれが true のときだけ `IImageDecoder::probeSequence` を呼ぶ。
+ * すべてのファイルで probe するとフレームを持ちえない写真でもファイルを二度開くことになり、
+ * 起動が遅くなるため(設計目標 #1)。
+ *
+ * @param[in] path 判定するパス。実在しなくてもよい(拡張子だけを見る)。
+ * @return kMultiFrameExtensions に含まれる拡張子なら true。大文字小文字は区別しない。
+ */
+inline bool mayHaveMultipleFrames(const std::filesystem::path& path) {
+    const std::string ext = toLower(pathToUtf8(path.extension()));
+    return std::find(kMultiFrameExtensions.begin(), kMultiFrameExtensions.end(),
+                     std::string_view(ext)) != kMultiFrameExtensions.end();
+}
+
 } // namespace blinker
