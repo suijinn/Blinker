@@ -124,22 +124,6 @@ std::string_view toolLabel(EditTool tool) {
     return "";
 }
 
-// blinker.ini の [edit] tool = に書く名前。[keys] の tool_* コマンド名と揃える
-std::optional<EditTool> toolFromName(std::string_view name) {
-    const std::string lower = toLower(trim(name));
-    if (lower == "crop") return EditTool::Crop;
-    if (lower == "rect") return EditTool::Rect;
-    if (lower == "ellipse") return EditTool::Ellipse;
-    if (lower == "arrow") return EditTool::Arrow;
-    if (lower == "line") return EditTool::Line;
-    if (lower == "pen") return EditTool::Pen;
-    if (lower == "marker") return EditTool::Marker;
-    if (lower == "number") return EditTool::Number;
-    if (lower == "text") return EditTool::Text;
-    if (lower == "ocr") return EditTool::Ocr;
-    return std::nullopt;
-}
-
 // ツール切り替えに対応するコマンド。メニュー項目にキー表記を出すために使う
 Command commandOfTool(EditTool tool) {
     switch (tool) {
@@ -245,23 +229,7 @@ void App::applyConfig(const Config& config) {
         config.getInt("mouse", "wheel_horizontal_threshold",
                       static_cast<int>(pointer_.horizontalThreshold())),
         1, 10)));
-    editColorRGB_ = config.getColorRGB("edit", "color", editColorRGB_);
-    editStrokeWidth_ = static_cast<float>(std::clamp(
-        config.getInt("edit", "stroke_width", static_cast<int>(editStrokeWidth_)), 1, 100));
-    editFontSize_ = static_cast<float>(
-        std::clamp(config.getInt("edit", "font_size", static_cast<int>(editFontSize_)), 6, 200));
-    // フォントは候補表に無い名前も受け付ける(入っていなければ描画側がフォールバックする)。
-    // 存在確認はしない(起動時にシステムフォントを列挙したくないため)
-    if (const std::string family{trim(config.get("edit", "font_family"))}; !family.empty()) {
-        editFontFamily_ = family;
-    }
-    editFillRGB_ = config.getColorRGB("edit", "fill_color", editFillRGB_);
-    editFillAlpha_ = std::clamp(config.getInt("edit", "fill_alpha", editFillAlpha_), 0, 255);
-    editBorderRGB_ = config.getColorRGB("edit", "border_color", editBorderRGB_);
-    editBorderWidth_ = static_cast<float>(std::clamp(
-        config.getInt("edit", "border_width", static_cast<int>(editBorderWidth_)), 0, 100));
-    // 起動時の(編集ドラッグで実行される)ツール。未指定・未知の名前なら既定のまま
-    if (const auto tool = toolFromName(config.get("edit", "tool"))) setTool(*tool);
+    style_.applyConfig(config);
     applyLayout();
 }
 
@@ -915,13 +883,13 @@ void App::beginEditDrag(Point screenPos) {
     if (!inViewportArea(screenPos)) return;
     if (textEdit_.active()) commitTextEdit();  // 編集ドラッグは編集の外側なので先に確定する
     drag_.begin(screenPos, clampToImage(imageToScreen().inverted().apply(screenPos)),
-                penToolActive());
+                style_.penActive());
     updatePreview();
     host_.requestRedraw();
 }
 
 void App::updatePenStraightAnchor(bool shift) {
-    if (!shift || !penToolActive()) {
+    if (!shift || !style_.penActive()) {
         drag_.resetStraightAnchor();
         return;
     }
@@ -929,7 +897,7 @@ void App::updatePenStraightAnchor(bool shift) {
 }
 
 void App::extendPenPoints(float minDistancePx) {
-    if (!penToolActive()) return;
+    if (!style_.penActive()) return;
     drag_.extendPen(minDistancePx);
 }
 
@@ -1056,27 +1024,22 @@ void App::showSidebarMenu(Point screenPos) {
 }
 
 void App::setTool(EditTool tool) {
-    // トリミングは一度きりなので、戻り先として直前の図形ツールを覚えておく
-    if (tool != EditTool::Crop) toolAfterCrop_ = tool;
-    tool_ = tool;
+    style_.setTool(tool);
     host_.requestRedraw();  // ステータスバーのツール表示を更新する
 }
 
 void App::applyCurrentTool() {
-    if (tool_ == EditTool::Crop) {
-        if (applyCrop()) setTool(toolAfterCrop_);  // 切り出せたら図形ツールへ戻る
+    if (style_.tool() == EditTool::Crop) {
+        // 切り出せたら図形ツールへ戻る
+        if (applyCrop()) setTool(style_.toolAfterCrop());
         return;
     }
-    if (tool_ == EditTool::Ocr) {
+    if (style_.tool() == EditTool::Ocr) {
         // トリミングと違い画像を変えないので、続けて別の範囲を読めるようツールは維持する
         applyOcrSelection();
         return;
     }
-    applyAnnotation(kindOfTool(tool_));
-}
-
-bool App::penToolActive() const {
-    return tool_ == EditTool::Pen || tool_ == EditTool::Marker;
+    applyAnnotation(kindOfTool(style_.tool()));
 }
 
 int App::nextMarkerNumber() const {
@@ -1120,7 +1083,8 @@ std::vector<MenuItem> App::buildEditMenu(std::vector<EditMenuEntry>& entries) co
             text += '\t';
             text += keys;
         }
-        return leaf(std::move(text), {EditMenuEntry::Action::SelectTool, t, 0}, t == tool_);
+        return leaf(std::move(text), {EditMenuEntry::Action::SelectTool, t, 0},
+                    t == style_.tool());
     };
     using Action = EditMenuEntry::Action;
 
@@ -1139,61 +1103,61 @@ std::vector<MenuItem> App::buildEditMenu(std::vector<EditMenuEntry>& entries) co
     items.push_back(menuSeparator());
 
     MenuItem stroke;
-    stroke.text = std::format("線の太さ ({}px)", static_cast<int>(editStrokeWidth_));
+    stroke.text = std::format("線の太さ ({}px)", static_cast<int>(style_.strokeWidth()));
     for (const int w : {1, 2, 3, 5, 8, 12, 20}) {
         stroke.children.push_back(
             leaf(std::format("{}px", w),
                  {Action::StrokeWidth, EditTool::Rect, static_cast<float>(w)},
-                 static_cast<float>(w) == editStrokeWidth_));
+                 static_cast<float>(w) == style_.strokeWidth()));
     }
     items.push_back(std::move(stroke));
 
     MenuItem font;
-    font.text = std::format("文字サイズ ({}px)", static_cast<int>(editFontSize_));
+    font.text = std::format("文字サイズ ({}px)", static_cast<int>(style_.fontSize()));
     for (const int s : {12, 14, 18, 24, 36, 48, 72}) {
         font.children.push_back(
             leaf(std::format("{}px", s),
                  {Action::FontSize, EditTool::Rect, static_cast<float>(s)},
-                 static_cast<float>(s) == editFontSize_));
+                 static_cast<float>(s) == style_.fontSize()));
     }
     items.push_back(std::move(font));
 
     MenuItem family;
-    family.text = std::format("フォント ({})", fontFamilyLabel(editFontFamily_));
-    for (const auto& [label, name] : fontFamilyChoices(editFontFamily_)) {
-        family.children.push_back(
-            leaf(label, {Action::FontFamily, EditTool::Rect, 0, name}, name == editFontFamily_));
+    family.text = std::format("フォント ({})", fontFamilyLabel(style_.fontFamily()));
+    for (const auto& [label, name] : fontFamilyChoices(style_.fontFamily())) {
+        family.children.push_back(leaf(label, {Action::FontFamily, EditTool::Rect, 0, name},
+                                       name == style_.fontFamily()));
     }
     items.push_back(std::move(family));
 
     items.push_back(
-        leaf(std::format("色の変更... (#{:06X})", editColorRGB_), {Action::PickColor}));
+        leaf(std::format("色の変更... (#{:06X})", style_.colorRGB()), {Action::PickColor}));
 
     // 塗りつぶし(矩形・楕円・テキスト)。不透明度 0 で塗らない = 背景が透ける
     MenuItem fill;
-    fill.text = std::format("塗りつぶし ({})", fillAlphaLabel(editFillAlpha_));
+    fill.text = std::format("塗りつぶし ({})", fillAlphaLabel(style_.fillAlpha()));
     for (const int a : kFillAlphaChoices) {
         fill.children.push_back(
             leaf(fillAlphaLabel(a), {Action::FillAlpha, EditTool::Rect, static_cast<float>(a)},
-                 a == editFillAlpha_));
+                 a == style_.fillAlpha()));
     }
     fill.children.push_back(menuSeparator());
-    fill.children.push_back(leaf(std::format("色の変更... (#{:06X})", editFillRGB_),
+    fill.children.push_back(leaf(std::format("色の変更... (#{:06X})", style_.fillRGB()),
                                  {Action::PickFillColor}));
     items.push_back(std::move(fill));
 
     // 枠線はテキストボックス用(矩形・楕円の輪郭は「線の太さ」「色の変更」で指定する)
     MenuItem border;
     border.text = std::format("テキストの枠線 ({})",
-                              borderWidthLabel(static_cast<int>(editBorderWidth_)));
+                              borderWidthLabel(static_cast<int>(style_.borderWidth())));
     for (const int w : kBorderWidthChoices) {
         border.children.push_back(
             leaf(borderWidthLabel(w),
                  {Action::BorderWidth, EditTool::Rect, static_cast<float>(w)},
-                 static_cast<float>(w) == editBorderWidth_));
+                 static_cast<float>(w) == style_.borderWidth()));
     }
     border.children.push_back(menuSeparator());
-    border.children.push_back(leaf(std::format("色の変更... (#{:06X})", editBorderRGB_),
+    border.children.push_back(leaf(std::format("色の変更... (#{:06X})", style_.borderRGB()),
                                    {Action::PickBorderColor}));
     items.push_back(std::move(border));
 
@@ -1613,35 +1577,29 @@ bool App::applyEditChoice(const EditMenuEntry& entry) {
         setTool(entry.tool);
         return true;
     case EditMenuEntry::Action::StrokeWidth:
-        editStrokeWidth_ = entry.value;
+        style_.setStrokeWidth(entry.value);
         return false;
     case EditMenuEntry::Action::FontSize:
-        editFontSize_ = entry.value;
+        style_.setFontSize(entry.value);
         return false;
     case EditMenuEntry::Action::FontFamily:
-        editFontFamily_ = entry.family;
+        style_.setFontFamily(entry.family);
         return false;
     case EditMenuEntry::Action::PickColor:
-        if (const auto rgb = host_.showColorPicker(editColorRGB_)) editColorRGB_ = *rgb;
+        if (const auto rgb = host_.showColorPicker(style_.colorRGB())) style_.setColorRGB(*rgb);
         return false;
     case EditMenuEntry::Action::FillAlpha:
-        editFillAlpha_ = static_cast<int>(entry.value);
+        style_.setFillAlpha(static_cast<int>(entry.value));
         return false;
     case EditMenuEntry::Action::PickFillColor:
-        if (const auto rgb = host_.showColorPicker(editFillRGB_)) {
-            editFillRGB_ = *rgb;
-            // 色を選んだのに塗られないままにならないよう、塗りなしなら不透明で始める
-            if (editFillAlpha_ == 0) editFillAlpha_ = 255;
-        }
+        // 塗りなしのまま色だけ選ばれても見えるよう、EditStyle 側で不透明度を起こす
+        if (const auto rgb = host_.showColorPicker(style_.fillRGB())) style_.setFillColor(*rgb);
         return false;
     case EditMenuEntry::Action::BorderWidth:
-        editBorderWidth_ = entry.value;
+        style_.setBorderWidth(entry.value);
         return false;
     case EditMenuEntry::Action::PickBorderColor:
-        if (const auto rgb = host_.showColorPicker(editBorderRGB_)) {
-            editBorderRGB_ = *rgb;
-            if (editBorderWidth_ <= 0) editBorderWidth_ = 1.0f;
-        }
+        if (const auto rgb = host_.showColorPicker(style_.borderRGB())) style_.setBorderColor(*rgb);
         return false;
     case EditMenuEntry::Action::ResizePercent:
         if (current_) {
@@ -1751,31 +1709,18 @@ AnnotationSpec App::makeAnnotationSpec(AnnotationSpec::Kind kind) const {
     spec.kind = kind;
     spec.p1 = drag_.startImage();
     spec.p2 = drag_.endImage();
-    spec.colorRGB = editColorRGB_;
-    spec.fillRGB = editFillRGB_;
-    spec.fillAlpha = editFillAlpha_;
-    spec.borderRGB = editBorderRGB_;
-    spec.fontFamily = editFontFamily_;
-    // 線幅・文字サイズ・枠線幅は画像座標そのまま。表示倍率では変えない
-    // (同じ設定で描いたものが、描いたときのズームによらず同じ太さになるように)
-    spec.strokeWidth = editStrokeWidth_;
-    spec.fontSize = editFontSize_;
-    spec.borderWidth = editBorderWidth_;
+    style_.applyTo(spec);  // 色・線幅・文字・塗り・枠線(マーカーの太さ・半透明も)
     if (kind == AnnotationSpec::Kind::Pen) {
         // 軌跡そのものが図形。p1/p2 は選択領域ではなく点列の bbox に合わせる
         spec.points = drag_.penPoints();
         updatePenBounds(spec);
-        if (tool_ == EditTool::Marker) {
-            spec.strokeWidth = editStrokeWidth_ * kMarkerWidthScale;
-            spec.strokeAlpha = kMarkerAlpha;
-        }
     } else if (kind == AnnotationSpec::Kind::Number) {
         // 円の中の数字は自動で色が決まるため、色設定は円の塗りとして使う
         spec.number = nextMarkerNumber();
-        spec.fillRGB = editColorRGB_;
+        spec.fillRGB = style_.colorRGB();
         spec.fillAlpha = 255;
         // 小さすぎる円は数字が潰れるだけなので、始点側を固定して最小の大きさまで広げる
-        const float minSize = std::max(8.0f, editFontSize_ * 1.8f);
+        const float minSize = std::max(8.0f, style_.fontSize() * 1.8f);
         if (std::abs(spec.p2.x - spec.p1.x) < minSize) {
             spec.p2.x = spec.p1.x + (spec.p2.x < spec.p1.x ? -minSize : minSize);
         }
@@ -1789,13 +1734,13 @@ AnnotationSpec App::makeAnnotationSpec(AnnotationSpec::Kind kind) const {
 bool App::previewVisible() const {
     // トリミングは切り出す範囲、テキストは中身の無い箱、文字認識は読み取る範囲で、
     // どれも実物を描けない。その 3 つはラバーバンド(App::selection)に任せる
-    return drag_.dragging() && current_ != nullptr && tool_ != EditTool::Crop &&
-           tool_ != EditTool::Text && tool_ != EditTool::Ocr;
+    return drag_.dragging() && current_ != nullptr && style_.tool() != EditTool::Crop &&
+           style_.tool() != EditTool::Text && style_.tool() != EditTool::Ocr;
 }
 
 void App::updatePreview() {
     if (!previewVisible()) return;
-    previewSpec_ = makeAnnotationSpec(kindOfTool(tool_));
+    previewSpec_ = makeAnnotationSpec(kindOfTool(style_.tool()));
 }
 
 void App::applyAnnotation(AnnotationSpec::Kind kind) {
@@ -2459,17 +2404,17 @@ Point App::clampToImage(Point imagePos) const {
 Point App::dragEndImage(Point screenPos, bool shift) const {
     const Point p = clampToImage(imageToScreen().inverted().apply(screenPos));
     // 連番マーカーは常に円にしたいので、Shift の有無によらず正方形へ寄せる
-    if (tool_ == EditTool::Number) return constrainToSquare(drag_.startImage(), p);
+    if (style_.tool() == EditTool::Number) return constrainToSquare(drag_.startImage(), p);
     if (!shift) return p;
     // 手書きは軌跡そのものが図形なので、選択領域の形ではなく線の向きを揃える。
     // 起点は Shift を押した時点の点(それまでに描いた軌跡はそのまま残る)
-    if (penToolActive()) {
+    if (style_.penActive()) {
         const auto anchor = drag_.straightAnchorPoint();
         return anchor ? constrainToAxis(*anchor, p) : p;
     }
     // 直線・矢印は bbox ではなく線の向きを揃えたいので、正方形化(=45 度固定)
     // ではなく水平・垂直・45 度へのスナップにする
-    if (tool_ == EditTool::Line || tool_ == EditTool::Arrow) {
+    if (style_.tool() == EditTool::Line || style_.tool() == EditTool::Arrow) {
         return constrainToAxis(drag_.startImage(), p);
     }
     return constrainToSquare(drag_.startImage(), p);
@@ -3044,7 +2989,7 @@ StatusBarView App::statusBar() const {
         }
         // なぜ隣のフォルダの画像が出てくるのか分からなくなるので、再帰中は常に見せる
         if (recursive_) text += "  |  サブフォルダ含む";
-        text += std::format("  |  ツール: {}", toolLabel(tool_));
+        text += std::format("  |  ツール: {}", toolLabel(style_.tool()));
         bar.leftText = std::move(text);
     } else if (loadFailed_) {
         // 失敗した段階とコードまで出す(現物が手元にない不具合を切り分けられるように)

@@ -15,6 +15,7 @@
 #include "core/config.h"
 #include "core/edit_drag_state.h"
 #include "core/edit_history.h"
+#include "core/edit_style.h"
 #include "core/geometry.h"
 #include "core/help.h"
 #include "core/image_cache.h"
@@ -54,27 +55,6 @@ struct MenuItem {
     bool checked = false;             ///< チェックマークを付けるか
     bool separator = false;           ///< 区切り線として扱うか
     std::vector<MenuItem> children;   ///< サブメニューの項目(空なら末端項目)
-};
-
-/**
- * @brief 編集ドラッグで実行する編集ツール。
- *
- * 事前に選んだツールが編集ドラッグ(既定では右ドラッグ。MouseRole::Edit の
- * ボタン)で即座に適用される(ドラッグ中はプレビューが出る)。
- * 切り替えは注釈のない場所での右クリック(ドラッグなし)で開くメニュー、または
- * Command::SelectToolCrop 以降のコマンドで行う。
- */
-enum class EditTool {
-    Crop,     ///< 選択領域で画像を切り出す(実行すると直前の図形ツールへ戻る)
-    Rect,     ///< 矩形を描く
-    Ellipse,  ///< 楕円を描く
-    Arrow,    ///< 矢印を描く
-    Line,     ///< 直線を描く
-    Pen,      ///< ドラッグの軌跡をそのまま線にする(手書き)
-    Marker,   ///< 手書きの半透明・太線版(蛍光ペン)
-    Number,   ///< 連番の数字入りマーカーを置く(番号は自動で増える)
-    Text,     ///< テキストボックスを作り、その場で入力を始める
-    Ocr,      ///< 選択した範囲の文字を認識してクリップボードへコピーする(画像は変えない)
 };
 
 /**
@@ -434,7 +414,7 @@ public:
      * @brief 編集ドラッグで実行される現在のツールを返す。
      * @return 現在のツール。
      */
-    EditTool currentTool() const { return tool_; }
+    EditTool currentTool() const { return style_.tool(); }
 
     /**
      * @brief Shift の押し引きを処理する。
@@ -999,20 +979,15 @@ private:
     void showSidebarMenu(Point screenPos);
 
     /**
-     * @brief 現在のツールを切り替える。
+     * @brief 現在のツールを切り替え、表示を更新する。
      * @param[in] tool 切り替え先のツール。
-     * @note Crop 以外を選ぶと、トリミング実行後に戻る図形ツールも更新される。
+     * @note Crop 以外を選ぶと、トリミング実行後に戻る図形ツールも更新される
+     *       (EditStyle::setTool)。
      */
     void setTool(EditTool tool);
 
     /// @brief 現在のツールを選択領域へ適用する(編集ドラッグの確定時)。
     void applyCurrentTool();
-
-    /**
-     * @brief 現在のツールが手書き(ペン・マーカー)かを返す。
-     * @return 手書きなら true。編集ドラッグ中に軌跡を溜めるかの判定に使う。
-     */
-    bool penToolActive() const;
 
     /**
      * @brief 次に置く連番マーカーの番号を求める。
@@ -1402,16 +1377,13 @@ private:
     /// 画像座標への変換・クランプ・Shift での方向合わせ・ツールの適用は App 側
     EditDragState drag_;
     bool edited_ = false;     ///< current_ に未保存の編集(トリミング・注釈)がある
-    EditTool tool_ = EditTool::Rect;  ///< 編集ドラッグで実行するツール
-    /// トリミングは一度きりの操作なので、実行したらこのツールへ戻す(直前の図形ツール)
-    EditTool toolAfterCrop_ = EditTool::Rect;
+    /// 選択中のツールと、新規注釈へ写す見た目(色・線幅・文字・塗り・枠線)。
+    /// 何をどこへ描くか(適用先の種別・位置)は App 側
+    EditStyle style_;
     /// 編集ドラッグ中のプレビュー。図形ツールのときだけ有効(Crop/Text はラバーバンドを出す)
     AnnotationSpec previewSpec_;
     /// 軌跡へ点を足す最小間隔(画面px)。これ未満の動きは無視して点数を抑える
     static constexpr float kPenMinDistancePx = 2.0f;
-    /// マーカーの線幅の倍率(「線の太さ」設定に掛ける)。蛍光ペンらしい太さにする
-    static constexpr float kMarkerWidthScale = 4.0f;
-    static constexpr int kMarkerAlpha = 102;  ///< マーカーの線の不透明度(0-255。約 40%)
 
     /// 注釈オブジェクト。current_ には焼き込まず、描画時に重ね、保存/コピー時に合成する
     std::vector<AnnotationSpec> annotations_;
@@ -1429,15 +1401,6 @@ private:
     /// 取り消し・やり直しの履歴。ドラッグ中・テキスト編集中の「最初の 1 回だけ積む」
     /// 判定もここが持つ(旗と積み先が食い違わないようにするため)
     EditHistory history_;
-    uint32_t editColorRGB_ = 0xFF3B30;  ///< 新規注釈の色(0xRRGGBB)
-    float editStrokeWidth_ = 3.0f;  ///< 新規注釈の線幅(画像座標)。表示倍率では変わらない
-    float editFontSize_ = 18.0f;    ///< 新規テキストのフォントサイズ(画像座標)。同上
-    /// 新規テキストのフォントファミリ名(UTF-8)。常に非空
-    std::string editFontFamily_ = kDefaultFontFamily;
-    uint32_t editFillRGB_ = 0xFFFFFF;  ///< 新規注釈の塗りつぶし色(0xRRGGBB)
-    int editFillAlpha_ = 0;            ///< 塗りつぶしの不透明度(0-255)。0 は塗りなし
-    uint32_t editBorderRGB_ = 0x000000;  ///< 新規テキストの枠線色(0xRRGGBB)
-    float editBorderWidth_ = 0;  ///< 新規テキストの枠線幅(画像座標)。0 は枠線なし
 };
 
 } // namespace blinker

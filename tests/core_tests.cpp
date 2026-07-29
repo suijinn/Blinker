@@ -19,6 +19,7 @@
 #include "core/edit.h"
 #include "core/edit_drag_state.h"
 #include "core/edit_history.h"
+#include "core/edit_style.h"
 #include "core/exif.h"
 #include "core/geometry.h"
 #include "core/image_scale.h"
@@ -3282,6 +3283,125 @@ void testObjectDragState() {
     CHECK(!drag.active() && drag.mode() == ObjectDragMode::None);
 }
 
+void testEditStyle() {
+    EditStyle style;
+    CHECK(style.tool() == EditTool::Rect && style.toolAfterCrop() == EditTool::Rect);
+    CHECK(!style.penActive());
+
+    // トリミングを選んでも戻り先は直前の図形ツールのまま
+    style.setTool(EditTool::Line);
+    CHECK(style.toolAfterCrop() == EditTool::Line);
+    style.setTool(EditTool::Crop);
+    CHECK(style.tool() == EditTool::Crop && style.toolAfterCrop() == EditTool::Line);
+    style.setTool(EditTool::Pen);
+    CHECK(style.penActive() && style.toolAfterCrop() == EditTool::Pen);
+    style.setTool(EditTool::Marker);
+    CHECK(style.penActive());  // マーカーも手書き
+    style.setTool(EditTool::Text);
+    CHECK(!style.penActive());
+
+    // 範囲外の値は丸める(既定は 3px / 18px / 枠線なし)
+    style.setStrokeWidth(0);
+    CHECK(nearly(style.strokeWidth(), 1));
+    style.setStrokeWidth(999);
+    CHECK(nearly(style.strokeWidth(), 100));
+    style.setFontSize(1);
+    CHECK(nearly(style.fontSize(), 6));
+    style.setFontSize(999);
+    CHECK(nearly(style.fontSize(), 200));
+    style.setFillAlpha(-1);
+    CHECK(style.fillAlpha() == 0);
+    style.setFillAlpha(999);
+    CHECK(style.fillAlpha() == 255);
+    style.setBorderWidth(-1);
+    CHECK(nearly(style.borderWidth(), 0));
+
+    // フォントは常に非空。空の指定は既定へ戻さず無視する
+    CHECK(style.fontFamily() == kDefaultFontFamily);
+    style.setFontFamily("Meiryo");
+    CHECK(style.fontFamily() == "Meiryo");
+    style.setFontFamily("");
+    CHECK(style.fontFamily() == "Meiryo");
+
+    // 色を選んだのに見えないままにならないよう、塗りなし・枠線なしなら起こす
+    EditStyle colors;
+    CHECK(colors.fillAlpha() == 0 && nearly(colors.borderWidth(), 0));
+    colors.setFillColor(0x123456);
+    CHECK(colors.fillRGB() == 0x123456 && colors.fillAlpha() == 255);
+    colors.setFillAlpha(64);
+    colors.setFillColor(0x654321);
+    CHECK(colors.fillAlpha() == 64);  // 既に塗っているなら不透明度はそのまま
+    colors.setBorderColor(0x00FF00);
+    CHECK(colors.borderRGB() == 0x00FF00 && nearly(colors.borderWidth(), 1));
+    colors.setBorderWidth(5);
+    colors.setBorderColor(0x0000FF);
+    CHECK(nearly(colors.borderWidth(), 5));
+
+    // 新規注釈へ写す
+    EditStyle applied;
+    applied.setColorRGB(0xFF0000);
+    applied.setStrokeWidth(8);
+    applied.setFontSize(24);
+    applied.setFontFamily("Meiryo");
+    applied.setFillAlpha(128);
+    applied.setBorderWidth(2);
+    AnnotationSpec rect;
+    rect.kind = AnnotationSpec::Kind::Rect;
+    applied.applyTo(rect);
+    CHECK(rect.colorRGB == 0xFF0000 && nearly(rect.strokeWidth, 8) && nearly(rect.fontSize, 24));
+    CHECK(rect.fontFamily == "Meiryo" && rect.fillAlpha == 128 && nearly(rect.borderWidth, 2));
+    CHECK(rect.strokeAlpha == 255);  // 不透明なのはマーカー以外すべて
+
+    // マーカーだけは「線の太さ」を太く・半透明にしたものを写す
+    AnnotationSpec pen;
+    pen.kind = AnnotationSpec::Kind::Pen;
+    applied.setTool(EditTool::Pen);
+    applied.applyTo(pen);
+    CHECK(nearly(pen.strokeWidth, 8) && pen.strokeAlpha == 255);
+    applied.setTool(EditTool::Marker);
+    applied.applyTo(pen);
+    CHECK(nearly(pen.strokeWidth, 32) && pen.strokeAlpha < 255);
+    applied.applyTo(rect);  // 手書き以外はマーカーでも変わらない
+    CHECK(nearly(rect.strokeWidth, 8) && rect.strokeAlpha == 255);
+}
+
+void testEditStyleConfig() {
+    EditStyle defaults;
+    defaults.applyConfig(Config::parse(""));
+    CHECK(defaults.tool() == EditTool::Rect && defaults.colorRGB() == 0xFF3B30);
+    CHECK(nearly(defaults.strokeWidth(), 3) && nearly(defaults.fontSize(), 18));
+    CHECK(defaults.fillAlpha() == 0 && nearly(defaults.borderWidth(), 0));
+
+    EditStyle style;
+    style.applyConfig(Config::parse("[edit]\ntool = marker\ncolor = #00FF00\nstroke_width = 5\n"
+                                    "font_size = 36\nfont_family = Meiryo\nfill_color = 112233\n"
+                                    "fill_alpha = 128\nborder_color = 445566\nborder_width = 2\n"));
+    CHECK(style.tool() == EditTool::Marker && style.toolAfterCrop() == EditTool::Marker);
+    CHECK(style.colorRGB() == 0x00FF00 && nearly(style.strokeWidth(), 5));
+    CHECK(nearly(style.fontSize(), 36) && style.fontFamily() == "Meiryo");
+    CHECK(style.fillRGB() == 0x112233 && style.fillAlpha() == 128);
+    CHECK(style.borderRGB() == 0x445566 && nearly(style.borderWidth(), 2));
+
+    // 色だけ書いても勝手には塗らない(ini は書いた通りに効く)
+    EditStyle colorOnly;
+    colorOnly.applyConfig(Config::parse("[edit]\nfill_color = 112233\nborder_color = 445566\n"));
+    CHECK(colorOnly.fillRGB() == 0x112233 && colorOnly.fillAlpha() == 0);
+    CHECK(colorOnly.borderRGB() == 0x445566 && nearly(colorOnly.borderWidth(), 0));
+
+    // 範囲外・解釈できない値
+    EditStyle clamped;
+    clamped.applyConfig(Config::parse("[edit]\ntool = nonsense\nstroke_width = 999\n"
+                                      "font_size = 1\nfill_alpha = -1\nborder_width = 999\n"));
+    CHECK(clamped.tool() == EditTool::Rect);  // 未知の名前は無視して既定のまま
+    CHECK(nearly(clamped.strokeWidth(), 100) && nearly(clamped.fontSize(), 6));
+    CHECK(clamped.fillAlpha() == 0 && nearly(clamped.borderWidth(), 100));
+
+    // 空のフォント指定は既定を消さない
+    EditStyle empty;
+    empty.applyConfig(Config::parse("[edit]\nfont_family =\n"));
+    CHECK(empty.fontFamily() == kDefaultFontFamily);
+}
+
 void testAnnotationGeometry() {
     AnnotationSpec rect;
     rect.kind = AnnotationSpec::Kind::Rect;
@@ -6489,6 +6609,8 @@ int main() {
     testTextEditState();
     testEditDragState();
     testObjectDragState();
+    testEditStyle();
+    testEditStyleConfig();
     testAppSidebar();
     testAppSidebarResize();
     testAppHelpSidebar();
