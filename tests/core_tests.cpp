@@ -32,6 +32,7 @@
 #include "core/pixel_convert.h"
 #include "core/print_layout.h"
 #include "core/scan_service.h"
+#include "core/sidebar_state.h"
 #include "core/sort_order.h"
 #include "core/str_util.h"
 #include "core/text_edit.h"
@@ -2941,6 +2942,91 @@ void testEditHistory() {
     text.clear();
     CHECK(text.empty() && !text.dragPushed() && !text.textEditPushed());
     CHECK(!text.consumeTextEditSnapshot()->image);  // 控えは空になっている
+}
+
+void testSidebarState() {
+    SidebarState sb;
+    CHECK(!sb.enabled() && sb.mode() == SidebarMode::Files);
+    CHECK(nearly(sb.width(), 220) && nearly(sb.scroll(), 0) && !sb.resizing());
+
+    // 同じモードなら開閉のトグル。閉じてもモードは残る(次に開いたときの表示)
+    CHECK(sb.toggle(SidebarMode::Files));
+    CHECK(sb.showing(SidebarMode::Files) && !sb.showing(SidebarMode::Help));
+    CHECK(!sb.toggle(SidebarMode::Files));
+    CHECK(!sb.enabled() && sb.mode() == SidebarMode::Files);
+    // 別のモードなら閉じずに切り替える
+    CHECK(sb.toggle(SidebarMode::Help));
+    CHECK(sb.toggle(SidebarMode::Files));
+    CHECK(sb.showing(SidebarMode::Files));
+    CHECK(sb.toggle(SidebarMode::Help));
+    CHECK(!sb.toggle(SidebarMode::Help));
+    CHECK(!sb.enabled() && sb.mode() == SidebarMode::Help);  // 閉じても最後のモード
+
+    // 操作一覧モードは狭い設定でも kHelpWidth まで広げて見せる(素の幅は変えない)
+    SidebarState widths;
+    CHECK(nearly(widths.width(), 220) && nearly(widths.minWidth(), SidebarState::kMinWidth));
+    widths.toggle(SidebarMode::Help);
+    CHECK(nearly(widths.width(), SidebarState::kHelpWidth));
+    CHECK(nearly(widths.configuredWidth(), 220));
+    CHECK(nearly(widths.minWidth(), SidebarState::kHelpWidth));
+    widths.toggle(SidebarMode::Files);
+    CHECK(nearly(widths.width(), 220));
+
+    // 設定 (ini) の幅は上下限だけへ収める(モードもウィンドウ幅も見ない)
+    SidebarState configured;
+    configured.setConfiguredWidth(1000);
+    CHECK(nearly(configured.configuredWidth(), SidebarState::kMaxWidth));
+    configured.setConfiguredWidth(0);
+    CHECK(nearly(configured.configuredWidth(), SidebarState::kMinWidth));
+
+    SidebarState resized;
+    CHECK(resized.setWidth(300, 1000) && nearly(resized.width(), 300));
+    CHECK(!resized.setWidth(300, 1000));   // 変わらなければ false(無駄な再描画を避ける)
+    CHECK(resized.setWidth(50, 1000));     // 下限
+    CHECK(nearly(resized.width(), SidebarState::kMinWidth));
+    CHECK(resized.setWidth(999, 1000));    // 上限
+    CHECK(nearly(resized.width(), SidebarState::kMaxWidth));
+    CHECK(resized.setWidth(999, 400));     // 狭い窓では画像の表示領域を残す
+    CHECK(nearly(resized.width(), 400 - SidebarState::kMinViewportWidth));
+    resized.toggle(SidebarMode::Help);     // 操作一覧の下限は kHelpWidth
+    CHECK(resized.setWidth(100, 1000));
+    CHECK(nearly(resized.configuredWidth(), SidebarState::kHelpWidth));
+
+    // スクロールの幾何(1 項目 24px)
+    SidebarState scrolled;
+    scrolled.scrollToItem(10, 20, 100);
+    CHECK(nearly(scrolled.scroll(), 10 * 24 + 24 - 100));  // 下端に入るところまで
+    scrolled.scrollToItem(9, 20, 100);                     // 既に見えていれば動かさない
+    CHECK(nearly(scrolled.scroll(), 164));
+    CHECK(scrolled.firstVisibleItem() == 6);               // 6 番目の途中から見えている
+    CHECK(nearly(scrolled.firstItemY(), 6 * 24 - 164));
+    CHECK(scrolled.itemAt(0) == 6 && scrolled.itemAt(60) == 9);
+    scrolled.scrollToItem(0, 20, 100);                     // 上へ戻すときは項目の上端へ
+    CHECK(nearly(scrolled.scroll(), 0));
+
+    scrolled.scrollByItems(3);  // ホイールはクランプしない
+    CHECK(nearly(scrolled.scroll(), 72));
+    scrolled.clampScroll(20, 100);
+    CHECK(nearly(scrolled.scroll(), 72));
+    scrolled.clampScroll(3, 100);  // 全部入るなら先頭へ戻す
+    CHECK(nearly(scrolled.scroll(), 0));
+    scrolled.scrollByItems(-1);
+    scrolled.clampScroll(20, 100);
+    CHECK(nearly(scrolled.scroll(), 0));
+
+    // 右端を掴む幅変更。帯は境界の内側と外側の両方に広がる
+    SidebarState drag;
+    CHECK(drag.onResizeEdge(220 - SidebarState::kResizeGripPx));
+    CHECK(drag.onResizeEdge(220 + SidebarState::kResizeGripPx));
+    CHECK(!drag.onResizeEdge(220 - SidebarState::kResizeGripPx - 1));
+    CHECK(!drag.onResizeEdge(220 + SidebarState::kResizeGripPx + 1));
+    drag.beginResize(220, drag.width());
+    CHECK(drag.resizing());
+    // 掴んだ位置からの総移動量で決める(直前の幅からの差分ではない)
+    CHECK(nearly(drag.resizeWidth(260), 260));
+    CHECK(nearly(drag.resizeWidth(180), 180));
+    drag.endResize();
+    CHECK(!drag.resizing());
 }
 
 void testAnnotationGeometry() {
@@ -6145,6 +6231,7 @@ int main() {
     testResizeImage();
     testScaleAnnotation();
     testSortOrder();
+    testSidebarState();
     testAppSidebar();
     testAppSidebarResize();
     testAppHelpSidebar();

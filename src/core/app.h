@@ -22,6 +22,7 @@
 #include "core/mousemap.h"
 #include "core/ocr_service.h"
 #include "core/scan_service.h"
+#include "core/sidebar_state.h"
 #include "core/sort_order.h"
 #include "core/text_edit.h"
 #include "core/viewport.h"
@@ -50,17 +51,6 @@ struct MenuItem {
     bool checked = false;             ///< チェックマークを付けるか
     bool separator = false;           ///< 区切り線として扱うか
     std::vector<MenuItem> children;   ///< サブメニューの項目(空なら末端項目)
-};
-
-/**
- * @brief サイドバーに何を表示しているか。
- *
- * どちらのモードも同じ SidebarView(文字列のリスト)として描画される。
- * レンダラはモードを知らない。
- */
-enum class SidebarMode {
-    Files,  ///< フォルダ内のファイル名一覧(クリックでその画像へ移動)
-    Help,   ///< 操作一覧(現在のキーバインドから生成。クリックは無効)
 };
 
 /**
@@ -572,7 +562,7 @@ public:
      * @brief サイドバーの表示モードを返す。
      * @return ファイル名一覧か操作一覧か。サイドバーが非表示でも最後のモードを返す。
      */
-    SidebarMode sidebarMode() const { return sidebarMode_; }
+    SidebarMode sidebarMode() const { return sidebar_.mode(); }
 
     /**
      * @brief 選択中のラバーバンドの描画内容を組み立てる。
@@ -597,15 +587,6 @@ public:
 private:
     static constexpr float kPanStepPx = 64.0f;         ///< パンコマンド 1 回の移動量
     static constexpr float kStatusBarHeight = 26.0f;   ///< ステータスバーの高さ
-    static constexpr float kSidebarItemHeight = 24.0f; ///< サイドバー 1 項目の高さ
-    /// 操作一覧モードでの最低幅。「操作名 + キー」が収まらないと用をなさないため広げる
-    static constexpr float kHelpSidebarWidth = 300.0f;
-    static constexpr float kMinSidebarWidth = 120.0f;  ///< サイドバー幅の下限
-    static constexpr float kMaxSidebarWidth = 480.0f;  ///< サイドバー幅の上限
-    /// サイドバーの右端を掴める帯の幅(境界の左右へこの分だけ広がる)
-    static constexpr float kSidebarResizeGripPx = 4.0f;
-    /// 幅の変更で画像の表示領域をここまでは残す(狭いウィンドウでの上限)
-    static constexpr float kMinViewportWidth = 120.0f;
     /// 一覧に載せるファイル数の上限。サブフォルダを再帰で辿ると際限が無くなるため
     static constexpr size_t kMaxListFiles = 100000;
 
@@ -759,15 +740,10 @@ private:
 
     /**
      * @brief サイドバーの占める幅を返す。
-     * @return サイドバー幅(px)。非表示なら 0。操作一覧モードでは kHelpSidebarWidth 以上。
+     * @return サイドバー幅(px)。非表示なら 0。操作一覧モードでは
+     *         SidebarState::kHelpWidth 以上。
      */
     float sidebarOffset() const;
-
-    /**
-     * @brief サイドバー幅の下限を返す。
-     * @return モードに応じた下限(px)。操作一覧モードでは kHelpSidebarWidth。
-     */
-    float minSidebarWidth() const;
 
     /**
      * @brief サイドバー幅を変更してレイアウトを作り直す。
@@ -1436,10 +1412,9 @@ private:
     int prefetchRadius_ = 2;
     SizeF clientSize_{};  ///< クライアント領域全体(サイドバー + ビューポート + ステータスバー)
     bool statusBarEnabled_ = true;
-    bool sidebarEnabled_ = false;
-    SidebarMode sidebarMode_ = SidebarMode::Files;
-    float sidebarWidth_ = 220.0f;
-    float sidebarScroll_ = 0.0f;  ///< 一覧のスクロール量 (px)
+    /// サイドバーの可視・モード・幅・スクロール量と、右端を掴む幅変更ドラッグの状態。
+    /// 一覧の中身は App 側(list_ と helpLines_)にあり、SidebarState は知らない
+    SidebarState sidebar_;
     /// 操作一覧の表示行。毎フレーム組み立てずに Command::ToggleHelp で開いたときだけ作る
     std::vector<HelpLine> helpLines_;
     bool helpHintEnabled_ = true;  ///< 操作一覧の存在をステータスバーで案内するか
@@ -1469,9 +1444,6 @@ private:
     bool navArrowsEnabled_ = true;
     /// 直前に描いた矢印の状態。ポインタ移動で再描画が必要かの判定にだけ使う
     NavArrowsState navArrowsShown_;
-    bool sidebarResizing_ = false;      ///< サイドバーの右端を掴んで幅を変更中か
-    float sidebarResizeStartX_ = 0;     ///< 変更開始時のポインタ X(スクリーン座標)
-    float sidebarResizeStartWidth_ = 0; ///< 変更開始時のサイドバー幅(px)
 
     // 編集(トリミング・図形・テキスト)の状態
     /// これ未満の編集ドラッグは無視(画面px)。右クリックのメニュー判定にも使う
