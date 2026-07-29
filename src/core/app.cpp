@@ -263,9 +263,7 @@ void App::openPath(const fs::path& path) {
     entries_ = std::move(listed.entries);
     listTruncated_ = listed.truncated;
     current_.reset();
-    displayedPath_.clear();
-    loadFailed_ = false;
-    loadError_.clear();
+    origin_.clear();
     applyListOrder(isDirectory ? fs::path{} : path);
     refreshCurrent();
     requestScan(false);  // 起動時の走査は黙って差し替える(件数の通知は出さない)
@@ -280,15 +278,15 @@ void App::applyListOrder(const fs::path& keep) {
 }
 
 void App::relist() {
-    // 位置の正は「一覧の現在位置」で、表示中の画像 (displayedPath_) ではない。
-    // デコード待ちの間は両者がずれており、displayedPath_ を基準にすると
+    // 位置の正は「一覧の現在位置」で、表示中の画像 (origin_.path()) ではない。
+    // デコード待ちの間は両者がずれており、表示中の画像を基準にすると
     // 進行中の画像送りが取り消されてしまう
     const fs::path keep = list_.empty() ? fs::path{} : list_.current();
     // 貼り付け画像の表示中は一覧の位置に意味が無いので先頭へ寄せる(表示はそのまま)
-    applyListOrder(clipboardImage_ ? fs::path{} : keep);
+    applyListOrder(origin_.fromClipboard() ? fs::path{} : keep);
     // 求めた位置に着けなかった(一覧が空だった・現在の画像が消えた)ときだけ表示を
     // 切り替える。着けたなら refreshCurrent は呼ばない — 編集中の内容を捨ててしまうため
-    if (!clipboardImage_ && !list_.empty() && !samePath(list_.current(), keep)) {
+    if (!origin_.fromClipboard() && !list_.empty() && !samePath(list_.current(), keep)) {
         refreshCurrent();
         return;
     }
@@ -428,7 +426,7 @@ void App::execute(Command command) {
         executeCopyImage();
         break;
     case Command::CopyPath:
-        if (clipboardImage_ || list_.empty()) {
+        if (origin_.fromClipboard() || list_.empty()) {
             showMessage("コピーするパスがありません");
         } else if (clipboard_.setText(pathToUtf8(list_.current()))) {
             showMessage("パスをコピーしました: " + pathToUtf8(list_.current()));
@@ -438,7 +436,7 @@ void App::execute(Command command) {
         break;
     case Command::CopyFile:
         // コピーされるのはディスク上の元ファイル(未保存の編集内容は含まれない)
-        if (clipboardImage_ || list_.empty()) {
+        if (origin_.fromClipboard() || list_.empty()) {
             showMessage("コピーするファイルがありません");
         } else if (clipboard_.setFiles({list_.current()})) {
             showMessage("ファイルをコピーしました: " + pathToUtf8(list_.current()));
@@ -725,7 +723,7 @@ void App::clickSidebarItem(Point screenPos) {
         return;
     }
     const size_t index = sidebar_.itemAt(screenPos.y);
-    if (index < list_.size() && (list_.jumpTo(index) || clipboardImage_)) {
+    if (index < list_.size() && (list_.jumpTo(index) || origin_.fromClipboard())) {
         refreshCurrent();
     }
 }
@@ -1638,7 +1636,7 @@ bool App::applyCrop() {
     }
     viewport_.setImage(
         {static_cast<float>(current_->width), static_cast<float>(current_->height)});
-    edited_ = true;
+    origin_.setEdited(true);
     updateTitle();
     return true;
 }
@@ -2074,10 +2072,7 @@ bool App::executePasteImage() {
     discardEdits();
     resetSequence();  // 貼り付け画像は 1 枚きり(再生中なら止まる)
     current_ = std::move(image);
-    clipboardImage_ = true;
-    displayedPath_.clear();  // 一覧に戻ったとき必ず再取得させる
-    loadFailed_ = false;
-    loadError_.clear();
+    origin_.setClipboard();
     viewport_.setImage(
         {static_cast<float>(current_->width), static_cast<float>(current_->height)});
     updateTitle();
@@ -2142,7 +2137,7 @@ void App::executeSaveOverwrite() {
         return;
     }
     // 貼り付け画像には上書き先のファイルが無いので、保存先を尋ねる方へ回す
-    if (clipboardImage_ || list_.empty()) {
+    if (origin_.fromClipboard() || list_.empty()) {
         executeSaveAs();
         return;
     }
@@ -2192,13 +2187,13 @@ void App::executeSaveAs() {
         showMessage("保存する画像がありません");
         return;
     }
-    const std::string defaultName = clipboardImage_ || list_.empty()
+    const std::string defaultName = origin_.fromClipboard() || list_.empty()
                                         ? "クリップボード.png"
                                         : pathToUtf8(list_.current().stem()) + ".png";
     if (const auto path = host_.showSaveDialog(defaultName)) {
         // 一覧の現在のファイルを選び直した場合も上書きなので同じ後始末をする
         const bool isOverwrite =
-            !clipboardImage_ && !list_.empty() && samePath(*path, list_.current());
+            !origin_.fromClipboard() && !list_.empty() && samePath(*path, list_.current());
         saveImageTo(*path, isOverwrite);
     }
 }
@@ -2215,9 +2210,9 @@ void App::executePrint() {
     if (hasTransparency(*image)) {
         if (auto flattened = flattenOnBackground(*image, 0xFFFFFF)) image = std::move(flattened);
     }
-    const std::string jobName =
-        clipboardImage_ || list_.empty() ? "クリップボードの画像"
-                                         : pathToUtf8(list_.current().filename());
+    const std::string jobName = origin_.fromClipboard() || list_.empty()
+                                    ? "クリップボードの画像"
+                                    : pathToUtf8(list_.current().filename());
     switch (printer_.print(*image, jobName, printOptions_)) {
     case PrintStatus::Printed:
         showMessage("印刷しました: " + jobName);
@@ -2263,10 +2258,7 @@ void App::saveImageTo(const fs::path& path, const bool isOverwrite) {
     // ディスクの内容が表示に一致したので、未保存マークを消してキャッシュを捨てる
     // (捨てないと戻ってきたときに保存前のピクセルが出る)
     cache_.invalidate(path);
-    if (edited_) {
-        edited_ = false;
-        updateTitle();
-    }
+    if (origin_.setEdited(false)) updateTitle();
 }
 
 std::shared_ptr<DecodedImage> App::compositeImage() const {
@@ -2315,9 +2307,7 @@ void App::executeCopyImage() {
 }
 
 void App::markEdited() {
-    if (edited_) return;
-    edited_ = true;
-    updateTitle();
+    if (origin_.setEdited(true)) updateTitle();
 }
 
 void App::pushUndo() {
@@ -2344,7 +2334,7 @@ void App::executeUndo() {
         return;
     }
     // 履歴を使い切った = 開いた直後の状態に戻った
-    edited_ = history_.canUndo();
+    origin_.setEdited(history_.canUndo());
     updateTitle();
     host_.requestRedraw();
 }
@@ -2355,7 +2345,7 @@ void App::executeRedo() {
         showMessage("やり直す編集はありません");
         return;
     }
-    edited_ = true;  // やり直した先は必ず何らかの編集が入った状態
+    origin_.setEdited(true);  // やり直した先は必ず何らかの編集が入った状態
     updateTitle();
     host_.requestRedraw();
 }
@@ -2387,12 +2377,9 @@ void App::discardEdits() {
     selected_.reset();
     objectDrag_.end();
     annotations_.clear();
-    if (history_.empty() && !edited_) return;
+    if (history_.empty() && !origin_.edited()) return;
     history_.clear();
-    if (edited_) {
-        edited_ = false;
-        showMessage("編集を破棄しました");
-    }
+    if (origin_.setEdited(false)) showMessage("編集を破棄しました");
 }
 
 Point App::clampToImage(Point imagePos) const {
@@ -2446,8 +2433,8 @@ NavArrowsState App::navArrowsGeometry() const {
     const float barHeight = statusBarVisible() ? kStatusBarHeight : 0.0f;
     const SizeF viewport{clientSize_.w - offset, clientSize_.h - barHeight};
     // 貼り付け画像の表示中は、前後どちらでもフォルダ一覧の表示へ戻れる
-    const bool hasPrev = clipboardImage_ || list_.index() > 0;
-    const bool hasNext = clipboardImage_ || list_.index() + 1 < list_.size();
+    const bool hasPrev = origin_.fromClipboard() || list_.index() > 0;
+    const bool hasNext = origin_.fromClipboard() || list_.index() + 1 < list_.size();
     const Point pointer = pointer_.lastScreen();
     NavArrowsState state =
         navArrowsState(viewport, Point{pointer.x - offset, pointer.y}, hasPrev, hasNext);
@@ -2648,11 +2635,11 @@ void App::onTimer() {
 }
 
 void App::onDecodeCompleted() {
-    if (clipboardImage_) return;  // 貼り付け画像の表示はデコード完了で上書きしない
-    if (edited_) return;          // 編集中の画像も同様
+    if (origin_.fromClipboard()) return;  // 貼り付け画像の表示はデコード完了で上書きしない
+    if (origin_.edited()) return;         // 編集中の画像も同様
     if (list_.empty()) return;
     // 表示すべき画像がまだ画面に出ていなければ取得を再試行する
-    if (displayedPath_ == list_.current() && (current_ || loadFailed_)) {
+    if (origin_.path() == list_.current() && (current_ || origin_.failed())) {
         adoptRefinedImage();  // 表示中の画像が良い版に差し替わっていれば拾う
         adoptSequence();      // 調査・展開で増えたフレームがあれば拾う
         return;
@@ -2675,11 +2662,11 @@ void App::onFrameTimer() {
 }
 
 void App::adoptRefinedImage() {
-    if (!current_ || displayedPath_.empty()) return;
+    if (!current_ || origin_.path().empty()) return;
     // 多フレームの画像では tryGet が返すのは先頭フレーム。別のフレームを表示している
     // ときに拾うと絵が飛ぶので、フレーム列は adoptSequence に任せる
     if (multiFrame()) return;
-    auto latest = cache_.tryGet(displayedPath_);
+    auto latest = cache_.tryGet(origin_.path());
     if (!latest || latest == current_) return;
     // 大きさが変わる差し替えは来ない想定だが、来たら座標系が食い違うので拒む
     if (latest->width != current_->width || latest->height != current_->height) return;
@@ -2688,8 +2675,8 @@ void App::adoptRefinedImage() {
 }
 
 void App::adoptSequence() {
-    if (displayedPath_.empty() || clipboardImage_ || edited_) return;
-    auto latest = cache_.tryGetSequence(displayedPath_);
+    if (origin_.path().empty() || origin_.fromClipboard() || origin_.edited()) return;
+    auto latest = cache_.tryGetSequence(origin_.path());
     if (!latest || latest == sequence_) return;
     const size_t before = sequence_ ? sequence_->frames.size() : 0;
     sequence_ = std::move(latest);
@@ -2746,7 +2733,7 @@ void App::showFrame(const size_t index) {
     const std::shared_ptr<DecodedImage>& image = sequence_->frames[index].image;
     if (!image) {
         // 未デコードのページ。読み込みを頼み、前のフレームを出したまま待つ
-        cache_.requestFrame(displayedPath_, static_cast<uint32_t>(index));
+        cache_.requestFrame(origin_.path(), static_cast<uint32_t>(index));
         host_.requestRedraw();  // ステータスバーのページ番号だけ先に進む
         return;
     }
@@ -2775,7 +2762,7 @@ void App::executeTogglePlay() {
         showMessage("この画像はアニメーションではありません");
         return;
     }
-    if (edited_) {
+    if (origin_.edited()) {
         showMessage("編集中は再生できません(元に戻すと再生できます)");
         return;
     }
@@ -2807,18 +2794,16 @@ void App::navigate(bool moved) {
     // 何も表示できず、二度と戻せなくなる(画像を読まずに起動して貼り付けた場合)
     if (list_.empty()) return;
     // 貼り付け画像の表示中は、一覧位置が動かなくてもフォルダ一覧の表示へ戻す
-    if (moved || clipboardImage_) refreshCurrent();
+    if (moved || origin_.fromClipboard()) refreshCurrent();
 }
 
 void App::refreshCurrent() {
     discardEdits();
-    resetSequence();          // 前の画像のフレーム列と再生状態を捨てる
-    clipboardImage_ = false;  // 表示をフォルダ一覧由来に戻す
+    resetSequence();  // 前の画像のフレーム列と再生状態を捨てる
+    // ここから先はどの枝を通っても表示がフォルダ一覧由来に戻る(貼り付けの印が落ちる)
     if (list_.empty()) {
         current_.reset();
-        displayedPath_.clear();
-        loadFailed_ = false;
-        loadError_.clear();
+        origin_.clear();
         updateTitle();
         host_.requestRedraw();
         return;
@@ -2828,9 +2813,7 @@ void App::refreshCurrent() {
     std::string error;
     if (auto image = cache_.tryGet(path, &failed, &error)) {
         current_ = std::move(image);
-        displayedPath_ = path;
-        loadFailed_ = false;
-        loadError_.clear();
+        origin_.setFile(path);
         viewport_.setImage(
             {static_cast<float>(current_->width), static_cast<float>(current_->height)});
         // 表示に採用した時点でフレーム構成を調べる(先読みでは調べていない)。
@@ -2843,14 +2826,11 @@ void App::refreshCurrent() {
         }
     } else if (failed) {
         current_.reset();
-        displayedPath_ = path;
-        loadFailed_ = true;
-        loadError_ = std::move(error);
+        origin_.setFailed(path, std::move(error));
     } else {
         // デコード待ち。前の画像を表示したまま onDecodeCompleted を待つ
         cache_.requestNow(path);
-        loadFailed_ = false;
-        loadError_.clear();
+        origin_.setLoading();
     }
     scrollSidebarToCurrent();
     updatePrefetch();
@@ -2991,10 +2971,11 @@ StatusBarView App::statusBar() const {
         if (recursive_) text += "  |  サブフォルダ含む";
         text += std::format("  |  ツール: {}", toolLabel(style_.tool()));
         bar.leftText = std::move(text);
-    } else if (loadFailed_) {
+    } else if (origin_.failed()) {
         // 失敗した段階とコードまで出す(現物が手元にない不具合を切り分けられるように)
-        bar.leftText = loadError_.empty() ? "読み込み失敗"
-                                          : std::format("読み込み失敗: {}", loadError_);
+        bar.leftText = origin_.error().empty()
+                           ? "読み込み失敗"
+                           : std::format("読み込み失敗: {}", origin_.error());
     }
     bar.rightText = hoverText_;
     return bar;
@@ -3045,9 +3026,9 @@ void App::updatePrefetch() {
 
 void App::updateTitle() {
     const std::string appName = std::format("Blinker v{} ({})", kAppVersion, kAppGitSha);
-    if (clipboardImage_) {
+    if (origin_.fromClipboard()) {
         host_.setTitle(std::format("(クリップボード){} {}% - {}",
-                                   edited_ ? " (編集済み)" : "",
+                                   origin_.edited() ? " (編集済み)" : "",
                                    static_cast<int>(std::lround(viewport_.zoom() * 100)), appName));
         return;
     }
@@ -3057,12 +3038,12 @@ void App::updateTitle() {
     }
     std::string title = std::format("{} [{}/{}]", pathToUtf8(list_.current().filename()),
                                     list_.index() + 1, list_.size());
-    if (loadFailed_) {
+    if (origin_.failed()) {
         title += " (読み込み失敗)";
-    } else if (displayedPath_ != list_.current()) {
+    } else if (origin_.path() != list_.current()) {
         title += " (読み込み中)";
     } else {
-        if (edited_) title += " (編集済み)";
+        if (origin_.edited()) title += " (編集済み)";
         title += std::format(" {}%", static_cast<int>(std::lround(viewport_.zoom() * 100)));
     }
     title += " - " + appName;

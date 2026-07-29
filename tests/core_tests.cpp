@@ -26,6 +26,7 @@
 #include "core/help.h"
 #include "core/image_cache.h"
 #include "core/image_list.h"
+#include "core/image_origin.h"
 #include "core/keymap.h"
 #include "core/mousemap.h"
 #include "core/nav_arrows.h"
@@ -3402,6 +3403,63 @@ void testEditStyleConfig() {
     CHECK(empty.fontFamily() == kDefaultFontFamily);
 }
 
+void testImageOrigin() {
+    ImageOrigin origin;
+    CHECK(origin.path().empty() && !origin.fromClipboard());
+    CHECK(!origin.failed() && origin.error().empty() && !origin.edited());
+
+    // ファイルから読めた
+    origin.setFile("C:/img/a.png");
+    CHECK(origin.path() == std::filesystem::path("C:/img/a.png"));
+    CHECK(!origin.fromClipboard() && !origin.failed());
+
+    // 読み込み失敗。理由はステータスバーへ出すので保つ
+    origin.setFailed("C:/img/b.png", "decode: 0x88982F60");
+    CHECK(origin.path() == std::filesystem::path("C:/img/b.png"));
+    CHECK(origin.failed() && origin.error() == "decode: 0x88982F60");
+
+    // 次の画像が読めたら理由は消える(前の失敗が残り続けない)
+    origin.setFile("C:/img/c.png");
+    CHECK(!origin.failed() && origin.error().empty());
+
+    // デコード待ち。前の画像を出したまま待つのでパスは残る
+    origin.setFailed("C:/img/d.png", "open: 0x80070002");
+    origin.setLoading();
+    CHECK(origin.path() == std::filesystem::path("C:/img/d.png"));
+    CHECK(!origin.failed() && origin.error().empty());
+
+    // 貼り付け画像。一覧へ戻ったとき必ず読み直させるためパスは持たない
+    origin.setClipboard();
+    CHECK(origin.fromClipboard() && origin.path().empty());
+
+    // 貼り付けの印はファイル由来へ移った時点で落ちる(どの入口からでも)
+    origin.setClipboard();
+    origin.setFile("C:/img/e.png");
+    CHECK(!origin.fromClipboard());
+    origin.setClipboard();
+    origin.setFailed("C:/img/f.png", "decode");
+    CHECK(!origin.fromClipboard());
+    origin.setClipboard();
+    origin.setLoading();
+    CHECK(!origin.fromClipboard() && origin.path().empty());  // 貼り付け中はパスが無い
+
+    // 表示をやめる。編集済みの印だけは呼び出し側(discardEdits)の担当なので残る
+    origin.setFile("C:/img/g.png");
+    CHECK(origin.setEdited(true));
+    origin.clear();
+    CHECK(origin.path().empty() && !origin.fromClipboard() && !origin.failed());
+    CHECK(origin.edited());
+
+    // 未保存の編集。戻り値は「状態が変わったか」なので二度目は false
+    ImageOrigin edits;
+    CHECK(edits.setEdited(true));
+    CHECK(!edits.setEdited(true));
+    CHECK(edits.edited());
+    CHECK(edits.setEdited(false));
+    CHECK(!edits.setEdited(false));
+    CHECK(!edits.edited());
+}
+
 void testAnnotationGeometry() {
     AnnotationSpec rect;
     rect.kind = AnnotationSpec::Kind::Rect;
@@ -6611,6 +6669,7 @@ int main() {
     testObjectDragState();
     testEditStyle();
     testEditStyleConfig();
+    testImageOrigin();
     testAppSidebar();
     testAppSidebarResize();
     testAppHelpSidebar();

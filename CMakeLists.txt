@@ -38,6 +38,7 @@ add_library(blinker_core STATIC
     src/core/help.cpp
     src/core/image_cache.cpp
     src/core/image_list.cpp
+    src/core/image_origin.cpp
     src/core/image_scale.cpp
     src/core/keymap.cpp
     src/core/mousemap.cpp
