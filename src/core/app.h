@@ -20,6 +20,7 @@
 #include "core/help.h"
 #include "core/image_cache.h"
 #include "core/image_list.h"
+#include "core/image_origin.h"
 #include "core/keymap.h"
 #include "core/mousemap.h"
 #include "core/object_drag_state.h"
@@ -616,7 +617,7 @@ private:
      *
      * ImageCache は色変換の済んだ画像を後から同じパスへ入れ直すので、表示中のものが
      * 古ければ画素だけ入れ替えて再描画する。ズーム・パン・サイドバーの状態は保つ。
-     * 編集中(`edited_`)は呼ばれない — 利用者の編集を捨てないため。
+     * 編集中(`ImageOrigin::edited`)は呼ばれない — 利用者の編集を捨てないため。
      */
     void adoptRefinedImage();
 
@@ -1334,10 +1335,9 @@ private:
     std::shared_ptr<const ImageSequence> sequence_;
     PlaybackState playback_;             ///< 表示中のフレーム番号と再生状態
     AnimationOptions animationOptions_;  ///< 再生の設定([animation] セクション)
-    std::filesystem::path displayedPath_;  ///< current_ がどのパスの画像か
-    bool clipboardImage_ = false;  ///< current_ が貼り付け画像(フォルダ一覧とは独立)
-    bool loadFailed_ = false;
-    std::string loadError_;  ///< デコード失敗の理由(段階と HRESULT)。ステータスバーに出す
+    /// current_ の出どころ(どのパスの画像か・貼り付け画像か・読み込みに失敗したか)と、
+    /// 未保存の編集があるか。画素そのもの (current_) と一覧との突き合わせは App 側
+    ImageOrigin origin_;
     uint32_t backgroundRGB_ = 0x202020;
     EncodeOptions encodeOptions_;   ///< 保存時のエンコード設定([save] jpeg_quality)
     PrintOptions printOptions_;     ///< 印刷時の余白・自動回転([print] セクション)
@@ -1376,7 +1376,6 @@ private:
     /// 編集ドラッグの進行状態。始点・終点(画像座標)と手書きの軌跡。
     /// 画像座標への変換・クランプ・Shift での方向合わせ・ツールの適用は App 側
     EditDragState drag_;
-    bool edited_ = false;     ///< current_ に未保存の編集(トリミング・注釈)がある
     /// 選択中のツールと、新規注釈へ写す見た目(色・線幅・文字・塗り・枠線)。
     /// 何をどこへ描くか(適用先の種別・位置)は App 側
     EditStyle style_;
