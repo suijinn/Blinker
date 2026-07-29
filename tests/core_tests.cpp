@@ -17,6 +17,7 @@
 #include "core/config.h"
 #include "core/dib.h"
 #include "core/edit.h"
+#include "core/edit_history.h"
 #include "core/exif.h"
 #include "core/geometry.h"
 #include "core/image_scale.h"
@@ -2855,6 +2856,91 @@ void testEditFunctions() {
     blendOverlay(dst, red, -1, -1);  // overlay の右下 1 ピクセルだけが (0,0) に載る
     CHECK(dst.pixels[2] == 255);              // (0,0) は赤
     CHECK(dst.pixels[(1 * 2 + 1) * 4] == 100);  // (1,1) は変化しない
+}
+
+// 段を見分けるための印として width を使う(画素は要らない)
+EditSnapshot snapshotWithWidth(int width) {
+    EditSnapshot state;
+    state.image = std::make_shared<DecodedImage>();
+    state.image->width = width;
+    return state;
+}
+
+void testEditHistory() {
+    EditHistory history;
+    CHECK(history.empty() && !history.canUndo() && !history.canRedo());
+
+    // 空の履歴では取り消せない(現在の状態は捨てられ、やり直し側にも積まれない)
+    CHECK(!history.undo(snapshotWithWidth(1)).has_value());
+    CHECK(!history.redo(snapshotWithWidth(1)).has_value());
+    CHECK(history.empty());
+
+    // 1 -> 2 -> 3 と編集した状態を作り、順に戻ってやり直す
+    history.push(snapshotWithWidth(1));
+    history.push(snapshotWithWidth(2));
+    CHECK(history.canUndo() && !history.canRedo() && !history.empty());
+
+    auto back = history.undo(snapshotWithWidth(3));
+    CHECK(back && back->image->width == 2);
+    CHECK(history.canRedo());
+    back = history.undo(snapshotWithWidth(2));
+    CHECK(back && back->image->width == 1);
+    CHECK(!history.canUndo());  // 使い切ると「開いた直後」に戻る
+
+    auto forward = history.redo(snapshotWithWidth(1));
+    CHECK(forward && forward->image->width == 2);
+    CHECK(history.canUndo());
+    forward = history.redo(snapshotWithWidth(2));
+    CHECK(forward && forward->image->width == 3);  // 取り消す前の状態がやり直し先
+    CHECK(!history.canRedo());
+
+    // 新しい編集をすると、分岐した未来(やり直し先)は捨てられる
+    history.undo(snapshotWithWidth(3));
+    CHECK(history.canRedo());
+    history.push(snapshotWithWidth(9));
+    CHECK(!history.canRedo());
+
+    // 上限を超えた分は古いほうから捨てる
+    EditHistory limited;
+    for (int i = 0; i < static_cast<int>(EditHistory::kLimit) + 3; ++i) {
+        limited.push(snapshotWithWidth(i));
+    }
+    int steps = 0;
+    int oldest = -1;
+    while (auto state = limited.undo(snapshotWithWidth(999))) {
+        oldest = state->image->width;
+        ++steps;
+    }
+    CHECK(steps == static_cast<int>(EditHistory::kLimit));
+    CHECK(oldest == 3);  // 0,1,2 は押し出された
+
+    // ドラッグ中は変更が何度も届くが、積むのは最初の 1 回だけ
+    EditHistory drag;
+    drag.resetDrag();
+    CHECK(!drag.dragPushed());
+    CHECK(drag.consumeDragPush());
+    CHECK(drag.dragPushed());
+    CHECK(!drag.consumeDragPush());  // 2 回目以降は積ませない
+    drag.resetDrag();                // 次のドラッグでまた 1 回だけ積める
+    CHECK(!drag.dragPushed());
+    CHECK(drag.consumeDragPush());
+
+    // テキスト編集も同じ。ただし積むのは開始時に控えた「編集前」の状態
+    EditHistory text;
+    text.beginTextEdit(snapshotWithWidth(7));
+    CHECK(!text.textEditPushed());
+    auto before = text.consumeTextEditSnapshot();
+    CHECK(before && before->image->width == 7);
+    CHECK(text.textEditPushed());
+    CHECK(!text.consumeTextEditSnapshot().has_value());
+
+    // clear は履歴も一時状態も落とす(控えた画像を抱え込まない)
+    text.push(snapshotWithWidth(1));
+    text.undo(snapshotWithWidth(2));
+    text.consumeDragPush();
+    text.clear();
+    CHECK(text.empty() && !text.dragPushed() && !text.textEditPushed());
+    CHECK(!text.consumeTextEditSnapshot()->image);  // 控えは空になっている
 }
 
 void testAnnotationGeometry() {
@@ -6064,6 +6150,7 @@ int main() {
     testAppHelpSidebar();
     testAppHelpHint();
     testEditFunctions();
+    testEditHistory();
     testAnnotationGeometry();
     testPenGeometry();
     testPastedImageGeometry();

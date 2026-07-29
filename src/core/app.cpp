@@ -786,7 +786,7 @@ bool App::beginObjectGrab(Point screenPos) {
     const float barHeight = statusBarVisible() ? kStatusBarHeight : 0.0f;
     if (screenPos.y >= clientSize_.h - barHeight) return false;
     objectDrag_ = ObjectDrag::None;
-    dragUndoPushed_ = false;
+    history_.resetDrag();
     // 選択中オブジェクトのハンドル(スクリーン座標で判定)→ 回転 / リサイズ開始
     if (selected_ && *selected_ < annotations_.size()) {
         const AnnotationSpec& spec = annotations_[*selected_];
@@ -888,7 +888,7 @@ void App::endObjectGrab() {
     textEditMouseSelect_ = false;
     // テキストの高さは内容で決まるため、リサイズ確定時に折り返し後の実寸へ揃える。
     // 編集中は利用者が決めた枠幅を保ちたいので高さだけ合わせる
-    if (objectDrag_ == ObjectDrag::Resize && dragUndoPushed_ && selected_ &&
+    if (objectDrag_ == ObjectDrag::Resize && history_.dragPushed() && selected_ &&
         *selected_ < annotations_.size() &&
         annotations_[*selected_].kind == AnnotationSpec::Kind::Text) {
         const bool changed = textEditing_ ? measureTextHeight(annotations_[*selected_])
@@ -899,7 +899,7 @@ void App::endObjectGrab() {
         }
     }
     objectDrag_ = ObjectDrag::None;
-    dragUndoPushed_ = false;
+    history_.resetDrag();
 }
 
 bool App::onDoubleClick(Point screenPos, bool ctrl, bool shift, bool alt) {
@@ -1843,7 +1843,7 @@ void App::applyAnnotation(AnnotationSpec::Kind kind) {
         const Point origin{std::min(spec.p1.x, spec.p2.x), std::min(spec.p1.y, spec.p2.y)};
         spec.p2 = {std::max(spec.p1.x, spec.p2.x), std::max(spec.p1.y, spec.p2.y)};
         spec.p1 = origin;
-        UndoState before{current_, annotations_};  // 追加前の状態を undo 用に控える
+        EditSnapshot before{current_, annotations_};  // 追加前の状態を undo 用に控える
         annotations_.push_back(std::move(spec));
         selected_ = annotations_.size() - 1;
         beginTextEdit(annotations_.size() - 1, std::move(before), true);
@@ -1884,15 +1884,14 @@ bool App::measureTextHeight(AnnotationSpec& spec) {
     return true;
 }
 
-void App::beginTextEdit(size_t index, UndoState before, bool created) {
+void App::beginTextEdit(size_t index, EditSnapshot before, bool created) {
     if (index >= annotations_.size()) return;
     textEditing_ = true;
     textEditIndex_ = index;
     textEditCreated_ = created;
     textEditMouseSelect_ = false;
     textEditCaretOn_ = true;
-    textUndoPushed_ = false;
-    textUndoState_ = std::move(before);
+    history_.beginTextEdit(std::move(before));
     resetComposition();
     textStyleMenuPending_ = false;
     // キャレットは末尾。部分書式も引き継いで、続きの入力が直前の書式を継ぐようにする
@@ -1933,7 +1932,7 @@ void App::cancelTextEdit() {
     resetComposition();
     host_.setTextEditing(false, {}, 0);
     // 変更を記録済みなら undo と同じ経路で編集前へ戻す。新規作成中なら追加ごと消える
-    if (textUndoPushed_) {
+    if (history_.textEditPushed()) {
         executeUndo();
         return;
     }
@@ -1945,9 +1944,8 @@ void App::cancelTextEdit() {
 }
 
 void App::pushTextEditUndoOnce() {
-    if (textUndoPushed_) return;
-    pushUndoState(std::move(textUndoState_));
-    textUndoPushed_ = true;
+    // 入力のたびに呼ばれる。控えてある編集前の状態を積むのは最初の 1 回だけ
+    if (auto before = history_.consumeTextEditSnapshot()) pushUndoState(std::move(*before));
 }
 
 void App::applyTextEditChange() {
@@ -2456,37 +2454,34 @@ void App::pushUndo() {
     pushUndoState({current_, annotations_});
 }
 
-void App::pushUndoState(UndoState state) {
+void App::pushUndoState(EditSnapshot state) {
     // 編集を始めたらアニメーションは止める。以後は「そのフレームの静止画」を触っている
     // ことになる(再生を続けると編集した画素が次のフレームで消えてしまう)
     stopPlayback();
-    undoStack_.push_back(std::move(state));
-    if (undoStack_.size() > kUndoLimit) undoStack_.erase(undoStack_.begin());
-    // 新しい編集をした時点で、やり直せる先(分岐した未来)は無くなる
-    redoStack_.clear();
+    history_.push(std::move(state));
 }
 
 void App::pushDragUndoOnce() {
-    if (dragUndoPushed_) return;
+    // ドラッグ中は変更のたびに呼ばれる。スナップショットを作るのは最初の 1 回だけ
+    if (!history_.consumeDragPush()) return;
     pushUndo();
-    dragUndoPushed_ = true;
 }
 
 void App::executeUndo() {
     if (textEditing_) commitTextEdit();  // 編集中の内容を確定してから履歴を戻す
-    if (!restoreFrom(undoStack_, redoStack_)) {
+    if (!restoreFrom(history_.undo({current_, annotations_}))) {
         showMessage("取り消す編集はありません");
         return;
     }
     // 履歴を使い切った = 開いた直後の状態に戻った
-    edited_ = !undoStack_.empty();
+    edited_ = history_.canUndo();
     updateTitle();
     host_.requestRedraw();
 }
 
 void App::executeRedo() {
     if (textEditing_) commitTextEdit();
-    if (!restoreFrom(redoStack_, undoStack_)) {
+    if (!restoreFrom(history_.redo({current_, annotations_}))) {
         showMessage("やり直す編集はありません");
         return;
     }
@@ -2495,17 +2490,13 @@ void App::executeRedo() {
     host_.requestRedraw();
 }
 
-bool App::restoreFrom(std::vector<UndoState>& from, std::vector<UndoState>& to) {
-    if (from.empty()) return false;
-    to.push_back({current_, annotations_});  // 戻る前の状態を反対側へ積む
-    if (to.size() > kUndoLimit) to.erase(to.begin());
-    UndoState& state = from.back();
+bool App::restoreFrom(std::optional<EditSnapshot> state) {
+    if (!state) return false;
     const bool sizeChanged =
-        current_ && state.image &&
-        (current_->width != state.image->width || current_->height != state.image->height);
-    current_ = std::move(state.image);
-    annotations_ = std::move(state.annotations);
-    from.pop_back();
+        current_ && state->image &&
+        (current_->width != state->image->width || current_->height != state->image->height);
+    current_ = std::move(state->image);
+    annotations_ = std::move(state->annotations);
     selected_.reset();  // index が指す対象が変わりうるため選択は解除する
     objectDrag_ = ObjectDrag::None;
     // トリミングの取り消しでサイズが戻るときだけビューを再設定する(回転等を保つ)
@@ -2529,9 +2520,8 @@ void App::discardEdits() {
     annotations_.clear();
     penPoints_.clear();
     penStraightAnchor_.reset();
-    if (undoStack_.empty() && redoStack_.empty() && !edited_) return;
-    undoStack_.clear();
-    redoStack_.clear();
+    if (history_.empty() && !edited_) return;
+    history_.clear();
     if (edited_) {
         edited_ = false;
         showMessage("編集を破棄しました");

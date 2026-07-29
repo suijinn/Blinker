@@ -13,6 +13,7 @@
 #include "core/annotation_edit.h"
 #include "core/command.h"
 #include "core/config.h"
+#include "core/edit_history.h"
 #include "core/geometry.h"
 #include "core/help.h"
 #include "core/image_cache.h"
@@ -608,12 +609,6 @@ private:
     /// 一覧に載せるファイル数の上限。サブフォルダを再帰で辿ると際限が無くなるため
     static constexpr size_t kMaxListFiles = 100000;
 
-    /// @brief undo 1 段分のスナップショット(画像と注釈一覧)。
-    struct UndoState {
-        std::shared_ptr<DecodedImage> image;      ///< トリミング前の画像
-        std::vector<AnnotationSpec> annotations;  ///< そのときの注釈一覧
-    };
-
     /**
      * @brief 移動系コマンドの後始末(表示中の画像を一覧の現在位置に合わせ直す)。
      *
@@ -1145,7 +1140,7 @@ private:
      * @param[in] before  最初の変更時に undo へ積むスナップショット(編集前の状態)。
      * @param[in] created 新規作成直後なら true。空のまま終了したら注釈ごと削除する。
      */
-    void beginTextEdit(size_t index, UndoState before, bool created);
+    void beginTextEdit(size_t index, EditSnapshot before, bool created);
 
     /// @brief 編集を破棄して終了する(新規作成中なら注釈も削除する)。
     void cancelTextEdit();
@@ -1308,14 +1303,14 @@ private:
     /// @brief 未保存の編集ありとして記録し、タイトルを更新する。
     void markEdited();
 
-    /// @brief 現在の画像と注釈一覧を undo 履歴へ積む(kUndoLimit を超えた分は捨てる)。
+    /// @brief 現在の画像と注釈一覧を undo 履歴へ積む。
     void pushUndo();
 
     /**
      * @brief 与えられたスナップショットを undo 履歴へ積む。
      * @param[in] state 積むスナップショット。所有権を受け取る。
      */
-    void pushUndoState(UndoState state);
+    void pushUndoState(EditSnapshot state);
 
     /// @brief ドラッグ(移動・回転)の最初の変更時に 1 回だけ undo 履歴へ積む。
     void pushDragUndoOnce();
@@ -1327,12 +1322,11 @@ private:
     void executeRedo();
 
     /**
-     * @brief 現在の状態を履歴の一方から取り出して復元する(undo/redo の共通処理)。
-     * @param[in,out] from 取り出す側の履歴(末尾を取り出す)。
-     * @param[in,out] to   現在の状態を積む側の履歴。
-     * @return 復元したら true。from が空なら false(何もしない)。
+     * @brief 履歴から取り出したスナップショットを表示状態へ復元する。
+     * @param[in] state EditHistory::undo / redo の戻り値。
+     * @return 復元したら true。std::nullopt なら false(何もしない)。
      */
-    bool restoreFrom(std::vector<UndoState>& from, std::vector<UndoState>& to);
+    bool restoreFrom(std::optional<EditSnapshot> state);
 
     /// @brief 画像切替時に編集を破棄する(編集があれば通知を出す)。
     void discardEdits();
@@ -1482,7 +1476,6 @@ private:
     // 編集(トリミング・図形・テキスト)の状態
     /// これ未満の編集ドラッグは無視(画面px)。右クリックのメニュー判定にも使う
     static constexpr float kDragThresholdPx = 4.0f;
-    static constexpr size_t kUndoLimit = 10;         ///< undo 履歴の上限
     static constexpr float kHitTolerancePx = 4.0f;   ///< 注釈ヒットテストの許容(画面px)
     static constexpr float kRotationHandleOffsetPx = 20.0f;  ///< 選択枠上辺からハンドルまで
     static constexpr float kRotationHandleRadiusPx = 5.0f;   ///< 回転ハンドルの半径(画面px)
@@ -1517,7 +1510,6 @@ private:
     /// @brief 注釈オブジェクトに対する進行中のドラッグ操作。
     enum class ObjectDrag { None, Move, Rotate, Resize };
     ObjectDrag objectDrag_ = ObjectDrag::None;
-    bool dragUndoPushed_ = false;  ///< ドラッグ中の undo 記録は最初の変更時の1回だけ
     Point dragStartImage_{};       ///< Move: 掴んだ画像座標
     AnnotationSpec dragOrigSpec_;  ///< ドラッグ開始時の注釈(移動・回転・リサイズの基準)
     float dragStartAngleDeg_ = 0;  ///< Rotate: 開始時のポインタ角度(スクリーン)
@@ -1532,17 +1524,15 @@ private:
     bool textEditMouseSelect_ = false;  ///< ドラッグで選択範囲を広げている最中
     /// 右ボタンを選択範囲の上で押した。離した位置で書式メニューを出す(編集は確定しない)
     bool textStyleMenuPending_ = false;
-    bool textUndoPushed_ = false;   ///< 編集中の undo 記録は最初の変更時の1回だけ
-    UndoState textUndoState_;       ///< 上記で積む編集前のスナップショット
     /// IME の変換中文字列(UTF-8)。確定するまで textBuffer_ には入れず、表示にだけ混ぜる
     std::string composition_;
     size_t compositionCaret_ = 0;        ///< 変換中文字列内のキャレット(バイト位置)
     size_t compositionTargetBegin_ = 0;  ///< 変換対象の節の開始(同上)
     size_t compositionTargetEnd_ = 0;    ///< 変換対象の節の終了(同上)
 
-    std::vector<UndoState> undoStack_;
-    /// やり直し履歴。undo で積み、新しい編集(pushUndoState)で捨てる
-    std::vector<UndoState> redoStack_;
+    /// 取り消し・やり直しの履歴。ドラッグ中・テキスト編集中の「最初の 1 回だけ積む」
+    /// 判定もここが持つ(旗と積み先が食い違わないようにするため)
+    EditHistory history_;
     uint32_t editColorRGB_ = 0xFF3B30;  ///< 新規注釈の色(0xRRGGBB)
     float editStrokeWidth_ = 3.0f;  ///< 新規注釈の線幅(画像座標)。表示倍率では変わらない
     float editFontSize_ = 18.0f;    ///< 新規テキストのフォントサイズ(画像座標)。同上
