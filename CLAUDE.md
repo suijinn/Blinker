@@ -24,7 +24,10 @@ cmd /c '"C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Bu
 
 - CMakeプリセット: `debug` / `release`(Ninja、`build/<preset>/` に出力)
 - CMake/NinjaはVS2022同梱のものが使われる(vcvars64がPATHに追加する)
-- `/W4 /utf-8 /permissive-` で警告ゼロを維持すること(gcc/clang では `-Wall -Wextra`)
+- `/W4 /utf-8 /permissive-` で警告ゼロを維持すること(gcc/clang では
+  `-Wall -Wextra -Wno-missing-field-initializers`)。CI は `-DBLINKER_WERROR=ON` を渡して
+  `/WX` ・ `-Werror` を足すので、警告を1つでも残すと落ちる。手元で同じ厳しさにするなら
+  同じオプションを付ける(既定は OFF)
 
 Linux (WSL2) では:
 
@@ -39,6 +42,22 @@ cmake --preset linux-release && cmake --build --preset linux-release
 - SDLバックエンドのWindows上でのコンパイル・動作確認は `-DBLINKER_SDL=ON` で可能:
   `cmake -S . -B build/sdl-test -G Ninja -DCMAKE_BUILD_TYPE=Release -DBLINKER_SDL=ON`
   (blinker_sdl.exe ができる。タイトルバー検証の方法はWin版と同じ)
+
+## CI(main への push と PR で走る)
+
+`.github/workflows/ci.yml` が 3 ジョブを回す。**push する前にここが通る状態にしておくこと**:
+
+| ジョブ | 内容 |
+|---|---|
+| windows | VS ジェネレータで Release ビルド + `ctest`、`.ps1` の BOM と 5.1 での構文解析 |
+| linux | `linux-release` プリセットでビルド + `ctest`(SDL3 は FetchContent。キャッシュあり) |
+| docs | `doxygen docs/Doxyfile` の警告がゼロか(japanese の翻訳通知 1 件だけ除外) |
+
+いずれも `-DBLINKER_WERROR=ON` 付きだが、**`-Werror` が付くのは製品コードだけ**で
+`core_tests` には付けない。gcc 13 が `-O3` のテストコードで `-Wdangling-reference` と
+`-Wstringop-overflow` を誤検知するため(理由は CMakeLists.txt のコメント)。
+
+リリース経路 (`tag.yml` → `release.yml`) はこれとは別で、タグを打った後にしか動かない。
 
 ## 不変条件(壊してはならない)
 

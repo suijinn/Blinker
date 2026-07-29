@@ -51,11 +51,44 @@ add_library(blinker_core STATIC
     src/core/viewport.cpp
 )
 target_include_directories(blinker_core PUBLIC src ${CMAKE_BINARY_DIR}/generated)
+
 if(MSVC)
     target_compile_options(blinker_core PUBLIC /W4 /utf-8 /permissive-)
 else()
-    target_compile_options(blinker_core PUBLIC -Wall -Wextra)
+    # -Wmissing-field-initializers は切る。C++ では既定メンバ初期化子 (NSDMI) を持つ
+    # 末尾のメンバを集約初期化で省くのが正しい書き方で (EditMenuEntry の
+    # {Action::PickBorderColor} など)、gcc/clang はそれにも鳴る。MSVC /W4 は鳴らない。
+    # 埋めて回ると NSDMI を置いた意味が無くなるので、警告の側を黙らせる
+    target_compile_options(blinker_core PUBLIC -Wall -Wextra -Wno-missing-field-initializers)
 endif()
+
+# 「警告ゼロを維持する」を CI で強制するためのスイッチ。既定は OFF ―― 手元のビルドが
+# 警告ひとつで止まると作業しづらいため、落とすのは CI (ci.yml) だけにする。
+option(BLINKER_WERROR "Treat compiler warnings as errors (CI only)" OFF)
+
+# 付ける先を CMAKE_CXX_FLAGS ではなくターゲット個別にしているのは、前者だと
+# FetchContent で一緒にビルドする SDL3 まで巻き込むから。
+#
+# 対象は製品コード (blinker_core / blinker / blinker_sdl) だけで、core_tests には
+# 付けない。テストには gcc 13 が -O3 で誤検知する警告が出るため:
+#   - -Wdangling-reference … const AnnotationSpec& s = app.annotations().specs->back();
+#     AnnotationsView::specs は App が持つ vector への生ポインタなので、view の一時
+#     オブジェクトが消えても参照先は生きている(GCC 14 で誤検知は緩和された)
+#   - -Wstringop-overflow … std::vector::insert の内部を -O3 でインライン展開した先
+# どちらもコンパイラの版で増減する類のもので、これで CI を落としても得るものがない。
+# 製品コードのほうは MSVC・gcc とも警告ゼロなので、そちらは厳密に守る
+function(blinker_werror target)
+    if(NOT BLINKER_WERROR)
+        return()
+    endif()
+    if(MSVC)
+        target_compile_options(${target} PRIVATE /WX)
+    else()
+        target_compile_options(${target} PRIVATE -Werror)
+    endif()
+endfunction()
+
+blinker_werror(blinker_core)
 if(NOT WIN32)
     # ImageCache のワーカースレッド (std::thread) 用
     find_package(Threads REQUIRED)
@@ -91,6 +124,7 @@ if(WIN32)
     target_link_libraries(blinker PRIVATE blinker_core
         d2d1 dwrite windowscodecs shlwapi ole32 comdlg32 shell32 user32 gdi32 dwmapi advapi32
         imm32)
+    blinker_werror(blinker)
 endif()
 
 # SDL3 バックエンド (Linux / macOS)。既定で非 Windows のとき有効。
@@ -131,6 +165,8 @@ if(BLINKER_SDL)
         COMPILE_OPTIONS "$<IF:$<CXX_COMPILER_ID:MSVC>,/w,-w>")
     target_include_directories(blinker_sdl PRIVATE third_party)
     target_link_libraries(blinker_sdl PRIVATE blinker_core SDL3::SDL3)
+    # stb_impl.cpp は上で /w・-w を付けてあり、それが -Werror より後に来るので影響しない
+    blinker_werror(blinker_sdl)
     if(NOT WIN32)
         # 非 Windows では実行ファイル名は blinker(win 版と同じ使い勝手)
         set_target_properties(blinker_sdl PROPERTIES OUTPUT_NAME blinker)
