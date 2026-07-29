@@ -3513,11 +3513,15 @@ void testAppEdit() {
     CHECK(host.lastTitle.find("(編集済み)") != std::string::npos);
     CHECK(app.currentImage()->pixels[(1 * 8 + 1) * 4 + 2] == 0);  // 画像自体は無変更
 
-    // コピーは注釈を合成した画像になる (2x2 赤 overlay が (1,1) へ)
+    // コピーは注釈を合成した画像になる (2x2 赤 overlay が (1,1) へ)。
+    // 選択中はオブジェクトだけがコピーされるので、まず選択を外す
+    // (オブジェクト側の経路は testAppPasteObject で見る)
     rasterizer.overlayWidth = 2;
     rasterizer.overlayHeight = 2;
     rasterizer.overlayX = 1;
     rasterizer.overlayY = 1;
+    app.execute(Command::Escape);
+    CHECK(!app.annotations().selected.has_value());
     app.execute(Command::CopyImage);
     CHECK(rasterizer.rasterizeCount == 1);
     CHECK(clipboard.lastWidth == 8);
@@ -4527,10 +4531,32 @@ void testAppPasteObject() {
     CHECK(findMenuItem(host.lastMenuItems, "塗りつぶし") == nullptr);
     CHECK(findMenuItem(host.lastMenuItems, "回転角度") != nullptr);
 
-    // 保存・コピーの経路では焼き込まれる
+    // 選択中はオブジェクトだけがコピーされる(下地は含まない)
+    rasterizer.overlayWidth = 40;
+    rasterizer.overlayHeight = 20;
     app.execute(Command::CopyImage);
     CHECK(rasterizer.rasterizeCount == 1);
     CHECK(rasterizer.lastSpec.kind == AnnotationSpec::Kind::Image);
+    CHECK(clipboard.lastWidth == 40 && clipboard.lastHeight == 20);
+    CHECK(app.statusBar().leftText == "オブジェクトをクリップボードにコピーしました");
+
+    // 選択を外せば下地に焼き込んだ 1 枚(100x100)へ戻る
+    app.execute(Command::Escape);
+    app.execute(Command::CopyImage);
+    CHECK(rasterizer.rasterizeCount == 2);
+    CHECK(clipboard.lastWidth == 100 && clipboard.lastHeight == 100);
+    CHECK(app.statusBar().leftText == "画像をクリップボードにコピーしました");
+    rasterizer.overlayWidth = 1;
+    rasterizer.overlayHeight = 1;
+
+    // ラスタライズに失敗したら下地で代用せず、失敗として知らせる
+    app.onMouseDown(MouseButton::Left, screenOf(50, 50));  // オブジェクトを選び直す
+    app.onMouseUp(MouseButton::Left, screenOf(50, 50));
+    CHECK(app.annotations().selected == std::optional<size_t>(0));
+    rasterizer.ok = false;
+    app.execute(Command::CopyImage);
+    CHECK(app.statusBar().leftText == "オブジェクトのコピーに失敗しました");
+    rasterizer.ok = true;
 
     // 他の注釈と同じく undo/redo できる
     app.execute(Command::Undo);

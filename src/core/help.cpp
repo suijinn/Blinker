@@ -203,6 +203,8 @@ std::vector<HelpLine> buildHelpLines(const Keymap& keymap, const Mousemap& mouse
     row(Command::SelectToolText);
     // Ctrl+B は App が横取りするため Command を持たない(キー変更もできない)
     text("選択中のテキストを太字", "Ctrl+B");
+    // オブジェクト選択中は copy_image の対象が変わる(Command は同じなのでキーも同じ)
+    text("選択中のオブジェクトをコピー", keysLabel(keymap, Command::CopyImage));
 
     header("画面");
     row(Command::ToggleSidebar);
