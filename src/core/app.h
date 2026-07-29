@@ -21,6 +21,7 @@
 #include "core/keymap.h"
 #include "core/mousemap.h"
 #include "core/ocr_service.h"
+#include "core/pointer_state.h"
 #include "core/scan_service.h"
 #include "core/sidebar_state.h"
 #include "core/sort_order.h"
@@ -51,30 +52,6 @@ struct MenuItem {
     bool checked = false;             ///< チェックマークを付けるか
     bool separator = false;           ///< 区切り線として扱うか
     std::vector<MenuItem> children;   ///< サブメニューの項目(空なら末端項目)
-};
-
-/**
- * @brief 物理マウスボタン。
- *
- * どちらのボタンが何をするかは blinker.ini の `[mouse] swap_buttons` で
- * 入れ替えられる(App::mouseRole)。メニューとオブジェクトを掴む操作だけは
- * 入れ替えの対象外で、メニューは常に右ボタンのクリック、オブジェクトの選択・
- * 移動・回転・サイズ変更は常に左ボタンで行う。
- */
-enum class MouseButton {
-    Left,   ///< 左ボタン
-    Right,  ///< 右ボタン
-};
-
-/**
- * @brief マウスボタンに割り当てられた役割。
- *
- * 既定は左が Pan・右が Edit。`[mouse] swap_buttons = true` で入れ替わる。
- * 注釈オブジェクトを掴む操作はどちらの役割にも属さない(常に左ボタン)。
- */
-enum class MouseRole {
-    Pan,   ///< 何も掴まなかったドラッグで画像をパンする
-    Edit,  ///< 何も掴まなかったドラッグで現在のツール (EditTool) を実行する
 };
 
 /**
@@ -449,7 +426,7 @@ public:
      *       常に右ボタンのクリックで開く。注釈オブジェクトを掴む操作も対象外で、
      *       常に左ボタン(役割はそこで何も掴まなかったときの動きを決める)。
      */
-    MouseRole mouseRole(MouseButton button) const;
+    MouseRole mouseRole(MouseButton button) const { return pointer_.role(button); }
 
     /**
      * @brief 編集ドラッグで実行される現在のツールを返す。
@@ -1340,7 +1317,8 @@ private:
      * @param[in] alt        Alt が押されているか。
      * @return 割り当てがあれば true(1 段に達しておらず何も実行しなかった場合も
      *         含む。呼び出し側はズームへ落とさないこと)。未割り当てなら false。
-     * @note 1 段とみなすノッチ数は垂直が 1.0 固定、水平が wheelHorizontalThreshold_。
+     * @note 1 段とみなすノッチ数は垂直が 1.0 固定、水平が
+     *       PointerState::horizontalThreshold()。
      */
     bool wheelCommand(float notches, bool horizontal, bool ctrl, bool shift, bool alt);
 
@@ -1423,31 +1401,16 @@ private:
     std::string hoverText_;  ///< ステータスバー右側(カーソル位置の座標・色。UTF-8)
 
     // マウス操作の状態
-    /// 左右ボタンの役割(パンと編集)を入れ替える([mouse] swap_buttons)。
-    /// メニューは入れ替えの対象外で常に右クリック
-    bool swapMouseButtons_ = false;
-    bool panning_ = false;       ///< パン役のボタンでパン中か(何も掴まなかったとき)
-    Point lastPointerScreen_{};  ///< 最後のポインタ位置。パンの差分と Shift 再計算に使う
-    bool menuPressed_ = false;   ///< 右ボタンをメニューを開ける場所で押したか
-    bool menuOnSidebar_ = false; ///< 上記の押下位置がサイドバー(= 一覧のメニュー)だったか
-    Point menuPressScreen_{};    ///< 上記の押下位置(ドラッグ量の閾値判定用)
-    /// ホイールでコマンドを実行するときの回転量の貯金(垂直 / 水平で別に持つ)。
-    /// 1 ノッチ未満ずつ通知される高精細ホイールでも取りこぼさないため
-    float wheelAccumV_ = 0.0f;
-    float wheelAccumH_ = 0.0f;
-    /// 水平ホイールを 1 段と数えるまでのノッチ数(`[mouse] wheel_horizontal_threshold`)。
-    /// 既定は垂直と同じ 1 ノッチ。縦スクロールに横成分が混ざるトラックボール等で
-    /// 誤爆するなら大きくする(軸ロックとサイドバーの無視は既定で効いている)
-    float wheelHorizontalThreshold_ = 1.0f;
-    bool pointerInside_ = false;  ///< ポインタがクライアント領域内にあるか(矢印の表示判定)
+    /// 左右の役割(パンと編集)・ポインタ位置・パン中かどうか・右クリックの押下位置・
+    /// ホイールの貯金。画像に触る編集ドラッグ (selecting_) とオブジェクト操作
+    /// (objectDrag_) は下の「編集の状態」にあり、PointerState は知らない
+    PointerState pointer_;
     /// オーバーレイ矢印を出すか(`[view] nav_arrows`)。使用感が合わなければ false にできる
     bool navArrowsEnabled_ = true;
     /// 直前に描いた矢印の状態。ポインタ移動で再描画が必要かの判定にだけ使う
     NavArrowsState navArrowsShown_;
 
     // 編集(トリミング・図形・テキスト)の状態
-    /// これ未満の編集ドラッグは無視(画面px)。右クリックのメニュー判定にも使う
-    static constexpr float kDragThresholdPx = 4.0f;
     static constexpr float kHitTolerancePx = 4.0f;   ///< 注釈ヒットテストの許容(画面px)
     static constexpr float kRotationHandleOffsetPx = 20.0f;  ///< 選択枠上辺からハンドルまで
     static constexpr float kRotationHandleRadiusPx = 5.0f;   ///< 回転ハンドルの半径(画面px)

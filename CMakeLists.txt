@@ -43,6 +43,7 @@ add_library(blinker_core STATIC
     src/core/ocr_service.cpp
     src/core/ocr_text.cpp
     src/core/pixel_convert.cpp
+    src/core/pointer_state.cpp
     src/core/print_layout.cpp
     src/core/scan_service.cpp
     src/core/sidebar_state.cpp
