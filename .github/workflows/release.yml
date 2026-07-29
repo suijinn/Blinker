@@ -48,7 +48,8 @@ jobs:
       # workflow_call のとき GITHUB_REF_NAME は呼び出し元の main になるので使えない
       TAG: ${{ inputs.tag || github.ref_name }}
     steps:
-      - uses: actions/checkout@v4
+      # 版は ci.yml のコメントの通り Node.js 24 で動くメジャーに揃える
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.tag || github.ref_name }}
 
