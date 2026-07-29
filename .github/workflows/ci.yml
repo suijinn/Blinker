@@ -38,7 +38,10 @@ jobs:
       run:
         shell: bash   # windows-latest の既定は pwsh。他のワークフローと記法を揃える
     steps:
-      - uses: actions/checkout@v4
+      # 公式アクションは Node.js 24 で動くメジャーに揃えること。v4 系は Node.js 20 が
+      # 前提で、ランナーが強制的に 24 で動かしたうえで非推奨の注記を毎回出す
+      # (2025-09 の告知。いずれ動かなくなる)。tag.yml / release.yml も同じ版に揃える
+      - uses: actions/checkout@v7
 
       - name: Configure
         # release.yml と同じく Ninja プリセットではなく Visual Studio ジェネレータを使う。
@@ -101,7 +104,7 @@ jobs:
       # 抱き込むことになって扱いづらい
       FETCHCONTENT_BASE_DIR: ${{ github.workspace }}/.deps
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: ビルド依存を入れる
         # ninja はプリセットが要求する。X11 / Wayland の開発ヘッダは SDL3 のビルドに要る。
@@ -131,7 +134,7 @@ jobs:
 
       - name: SDL3 のキャッシュを復元
         id: sdl-cache
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: ${{ env.FETCHCONTENT_BASE_DIR }}
           key: sdl3-${{ runner.os }}-${{ steps.sdl.outputs.tag }}
@@ -155,7 +158,7 @@ jobs:
         # ビルドが通ったときだけ保存する。actions/cache の post ステップは失敗した
         # ジョブでも走るため、まとめ版だと壊れかけの SDL をキャッシュしてしまう
         if: success() && steps.sdl-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v6
         with:
           path: ${{ env.FETCHCONTENT_BASE_DIR }}
           key: sdl3-${{ runner.os }}-${{ steps.sdl.outputs.tag }}
@@ -164,7 +167,7 @@ jobs:
     name: Doxygen (警告ゼロ)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: doxygen と graphviz を入れる
         # Doxyfile は HAVE_DOT = YES なので graphviz が要る。無いとクラス図の生成が
@@ -200,7 +203,7 @@ jobs:
       - name: 警告ログを保存
         # 落ちたときに Actions の画面から中身を落として読めるようにしておく
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: doxygen-warnings
           path: doxygen-warnings.txt

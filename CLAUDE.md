@@ -59,6 +59,12 @@ cmake --preset linux-release && cmake --build --preset linux-release
 
 リリース経路 (`tag.yml` → `release.yml`) はこれとは別で、タグを打った後にしか動かない。
 
+使うアクションは公式 (`actions/*`) のみ。**3 つのワークフローで版を揃えること**。
+Node.js 20 で動くメジャー(`@v4` 系)はランナーが強制的に 24 で動かしたうえで
+毎回非推奨の注記を出すため、Node.js 24 のメジャーを使う
+(現状 `checkout@v7` / `cache@v6` / `upload-artifact@v7`)。
+`upload-artifact` だけ `@v5` がまだ Node.js 20 なので、メジャー番号を揃えても意味はない。
+
 ## 不変条件(壊してはならない)
 
 - **依存方向は win/sdl → platform → core の一方向のみ**。`src/core/` はOSヘッダをincludeしてはならない
