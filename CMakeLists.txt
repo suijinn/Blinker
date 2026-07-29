@@ -45,6 +45,7 @@ add_library(blinker_core STATIC
     src/core/pixel_convert.cpp
     src/core/print_layout.cpp
     src/core/scan_service.cpp
+    src/core/sidebar_state.cpp
     src/core/sort_order.cpp
     src/core/text_edit.cpp
     src/core/text_style.cpp

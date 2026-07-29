@@ -218,10 +218,9 @@ void App::applyConfig(const Config& config) {
     viewport_.setFitUpscale(config.getBool("view", "fit_upscale", false));
     prefetchRadius_ = std::clamp(config.getInt("view", "prefetch_radius", prefetchRadius_), 0, 8);
     statusBarEnabled_ = config.getBool("view", "statusbar", statusBarEnabled_);
-    sidebarEnabled_ = config.getBool("view", "sidebar", sidebarEnabled_);
-    sidebarWidth_ = static_cast<float>(
-        std::clamp(config.getInt("view", "sidebar_width", static_cast<int>(sidebarWidth_)),
-                   static_cast<int>(kMinSidebarWidth), static_cast<int>(kMaxSidebarWidth)));
+    sidebar_.setEnabled(config.getBool("view", "sidebar", sidebar_.enabled()));
+    sidebar_.setConfiguredWidth(static_cast<float>(config.getInt(
+        "view", "sidebar_width", static_cast<int>(sidebar_.configuredWidth()))));
     helpHintEnabled_ = config.getBool("view", "help_hint", helpHintEnabled_);
     // アニメーションの再生設定(展開の上限は ImageCache 側で読む)
     animationOptions_ = animationOptionsFromConfig(config);
@@ -269,7 +268,7 @@ void App::applyConfig(const Config& config) {
 bool App::showHelpHint() {
     if (!helpHintEnabled_) return false;
     // 既に一覧が出ているなら案内は不要
-    if (sidebarEnabled_ && sidebarMode_ == SidebarMode::Help) return false;
+    if (sidebar_.showing(SidebarMode::Help)) return false;
     const std::string keys = keysLabel(keymap_, Command::ToggleHelp);
     if (keys.empty()) return false;  // ini で外されているなら案内しない
     const std::string hint = std::format("{} で操作一覧", keys);
@@ -562,21 +561,19 @@ void App::execute(Command command) {
     case Command::SelectToolOcr:
         setTool(EditTool::Ocr);
         break;
-    case Command::ToggleSidebar:
+    case Command::ToggleSidebar: {
         // 操作一覧が出ている間は、閉じるのではなくファイル名一覧へ切り替える
-        sidebarEnabled_ = !(sidebarEnabled_ && sidebarMode_ == SidebarMode::Files);
-        sidebarMode_ = SidebarMode::Files;
+        const bool opened = sidebar_.toggle(SidebarMode::Files);
         applyLayout();
-        if (sidebarEnabled_) scrollSidebarToCurrent();
+        if (opened) scrollSidebarToCurrent();
         onViewChanged();  // フィット再計算でズーム率表示が変わりうる
         break;
+    }
     case Command::ToggleHelp:
-        sidebarEnabled_ = !(sidebarEnabled_ && sidebarMode_ == SidebarMode::Help);
-        if (sidebarEnabled_) {
-            sidebarMode_ = SidebarMode::Help;
+        if (sidebar_.toggle(SidebarMode::Help)) {
             // ini 適用後のキーバインドから作る。開くたびに作り直すので設定変更にも追従する
             helpLines_ = buildHelpLines(keymap_, mousemap_, swapMouseButtons_);
-            sidebarScroll_ = 0;
+            sidebar_.setScroll(0);
         }
         applyLayout();
         onViewChanged();  // フィット再計算でズーム率表示が変わりうる
@@ -594,7 +591,7 @@ void App::execute(Command command) {
         } else if (selecting_) {
             selecting_ = false;
             host_.requestRedraw();
-        } else if (sidebarEnabled_ && sidebarMode_ == SidebarMode::Help) {
+        } else if (sidebar_.showing(SidebarMode::Help)) {
             // ヘルプを見ている最中の Esc で終了してしまわないよう、まず閉じる
             execute(Command::ToggleHelp);
         } else if (host_.isFullscreen()) {
@@ -646,7 +643,7 @@ void App::onWheel(float wheelNotches, Point screenPos, bool ctrl, bool shift, bo
     wheelAccumH_ = 0.0f;
     if (sidebarVisible() && screenPos.x < sidebarOffset()) {
         // サイドバー上ではズームも遷移もせず一覧をスクロール(1ノッチ = 3項目)
-        sidebarScroll_ -= wheelNotches * 3 * kSidebarItemHeight;
+        sidebar_.scrollByItems(-wheelNotches * 3);
         clampSidebarScroll();
         host_.requestRedraw();
         return;
@@ -716,9 +713,8 @@ bool App::onMouseDown(MouseButton button, Point screenPos) {
     // 右端を掴んだら幅の変更。項目のクリック判定より先に見る(境界際のクリックで
     // 画像が切り替わってしまわないように)
     if (button == MouseButton::Left && onSidebarResizeEdge(screenPos)) {
-        sidebarResizing_ = true;
-        sidebarResizeStartX_ = screenPos.x;
-        sidebarResizeStartWidth_ = sidebarOffset();  // 見えている幅を基準に 1:1 で動かす
+        // 見えている幅を基準に 1:1 で動かす
+        sidebar_.beginResize(screenPos.x, sidebarOffset());
         return true;
     }
     // サイドバーは UI 部品なので左右の入れ替えの対象外。左クリックが項目へ移動し、
@@ -727,7 +723,7 @@ bool App::onMouseDown(MouseButton button, Point screenPos) {
         if (button == MouseButton::Left) clickSidebarItem(screenPos);
         // 操作一覧モードには並べ替える一覧が無いのでメニューも出さない。
         // ここでは位置だけ覚え、ドラッグにならずに離されたら onMouseUp が開く
-        if (button == MouseButton::Right && sidebarMode_ == SidebarMode::Files) {
+        if (button == MouseButton::Right && sidebar_.mode() == SidebarMode::Files) {
             menuPressed_ = true;
             menuOnSidebar_ = true;
             menuPressScreen_ = screenPos;
@@ -770,12 +766,11 @@ bool App::onMouseDown(MouseButton button, Point screenPos) {
 void App::clickSidebarItem(Point screenPos) {
     // ステータスバー上(サイドバー領域外)はどちらの操作でもないため何もしない
     if (textEditing_) commitTextEdit();  // 画像切替の前に編集を確定する
-    if (sidebarMode_ != SidebarMode::Files || screenPos.y < 0 ||
+    if (sidebar_.mode() != SidebarMode::Files || screenPos.y < 0 ||
         screenPos.y >= sidebarViewHeight()) {
         return;
     }
-    const size_t index =
-        static_cast<size_t>((screenPos.y + sidebarScroll_) / kSidebarItemHeight);
+    const size_t index = sidebar_.itemAt(screenPos.y);
     if (index < list_.size() && (list_.jumpTo(index) || clipboardImage_)) {
         refreshCurrent();
     }
@@ -859,8 +854,8 @@ void App::onMouseUp(MouseButton button, Point screenPos, bool shift) {
         showTextStyleMenu(screenPos);
         return;
     }
-    if (button == MouseButton::Left && sidebarResizing_) {
-        sidebarResizing_ = false;  // 掴んでいた間は他のドラッグを始めていない
+    if (button == MouseButton::Left && sidebar_.resizing()) {
+        sidebar_.endResize();  // 掴んでいた間は他のドラッグを始めていない
         return;
     }
     // 掴んでいたオブジェクト操作を終える(掴むのは常に左ボタンなので解放も左だけ)
@@ -2571,7 +2566,7 @@ SelectionView App::selection() const {
 NavArrowsState App::navArrowsGeometry() const {
     if (!navArrowsEnabled_ || !pointerInside_ || list_.empty()) return {};
     // ドラッグ中とテキスト編集中は出さない(操作の途中で押せてしまうと編集が消える)
-    if (panning_ || selecting_ || sidebarResizing_ || textEditing_ || textEditMouseSelect_ ||
+    if (panning_ || selecting_ || sidebar_.resizing() || textEditing_ || textEditMouseSelect_ ||
         objectDrag_ != ObjectDrag::None) {
         return {};
     }
@@ -2703,8 +2698,8 @@ void App::onMouseMove(Point screenPos, bool shift) {
     lastPointerScreen_ = screenPos;
     pointerInside_ = true;  // オーバーレイ矢印の表示判定(onMouseLeave で false へ戻す)
     // 幅の変更中は掴んだ位置からの総移動量で決める(クランプで取りこぼしが出ないように)
-    if (sidebarResizing_) {
-        setSidebarWidth(sidebarResizeStartWidth_ + screenPos.x - sidebarResizeStartX_);
+    if (sidebar_.resizing()) {
+        setSidebarWidth(sidebar_.resizeWidth(screenPos.x));
         return;
     }
     // パン役のボタンで何も掴まずにドラッグしている間は画像を動かす
@@ -3003,29 +2998,15 @@ bool App::statusBarVisible() const {
 }
 
 bool App::sidebarVisible() const {
-    return sidebarEnabled_ && !host_.isFullscreen();
+    return sidebar_.enabled() && !host_.isFullscreen();
 }
 
 float App::sidebarOffset() const {
-    if (!sidebarVisible()) return 0.0f;
-    // 操作一覧は「操作名 + キー」が入りきらないと読めないので、狭い設定でも広げる
-    return sidebarMode_ == SidebarMode::Help ? std::max(sidebarWidth_, kHelpSidebarWidth)
-                                             : sidebarWidth_;
-}
-
-float App::minSidebarWidth() const {
-    // 下限は sidebarOffset() が返す幅に揃える(操作一覧はそれ以上狭くしても見た目が
-    // 変わらないので、狭められたように見えてファイル名一覧だけが縮むのを防ぐ)
-    return sidebarMode_ == SidebarMode::Help ? kHelpSidebarWidth : kMinSidebarWidth;
+    return sidebarVisible() ? sidebar_.width() : 0.0f;
 }
 
 void App::setSidebarWidth(float width) {
-    const float minWidth = minSidebarWidth();
-    const float maxWidth =
-        std::max(minWidth, std::min(kMaxSidebarWidth, clientSize_.w - kMinViewportWidth));
-    const float clamped = std::clamp(width, minWidth, maxWidth);
-    if (clamped == sidebarWidth_) return;
-    sidebarWidth_ = clamped;
+    if (!sidebar_.setWidth(width, clientSize_.w)) return;
     applyLayout();
     onViewChanged();  // フィット再計算でズーム率表示が変わりうる
 }
@@ -3033,15 +3014,15 @@ void App::setSidebarWidth(float width) {
 bool App::onSidebarResizeEdge(Point screenPos) const {
     if (!sidebarVisible()) return false;
     if (screenPos.y < 0 || screenPos.y >= sidebarViewHeight()) return false;
-    return std::abs(screenPos.x - sidebarOffset()) <= kSidebarResizeGripPx;
+    return sidebar_.onResizeEdge(screenPos.x);
 }
 
 bool App::wantsSidebarResizeCursor(Point screenPos) const {
-    return sidebarResizing_ || onSidebarResizeEdge(screenPos);
+    return sidebar_.resizing() || onSidebarResizeEdge(screenPos);
 }
 
 size_t App::sidebarItemCount() const {
-    return sidebarMode_ == SidebarMode::Help ? helpLines_.size() : list_.size();
+    return sidebar_.mode() == SidebarMode::Help ? helpLines_.size() : list_.size();
 }
 
 float App::sidebarViewHeight() const {
@@ -3050,26 +3031,16 @@ float App::sidebarViewHeight() const {
 }
 
 void App::clampSidebarScroll() {
-    const float maxScroll = std::max(
-        0.0f,
-        static_cast<float>(sidebarItemCount()) * kSidebarItemHeight - sidebarViewHeight());
-    sidebarScroll_ = std::clamp(sidebarScroll_, 0.0f, maxScroll);
+    sidebar_.clampScroll(sidebarItemCount(), sidebarViewHeight());
 }
 
 void App::scrollSidebarToCurrent() {
-    if (sidebarMode_ == SidebarMode::Help) return;  // 操作一覧に「現在項目」はない
+    if (sidebar_.mode() == SidebarMode::Help) return;  // 操作一覧に「現在項目」はない
     if (list_.empty()) {
-        sidebarScroll_ = 0;
+        sidebar_.setScroll(0);
         return;
     }
-    const float itemTop = static_cast<float>(list_.index()) * kSidebarItemHeight;
-    const float viewHeight = sidebarViewHeight();
-    if (itemTop < sidebarScroll_) {
-        sidebarScroll_ = itemTop;
-    } else if (itemTop + kSidebarItemHeight > sidebarScroll_ + viewHeight) {
-        sidebarScroll_ = itemTop + kSidebarItemHeight - viewHeight;
-    }
-    clampSidebarScroll();
+    sidebar_.scrollToItem(list_.index(), list_.size(), sidebarViewHeight());
 }
 
 void App::applyLayout() {
@@ -3165,22 +3136,22 @@ SidebarView App::sidebar() const {
     if (!sb.visible) return sb;
     sb.width = sidebarOffset();
     sb.height = sidebarViewHeight();
-    sb.itemHeight = kSidebarItemHeight;
+    sb.itemHeight = SidebarState::kItemHeight;
     sb.backgroundRGB = darkTheme_ ? 0x252526 : 0xF3F3F3;
     sb.textRGB = darkTheme_ ? 0xCCCCCC : 0x333333;
     sb.currentBackgroundRGB = darkTheme_ ? 0x094771 : 0xCCE4F7;
     sb.currentTextRGB = darkTheme_ ? 0xFFFFFF : 0x1A1A1A;
     sb.scrollbarRGB = darkTheme_ ? 0x666666 : 0xA0A0A0;
-    sb.scrollOffset = sidebarScroll_;
+    sb.scrollOffset = sidebar_.scroll();
     const size_t count = sidebarItemCount();
-    sb.contentHeight = static_cast<float>(count) * kSidebarItemHeight;
+    sb.contentHeight = static_cast<float>(count) * SidebarState::kItemHeight;
 
     // 可視範囲の項目だけを渡す(先頭が部分的に隠れる分は firstItemY が負になる)
-    const size_t first = static_cast<size_t>(sidebarScroll_ / kSidebarItemHeight);
-    sb.firstItemY = static_cast<float>(first) * kSidebarItemHeight - sidebarScroll_;
-    const size_t maxVisible = static_cast<size_t>(sb.height / kSidebarItemHeight) + 2;
+    const size_t first = sidebar_.firstVisibleItem();
+    sb.firstItemY = sidebar_.firstItemY();
+    const size_t maxVisible = static_cast<size_t>(sb.height / SidebarState::kItemHeight) + 2;
     for (size_t i = first; i < count && i < first + maxVisible; ++i) {
-        if (sidebarMode_ == SidebarMode::Help) {
+        if (sidebar_.mode() == SidebarMode::Help) {
             // 見出し行を current の強調表示で描く(レンダラは両モードを区別しない)
             sb.items.push_back({helpLines_[i].text, helpLines_[i].header});
         } else {
