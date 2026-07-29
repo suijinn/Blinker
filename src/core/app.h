@@ -13,6 +13,7 @@
 #include "core/annotation_edit.h"
 #include "core/command.h"
 #include "core/config.h"
+#include "core/edit_drag_state.h"
 #include "core/edit_history.h"
 #include "core/geometry.h"
 #include "core/help.h"
@@ -20,6 +21,7 @@
 #include "core/image_list.h"
 #include "core/keymap.h"
 #include "core/mousemap.h"
+#include "core/object_drag_state.h"
 #include "core/ocr_service.h"
 #include "core/pointer_state.h"
 #include "core/scan_service.h"
@@ -862,20 +864,20 @@ private:
      * @param[in] shift     Shift が押されているか。
      * @return 画像内へクランプした終点。shift のときは、直線・矢印・手書きなら水平・
      *         垂直・45 度へ、正方形にできるツールなら選択領域が正方形になる位置へ寄せたもの。
-     * @note 手書きの起点は penStraightAnchor_ が指す点なので、先に
+     * @note 手書きの起点は直線アンカー(EditDragState)が指す点なので、先に
      *       updatePenStraightAnchor を呼んでおくこと。
      */
     Point dragEndImage(Point screenPos, bool shift) const;
 
     /**
-     * @brief 手書きの直線アンカー(penStraightAnchor_)を Shift の状態に合わせる。
+     * @brief 手書きの直線アンカーを Shift とツールの状態に合わせる。
      * @param[in] shift Shift が押されているか。
      * @note dragEndImage が参照するので、終点を求める前に呼ぶこと。
      */
     void updatePenStraightAnchor(bool shift);
 
     /**
-     * @brief 手書きの軌跡を selEndImage_ まで伸ばす。
+     * @brief 手書きの軌跡を編集ドラッグの終点まで伸ばす。
      * @param[in] minDistancePx 直前の点との最小距離(画像座標)。これ未満の動きは捨てる。
      * @note 手書きツール以外では何もしない。直線アンカーがある間は、アンカーから
      *       終点までのまっすぐな 1 本で置き換える。
@@ -1380,7 +1382,7 @@ private:
 
     // マウス操作の状態
     /// 左右の役割(パンと編集)・ポインタ位置・パン中かどうか・右クリックの押下位置・
-    /// ホイールの貯金。画像に触る編集ドラッグ (selecting_) とオブジェクト操作
+    /// ホイールの貯金。画像に触る編集ドラッグ (drag_) とオブジェクト操作
     /// (objectDrag_) は下の「編集の状態」にあり、PointerState は知らない
     PointerState pointer_;
     /// オーバーレイ矢印を出すか(`[view] nav_arrows`)。使用感が合わなければ false にできる
@@ -1396,21 +1398,15 @@ private:
     static constexpr float kResizeHandleSizePx = 7.0f;  ///< サイズ変更ハンドル(正方形)の一辺
     static constexpr float kResizeHandleHitPx = 8.0f;   ///< 同・ヒット判定の半径
     static constexpr float kAngleSnapDeg = 15.0f;       ///< Shift ドラッグ時のスナップ
-    bool selecting_ = false;  ///< 編集ドラッグで領域選択中
-    Point selStartImage_{};   ///< 選択の始点(画像座標。ズーム中も不変)
-    Point selEndImage_{};     ///< 選択の現在点(画像座標。ズーム中も不変)
-    Point selStartScreen_{};  ///< ドラッグ量の閾値判定用
+    /// 編集ドラッグの進行状態。始点・終点(画像座標)と手書きの軌跡。
+    /// 画像座標への変換・クランプ・Shift での方向合わせ・ツールの適用は App 側
+    EditDragState drag_;
     bool edited_ = false;     ///< current_ に未保存の編集(トリミング・注釈)がある
     EditTool tool_ = EditTool::Rect;  ///< 編集ドラッグで実行するツール
     /// トリミングは一度きりの操作なので、実行したらこのツールへ戻す(直前の図形ツール)
     EditTool toolAfterCrop_ = EditTool::Rect;
     /// 編集ドラッグ中のプレビュー。図形ツールのときだけ有効(Crop/Text はラバーバンドを出す)
     AnnotationSpec previewSpec_;
-    /// 手書きツールで編集ドラッグ中に溜めている軌跡(画像座標)。確定時に注釈へ移す
-    std::vector<Point> penPoints_;
-    /// Shift を押し始めたときの penPoints_ の末尾 index。押している間、ここから先は
-    /// まっすぐな 1 本の線で置き換える(押す前に描いた軌跡は残る)。離すと無効になる
-    std::optional<size_t> penStraightAnchor_;
     /// 軌跡へ点を足す最小間隔(画面px)。これ未満の動きは無視して点数を抑える
     static constexpr float kPenMinDistancePx = 2.0f;
     /// マーカーの線幅の倍率(「線の太さ」設定に掛ける)。蛍光ペンらしい太さにする
@@ -1420,13 +1416,9 @@ private:
     /// 注釈オブジェクト。current_ には焼き込まず、描画時に重ね、保存/コピー時に合成する
     std::vector<AnnotationSpec> annotations_;
     std::optional<size_t> selected_;  ///< 選択中の注釈 index
-    /// @brief 注釈オブジェクトに対する進行中のドラッグ操作。
-    enum class ObjectDrag { None, Move, Rotate, Resize };
-    ObjectDrag objectDrag_ = ObjectDrag::None;
-    Point dragStartImage_{};       ///< Move: 掴んだ画像座標
-    AnnotationSpec dragOrigSpec_;  ///< ドラッグ開始時の注釈(移動・回転・リサイズの基準)
-    float dragStartAngleDeg_ = 0;  ///< Rotate: 開始時のポインタ角度(スクリーン)
-    ResizeHandle dragResizeHandle_ = ResizeHandle::BottomRight;  ///< Resize: 掴んだハンドル
+    /// 注釈オブジェクトを掴んでいる間の状態(移動・回転・サイズ変更と、その基準値)。
+    /// 対象は selected_ が指す。ハンドルのヒット判定と実際の変形は App 側
+    ObjectDragState objectDrag_;
 
     // Text 注釈のインプレース編集(画像上で直接入力する状態)
     /// 編集中かどうか・対象の注釈 index・編集バッファ・キャレットの点滅・

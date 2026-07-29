@@ -31,6 +31,7 @@ add_library(blinker_core STATIC
     src/core/config.cpp
     src/core/dib.cpp
     src/core/edit.cpp
+    src/core/edit_drag_state.cpp
     src/core/edit_history.cpp
     src/core/exif.cpp
     src/core/help.cpp
@@ -40,6 +41,7 @@ add_library(blinker_core STATIC
     src/core/keymap.cpp
     src/core/mousemap.cpp
     src/core/nav_arrows.cpp
+    src/core/object_drag_state.cpp
     src/core/ocr_service.cpp
     src/core/ocr_text.cpp
     src/core/pixel_convert.cpp
