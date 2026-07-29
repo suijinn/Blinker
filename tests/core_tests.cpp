@@ -46,6 +46,7 @@
 #include "core/text_style.h"
 #include "core/unicode.h"
 #include "core/version.h"
+#include "core/view_text.h"
 #include "core/viewport.h"
 
 namespace {
@@ -3654,6 +3655,112 @@ void testBuildTextStyleMenu() {
     CHECK(styled.colorIndex == styled.familyBase + 1);
 }
 
+void testWindowTitle() {
+    TitleState state;
+    state.appName = "Blinker v1.2.3 (abc1234)";
+
+    // 一覧が空で貼り付けでもない(起動直後)ならアプリ名だけ
+    CHECK(windowTitle(state) == "Blinker v1.2.3 (abc1234)");
+
+    // 貼り付け画像にはファイル名も一覧内の位置も無いので、そこだけ別の書式にする
+    state.fromClipboard = true;
+    state.zoom = 1.0f;
+    CHECK(windowTitle(state) == "(クリップボード) 100% - Blinker v1.2.3 (abc1234)");
+    state.edited = true;
+    CHECK(windowTitle(state) == "(クリップボード) (編集済み) 100% - Blinker v1.2.3 (abc1234)");
+
+    state.fromClipboard = false;
+    state.edited = false;
+    state.filename = "a.png";
+    state.index = 0;
+    state.count = 3;
+    state.zoom = 0.5f;
+    CHECK(windowTitle(state) == "a.png [1/3] 50% - Blinker v1.2.3 (abc1234)");
+    state.index = 2;
+    state.zoom = 1.255f;  // 四捨五入して整数のパーセントにする
+    state.edited = true;
+    CHECK(windowTitle(state) == "a.png [3/3] (編集済み) 126% - Blinker v1.2.3 (abc1234)");
+
+    // まだ / もう表示していない画像の倍率は出さない(編集済みの印も出ない)
+    state.loading = true;
+    CHECK(windowTitle(state) == "a.png [3/3] (読み込み中) - Blinker v1.2.3 (abc1234)");
+    state.failed = true;  // 失敗が最優先
+    CHECK(windowTitle(state) == "a.png [3/3] (読み込み失敗) - Blinker v1.2.3 (abc1234)");
+}
+
+void testStatusText() {
+    DecodedImage image;
+    image.width = 4;
+    image.height = 3;
+
+    StatusTextState state;
+    // 画像も通知も無ければ空(ステータスバーは出ているが中身は空)
+    CHECK(statusText(state).empty());
+
+    state.image = &image;
+    CHECK(statusText(state) == "4 x 3 px  |  ツール: 矩形");
+    state.tool = EditTool::Marker;
+    state.recursive = true;
+    CHECK(statusText(state) == "4 x 3 px  |  サブフォルダ含む  |  ツール: マーカー");
+    state.recursive = false;
+    state.tool = EditTool::Rect;
+
+    // 縮小して取り込んだ画像はズーム率が元の大きさに対する比でなくなるので明示する
+    image.sourceWidth = 40;
+    image.sourceHeight = 30;
+    CHECK(statusText(state) == "4 x 3 px (元 40 x 30 を縮小表示)  |  ツール: 矩形");
+    image.sourceWidth = 0;
+    image.sourceHeight = 0;
+
+    // 多ページ: 表示名があれば添える。再生の状態はアニメーションだけ
+    FrameStatus frame;
+    frame.unitLabel = "ページ";
+    frame.index = 1;
+    frame.count = 5;
+    state.frame = frame;
+    CHECK(statusText(state) == "4 x 3 px  |  ページ 2/5  |  ツール: 矩形");
+    state.frame->label = "256 x 256";
+    CHECK(statusText(state) == "4 x 3 px  |  ページ 2/5 (256 x 256)  |  ツール: 矩形");
+
+    state.frame->label = {};
+    state.frame->unitLabel = "フレーム";
+    state.frame->animation = true;
+    CHECK(statusText(state) == "4 x 3 px  |  フレーム 2/5 停止中  |  ツール: 矩形");
+    state.frame->playing = true;
+    CHECK(statusText(state) == "4 x 3 px  |  フレーム 2/5 再生中  |  ツール: 矩形");
+
+    // 通知は他の何よりも優先する(画像の情報を押しのけて出る)
+    state.message = "保存しました";
+    CHECK(statusText(state) == "保存しました");
+
+    // 失敗した段階とコードまで出す(現物が手元にない不具合を切り分けられるように)
+    state.message = {};
+    state.image = nullptr;
+    state.frame.reset();
+    state.failed = true;
+    CHECK(statusText(state) == "読み込み失敗");
+    state.error = "ピクセル取得 (0x88982F50)";
+    CHECK(statusText(state) == "読み込み失敗: ピクセル取得 (0x88982F50)");
+}
+
+void testPixelInfoText() {
+    DecodedImage image;
+    image.width = 2;
+    image.height = 1;
+    // PBGRA。(0,0) は不透明な赤、(1,0) は 50% の緑(事前乗算済み)
+    image.pixels = {0, 0, 255, 255, 0, 128, 0, 128};
+
+    CHECK(pixelInfoText(image, 0, 0) == "(0, 0)  #FF0000  RGB(255, 0, 0)");
+    // 事前乗算を解いて元の色を出す。不透明でなければアルファも添える
+    CHECK(pixelInfoText(image, 1, 0) == "(1, 0)  #00FF00  RGBA(0, 255, 0, 128)");
+
+    // 画像の外(カーソルが余白の上にある)なら何も出さない
+    CHECK(pixelInfoText(image, 2, 0).empty());
+    CHECK(pixelInfoText(image, 0, 1).empty());
+    CHECK(pixelInfoText(image, -1, 0).empty());
+    CHECK(pixelInfoText(image, 0, -1).empty());
+}
+
 void testAnnotationGeometry() {
     AnnotationSpec rect;
     rect.kind = AnnotationSpec::Kind::Rect;
@@ -6870,6 +6977,9 @@ int main() {
     testBuildSidebarMenu();
     testBuildObjectMenu();
     testBuildTextStyleMenu();
+    testWindowTitle();
+    testStatusText();
+    testPixelInfoText();
     testAppSidebar();
     testAppSidebarResize();
     testAppHelpSidebar();

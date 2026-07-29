@@ -30,6 +30,7 @@
 #include "core/sidebar_state.h"
 #include "core/sort_order.h"
 #include "core/text_edit_state.h"
+#include "core/view_text.h"
 #include "core/viewport.h"
 #include "platform/annotation.h"
 #include "platform/clipboard.h"
@@ -663,6 +664,14 @@ private:
      * @return アニメーションなら "フレーム"、多ページなら "ページ"。
      */
     std::string_view frameUnitLabel() const;
+
+    /**
+     * @brief ステータスバーに出すフレーム情報を組み立てる。
+     * @return フレームが複数あればその情報。1 枚だけなら std::nullopt。
+     * @note 返した FrameStatus はフレーム列 (sequence_) の文字列を参照するので、
+     *       表示文字列を組み立てる間だけ有効。
+     */
+    std::optional<FrameStatus> frameStatus() const;
 
     /// @brief 表示変換の変更をタイトル・再描画へ反映する。
     void onViewChanged();
