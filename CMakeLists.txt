@@ -41,6 +41,7 @@ add_library(blinker_core STATIC
     src/core/image_origin.cpp
     src/core/image_scale.cpp
     src/core/keymap.cpp
+    src/core/menu.cpp
     src/core/mousemap.cpp
     src/core/nav_arrows.cpp
     src/core/object_drag_state.cpp

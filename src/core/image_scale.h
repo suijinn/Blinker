@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <utility>
 
 #include "platform/decoder.h"
 
@@ -59,5 +60,19 @@ inline constexpr uint32_t kMaxResizeDimension = 16384;
  */
 std::shared_ptr<DecodedImage> resizeImage(const DecodedImage& src, uint32_t width,
                                           uint32_t height);
+
+/**
+ * @brief 縦横比を保ったまま倍率を掛けた大きさを求める。
+ *
+ * リサイズのプリセット(倍率・長辺の指定)から実際の幅と高さを出すのに使う。
+ * メニューへ変換後の大きさを添えるときと、実際に resizeImage を呼ぶときで
+ * 同じ値になるよう、計算はここに 1 つだけ置く。
+ *
+ * @param[in] width  元の幅(ピクセル)。
+ * @param[in] height 元の高さ(ピクセル)。
+ * @param[in] factor 掛ける倍率。
+ * @return 変換後の {幅, 高さ}。丸めで 0 にならないよう最低 1px は残す。
+ */
+std::pair<uint32_t, uint32_t> scaledSize(uint32_t width, uint32_t height, double factor);
 
 } // namespace blinker

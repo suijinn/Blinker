@@ -27,6 +27,22 @@ std::optional<EditTool> toolFromName(std::string_view name) {
 
 }  // namespace
 
+std::string_view toolLabel(const EditTool tool) {
+    switch (tool) {
+    case EditTool::Crop:    return "トリミング";
+    case EditTool::Rect:    return "矩形";
+    case EditTool::Ellipse: return "楕円";
+    case EditTool::Arrow:   return "矢印";
+    case EditTool::Line:    return "直線";
+    case EditTool::Pen:     return "ペン (手書き)";
+    case EditTool::Marker:  return "マーカー";
+    case EditTool::Number:  return "連番マーカー";
+    case EditTool::Text:    return "テキスト";
+    case EditTool::Ocr:     return "文字認識";
+    }
+    return "";
+}
+
 void EditStyle::setTool(EditTool tool) {
     // トリミングは一度きりなので、戻り先として直前の図形ツールを覚えておく
     if (tool != EditTool::Crop) toolAfterCrop_ = tool;

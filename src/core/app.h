@@ -6,7 +6,6 @@
 #include <optional>
 #include <string>
 #include <string_view>
-#include <utility>
 #include <vector>
 
 #include "core/animation.h"
@@ -22,6 +21,7 @@
 #include "core/image_list.h"
 #include "core/image_origin.h"
 #include "core/keymap.h"
+#include "core/menu.h"
 #include "core/mousemap.h"
 #include "core/object_drag_state.h"
 #include "core/ocr_service.h"
@@ -44,19 +44,6 @@
  */
 
 namespace blinker {
-
-/**
- * @brief ポップアップメニューの 1 項目。
- *
- * children が空でなければサブメニューになる。separator = true の項目は区切り線
- * (text・children は無視される)。
- */
-struct MenuItem {
-    std::string text;                 ///< 表示文字列(UTF-8)
-    bool checked = false;             ///< チェックマークを付けるか
-    bool separator = false;           ///< 区切り線として扱うか
-    std::vector<MenuItem> children;   ///< サブメニューの項目(空なら末端項目)
-};
 
 /**
  * @brief App がウィンドウ層に要求するサービス。
@@ -866,63 +853,17 @@ private:
     void extendPenPoints(float minDistancePx);
 
     /**
-     * @brief ツール切り替えメニューの末端項目が表す操作。
-     * @note 設定系(SelectTool 以外)はメニューを再表示して続けて選択できる。
+     * @brief 使えるフォントかを答える述語を返す(メニューの組み立てへ渡す)。
+     * @return ラスタライザへ問い合わせる述語。
+     * @note 返した述語は this を捕まえているので、App より長生きさせないこと。
      */
-    struct EditMenuEntry {
-        /// @brief 末端項目が表す操作の種類。
-        enum class Action {
-            SelectTool, StrokeWidth, FontSize, FontFamily, PickColor,
-            FillAlpha, PickFillColor, BorderWidth, PickBorderColor,
-            ResizePercent,  ///< 画像を value % にリサイズする(縦横比を保つ)
-            ResizeLongEdge  ///< 画像の長辺を value px にリサイズする(縦横比を保つ)
-        };
-        Action action;                    ///< 操作の種類
-        EditTool tool = EditTool::Rect;   ///< SelectTool で選ばれたツール
-        float value = 0;                  ///< 設定系の値
-        std::string family;               ///< FontFamily で選ばれたフォント名(UTF-8)
-    };
-
-    /// @brief サイドバー(ファイル名一覧)を右クリックしたときのメニューの末端項目。
-    struct SidebarMenuEntry {
-        /// @brief 末端項目が表す操作の種類。
-        enum class Action { SortKey, SortAscending, SortDescending, ToggleRecursive };
-        Action action;                ///< 操作の種類
-        SortKey key = SortKey::Name;  ///< SortKey で選ばれた並び替えキー
-    };
-
-    /// @brief 注釈オブジェクトを右クリックしたときのメニューの末端項目。
-    struct ObjectMenuEntry {
-        /// @brief 末端項目が表す操作の種類。
-        enum class Action {
-            EditText, Delete, Angle, StrokeWidth, StrokeAlpha, FontSize, FontFamily, PickColor,
-            FillAlpha, PickFillColor, BorderWidth, PickBorderColor, Number
-        };
-        Action action;       ///< 操作の種類
-        /// Angle/StrokeWidth/StrokeAlpha/FontSize/FillAlpha/BorderWidth/Number の値
-        float value = 0;
-        std::string family;  ///< FontFamily で選ばれたフォント名(UTF-8)
-    };
+    FontAvailableFn fontAvailable() const;
 
     /**
-     * @brief フォント選択メニューに並べる候補を求める。
-     *
-     * 定義済みの候補のうち、ラスタライザが「使える」と答えたものだけを返す。
-     * current が候補に無い場合(ini で任意のフォントを指定した場合など)は
-     * 末尾に足して、選び直したあとでも戻れるようにする。
-     *
-     * @param[in] current 現在のフォントファミリ名(UTF-8)。空なら既定フォント。
-     * @return 表示ラベルとフォントファミリ名の組。並びは定義順。
+     * @brief 表示中の画像の大きさをメニュー用に返す。
+     * @return 画像の幅と高さ。表示する画像が無ければ std::nullopt。
      */
-    std::vector<std::pair<std::string, std::string>> fontFamilyChoices(
-        std::string_view current) const;
-
-    /**
-     * @brief ツール切り替えメニューの構造を組み立てる。
-     * @param[out] entries 末端項目の一覧。entries[i] が showContextMenu の返す index i に対応する。
-     * @return メニュー構造。現在のツールと現在の設定値にチェックが付く。
-     */
-    std::vector<MenuItem> buildEditMenu(std::vector<EditMenuEntry>& entries) const;
+    std::optional<MenuImageSize> menuImageSize() const;
 
     /**
      * @brief ツール切り替えメニューを表示し、選ばれた項目を適用する。
@@ -937,16 +878,6 @@ private:
      * @return メニューを閉じるなら true。設定系で再表示するなら false。
      */
     bool applyEditChoice(const EditMenuEntry& entry);
-
-    /**
-     * @brief リサイズのプリセットメニューを組み立てる。
-     * @param[out] entries 末端項目の一覧。entries[i] が showContextMenu の返す index i に対応する。
-     * @return メニュー構造(倍率と長辺の 2 つのサブメニュー)。項目には変換後の
-     *         大きさを添える(選ぶ前に結果が分かるように)。
-     * @note ツール切り替えメニューへ埋め込むためにも呼ばれるので、entries は
-     *       呼び出し側の並びに続けて積む(深さ優先の通し番号を保つ)。
-     */
-    std::vector<MenuItem> buildResizeMenu(std::vector<EditMenuEntry>& entries) const;
 
     /**
      * @brief リサイズのプリセットメニューを表示し、選ばれた大きさへ変換する。
@@ -964,13 +895,6 @@ private:
      * @param[in] height 変換後の高さ(ピクセル)。
      */
     void applyResize(uint32_t width, uint32_t height);
-
-    /**
-     * @brief サイドバー(ファイル名一覧)のメニュー構造を組み立てる。
-     * @param[out] entries 末端項目の一覧。entries[i] が showContextMenu の返す index i に対応する。
-     * @return メニュー構造。現在の並び順・向き・再帰の有無にチェックが付く。
-     */
-    std::vector<MenuItem> buildSidebarMenu(std::vector<SidebarMenuEntry>& entries) const;
 
     /**
      * @brief サイドバーのメニューを表示し、選ばれた項目を適用する。
@@ -1014,15 +938,6 @@ private:
      *         (代わりにラバーバンドを出す)。
      */
     bool previewVisible() const;
-
-    /**
-     * @brief 注釈オブジェクトのメニュー構造を組み立てる。
-     * @param[in]  spec    対象の注釈。表示する項目の内容に反映する。
-     * @param[out] entries 末端項目の一覧。entries[i] が showContextMenu の返す index i に対応する。
-     * @return メニュー構造。
-     */
-    std::vector<MenuItem> buildObjectMenu(const AnnotationSpec& spec,
-                                          std::vector<ObjectMenuEntry>& entries) const;
 
     /**
      * @brief 選択中の注釈のメニューを表示し、選ばれた操作を適用する。
