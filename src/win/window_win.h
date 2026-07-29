@@ -133,6 +133,14 @@ public:
      */
     void startTimer(unsigned milliseconds) override;
 
+    /**
+     * @brief アニメーションのフレーム送り用タイマーを設定する。
+     * @param[in] milliseconds 満了までの時間(ミリ秒)。満了で App::onFrameTimer が
+     *                         呼ばれる。0 なら動いているタイマーを止める。
+     * @note startTimer(通知メッセージ用)とは別のタイマー ID を使う。
+     */
+    void setFrameTimer(unsigned milliseconds) override;
+
     /// @brief メッセージループの終了を要求する (PostQuitMessage)。
     void quit() override;
 

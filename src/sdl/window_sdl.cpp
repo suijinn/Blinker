@@ -68,12 +68,13 @@ bool WindowSdl::create(FontStb& font) {
         return false;
     }
     renderer_ = std::make_unique<RendererSdl>(sdlRenderer_, font);
-    const Uint32 base = SDL_RegisterEvents(4);
+    const Uint32 base = SDL_RegisterEvents(5);
     if (base == 0) return false;
     eventDecoded_ = base;
     eventTimer_ = base + 1;
     eventOcr_ = base + 2;
     eventScan_ = base + 3;
+    eventFrame_ = base + 4;
     // カーソルは SDL_Quit がまとめて解放する(ウィンドウ・レンダラと同じ扱い)
     arrowCursor_ = SDL_CreateSystemCursor(SDL_SYSTEM_CURSOR_DEFAULT);
     resizeCursor_ = SDL_CreateSystemCursor(SDL_SYSTEM_CURSOR_EW_RESIZE);
@@ -156,6 +157,10 @@ void WindowSdl::handleEvent(const SDL_Event& event) {
     }
     if (event.type == eventScan_) {
         if (app_) app_->onScanCompleted();
+        return;
+    }
+    if (event.type == eventFrame_) {
+        if (app_) app_->onFrameTimer();
         return;
     }
     switch (event.type) {
@@ -349,6 +354,26 @@ void WindowSdl::startTimer(unsigned milliseconds) {
             event.type = self->eventTimer_;
             SDL_PushEvent(&event);
             return 0;  // 単発
+        },
+        this);
+}
+
+void WindowSdl::setFrameTimer(unsigned milliseconds) {
+    // 通知メッセージ用の startTimer とは別のタイマーにする(共用すると通知が出た
+    // 瞬間に再生が止まる)
+    if (frameTimerId_ != 0) {
+        SDL_RemoveTimer(frameTimerId_);
+        frameTimerId_ = 0;
+    }
+    if (milliseconds == 0) return;
+    frameTimerId_ = SDL_AddTimer(
+        milliseconds,
+        [](void* userdata, SDL_TimerID, Uint32) -> Uint32 {
+            auto* self = static_cast<WindowSdl*>(userdata);
+            SDL_Event event{};
+            event.type = self->eventFrame_;
+            SDL_PushEvent(&event);
+            return 0;  // 単発。次のフレームの分は App が張り直す
         },
         this);
 }

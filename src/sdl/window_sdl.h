@@ -142,6 +142,14 @@ public:
      */
     void startTimer(unsigned milliseconds) override;
 
+    /**
+     * @brief アニメーションのフレーム送り用タイマーを設定する。
+     * @param[in] milliseconds 満了までの時間(ミリ秒)。満了で App::onFrameTimer が
+     *                         呼ばれる。0 なら動いているタイマーを止める。
+     * @note startTimer(通知メッセージ用)とは別のタイマーを使う。
+     */
+    void setFrameTimer(unsigned milliseconds) override;
+
     /// @brief イベントループの終了を要求する。
     void quit() override;
 
@@ -198,7 +206,9 @@ private:
     Uint32 eventTimer_ = 0;    ///< 同・タイマー満了イベント
     Uint32 eventOcr_ = 0;      ///< 同・文字認識完了イベント
     Uint32 eventScan_ = 0;     ///< 同・サブフォルダ走査完了イベント
+    Uint32 eventFrame_ = 0;    ///< 同・アニメーションのフレーム送りイベント
     SDL_TimerID timerId_ = 0;
+    SDL_TimerID frameTimerId_ = 0;  ///< アニメーション用(timerId_ とは別に持つ)
     SDL_Cursor* arrowCursor_ = nullptr;   ///< 既定のカーソル
     SDL_Cursor* resizeCursor_ = nullptr;  ///< サイドバーの幅変更用(左右の矢印)
     bool resizeCursorActive_ = false;     ///< 今 resizeCursor_ を出しているか

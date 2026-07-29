@@ -22,6 +22,9 @@ constexpr std::array kCommandLabels = {
     CommandLabel{Command::PrevImage, "前の画像"},
     CommandLabel{Command::FirstImage, "先頭の画像"},
     CommandLabel{Command::LastImage, "末尾の画像"},
+    CommandLabel{Command::TogglePlay, "アニメーション再生 / 一時停止"},
+    CommandLabel{Command::NextFrame, "次のフレーム / ページ"},
+    CommandLabel{Command::PrevFrame, "前のフレーム / ページ"},
     CommandLabel{Command::ZoomIn, "拡大"},
     CommandLabel{Command::ZoomOut, "縮小"},
     CommandLabel{Command::ZoomFit, "ウィンドウにフィット"},
@@ -144,6 +147,9 @@ std::vector<HelpLine> buildHelpLines(const Keymap& keymap, const Mousemap& mouse
     row(Command::PrevImage);
     row(Command::FirstImage);
     row(Command::LastImage);
+    row(Command::TogglePlay);
+    row(Command::NextFrame);
+    row(Command::PrevFrame);
     row(Command::ZoomIn);
     row(Command::ZoomOut);
     row(Command::ZoomFit);

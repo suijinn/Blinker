@@ -8,9 +8,11 @@
 #include <algorithm>
 #include <format>
 #include <new>
+#include <numeric>
 #include <string_view>
 #include <vector>
 
+#include "core/animation.h"
 #include "core/exif.h"
 #include "win/wic_factory.h"
 
@@ -107,11 +109,268 @@ ComPtr<IWICBitmapSource> colorTransformToSrgb(IWICImagingFactory* factory,
     return transform;
 }
 
+// メタデータから符号なし整数を 1 つ読む。型は形式によって UI1 / UI2 / UI4 と揺れる
+bool readMetadataUint(IWICMetadataQueryReader* reader, const wchar_t* name, unsigned& out) {
+    if (!reader) return false;
+    PROPVARIANT value;
+    PropVariantInit(&value);
+    bool ok = false;
+    if (SUCCEEDED(reader->GetMetadataByName(name, &value))) {
+        switch (value.vt) {
+        case VT_UI1: out = value.bVal; ok = true; break;
+        case VT_UI2: out = value.uiVal; ok = true; break;
+        case VT_UI4: out = value.ulVal; ok = true; break;
+        default: break;
+        }
+    }
+    PropVariantClear(&value);
+    return ok;
+}
+
+// GIF の繰り返し回数(NETSCAPE2.0 拡張)。0 = 無限。拡張が無ければ 1 回だけ再生
+int readGifLoopCount(IWICMetadataQueryReader* reader) {
+    if (!reader) return 1;
+    PROPVARIANT value;
+    PropVariantInit(&value);
+    int loops = 1;
+    if (SUCCEEDED(reader->GetMetadataByName(L"/appext/Data", &value)) &&
+        value.vt == (VT_UI1 | VT_VECTOR) && value.caub.cElems >= 4 && value.caub.pElems[0] == 3) {
+        // [ブロックサイズ=3][サブブロック ID=1][繰り返し回数 (リトルエンディアン 16bit)]
+        loops = value.caub.pElems[2] | (value.caub.pElems[3] << 8);
+    }
+    PropVariantClear(&value);
+    return loops;
+}
+
+// ICO の表示順(大きい順)。ファイル内の先頭は 16x16 のことが多く、そのまま出すと
+// 「アイコンを開いたのに小さすぎる」ことになるため、既定で最大サイズを見せる
+std::vector<UINT> icoFrameOrder(IWICBitmapDecoder* decoder, UINT frameCount) {
+    std::vector<UINT> order(frameCount);
+    std::iota(order.begin(), order.end(), 0u);
+    std::vector<uint64_t> area(frameCount, 0);
+    for (UINT i = 0; i < frameCount; ++i) {
+        ComPtr<IWICBitmapFrameDecode> frame;
+        UINT w = 0, h = 0;
+        if (SUCCEEDED(decoder->GetFrame(i, &frame)) && SUCCEEDED(frame->GetSize(&w, &h))) {
+            area[i] = static_cast<uint64_t>(w) * h;
+        }
+    }
+    // 同じ大きさ(色数違い)はファイル内の順序を保つため stable_sort
+    std::stable_sort(order.begin(), order.end(),
+                     [&area](UINT a, UINT b) { return area[a] > area[b]; });
+    return order;
+}
+
+// 表示順の index を WIC のフレーム番号へ直す。ICO 以外はそのまま
+UINT resolveFrameIndex(IWICBitmapDecoder* decoder, UINT frameCount, UINT index) {
+    GUID container{};
+    if (FAILED(decoder->GetContainerFormat(&container)) ||
+        container != GUID_ContainerFormatIco) {
+        return index;
+    }
+    const std::vector<UINT> order = icoFrameOrder(decoder, frameCount);
+    return index < order.size() ? order[index] : index;
+}
+
+// フレームを 32bpp PBGRA へ変換して取り出す(縮小・色変換・EXIF 回転は行わない)。
+// アニメーションの各コマ用。GIF のコマは小さいので上限の心配がない
+std::shared_ptr<DecodedImage> framePixels(IWICImagingFactory* factory,
+                                          IWICBitmapFrameDecode* frame) {
+    UINT width = 0;
+    UINT height = 0;
+    if (FAILED(frame->GetSize(&width, &height)) || width == 0 || height == 0) return nullptr;
+
+    ComPtr<IWICFormatConverter> converter;
+    HRESULT hr = factory->CreateFormatConverter(&converter);
+    if (SUCCEEDED(hr)) {
+        hr = converter->Initialize(frame, GUID_WICPixelFormat32bppPBGRA,
+                                   WICBitmapDitherTypeNone, nullptr, 0.0,
+                                   WICBitmapPaletteTypeCustom);
+    }
+    if (FAILED(hr)) return nullptr;
+
+    try {
+        auto image = std::make_shared<DecodedImage>();
+        image->width = width;
+        image->height = height;
+        image->pixels.resize(static_cast<size_t>(width) * height * 4);
+        if (FAILED(converter->CopyPixels(nullptr, width * 4,
+                                         static_cast<UINT>(image->pixels.size()),
+                                         image->pixels.data()))) {
+            return nullptr;
+        }
+        return image;
+    } catch (const std::bad_alloc&) {
+        return nullptr;
+    }
+}
+
 } // namespace
 
 std::shared_ptr<DecodedImage> DecoderWic::decode(const std::filesystem::path& path,
                                                  std::string* error) {
     return decodeInternal(path, error, false);
+}
+
+std::shared_ptr<DecodedImage> DecoderWic::decodePage(const std::filesystem::path& path,
+                                                     const uint32_t index, std::string* error) {
+    return decodeInternal(path, error, false, index);
+}
+
+SequenceInfo DecoderWic::probeSequence(const std::filesystem::path& path) {
+    SequenceInfo info;
+    IWICImagingFactory* factory = wicFactoryForThisThread();
+    if (!factory) return info;
+
+    ComPtr<IWICBitmapDecoder> decoder;
+    if (FAILED(factory->CreateDecoderFromFilename(path.c_str(), nullptr, GENERIC_READ,
+                                                  WICDecodeMetadataCacheOnDemand, &decoder))) {
+        return info;
+    }
+    UINT frameCount = 0;
+    if (FAILED(decoder->GetFrameCount(&frameCount)) || frameCount < 2) return info;
+
+    GUID container{};
+    if (FAILED(decoder->GetContainerFormat(&container))) return info;
+
+    if (container == GUID_ContainerFormatGif) {
+        info.kind = SequenceKind::Animation;
+        info.frameCount = frameCount;
+        ComPtr<IWICMetadataQueryReader> reader;
+        if (SUCCEEDED(decoder->GetMetadataQueryReader(&reader))) {
+            info.loopCount = readGifLoopCount(reader.Get());
+        }
+        return info;
+    }
+
+    // TIFF のページ、ICO のサイズ違い。素性の分からない多フレーム形式もこちらへ寄せる
+    // (独立にデコードできると仮定するのが安全。アニメとして扱うと合成を誤る)
+    info.kind = SequenceKind::Pages;
+    info.frameCount = frameCount;
+    if (container == GUID_ContainerFormatIco) {
+        // 大きい順に並べ替え、各サイズを表示名にする(index 0 = 最大 = decode が返すもの)
+        info.labels.reserve(frameCount);
+        for (const UINT wicIndex : icoFrameOrder(decoder.Get(), frameCount)) {
+            ComPtr<IWICBitmapFrameDecode> frame;
+            UINT w = 0, h = 0;
+            if (SUCCEEDED(decoder->GetFrame(wicIndex, &frame)) &&
+                SUCCEEDED(frame->GetSize(&w, &h))) {
+                info.labels.push_back(std::format("{} x {}", w, h));
+            } else {
+                info.labels.emplace_back();
+            }
+        }
+    }
+    return info;
+}
+
+bool DecoderWic::decodeAnimation(const std::filesystem::path& path, const AnimationLimits& limits,
+                                 ImageSequence& out, std::string* error) {
+    IWICImagingFactory* factory = wicFactoryForThisThread();
+    if (!factory) {
+        setError(error, "WICファクトリ生成");
+        return false;
+    }
+    ComPtr<IWICBitmapDecoder> decoder;
+    HRESULT hr = factory->CreateDecoderFromFilename(path.c_str(), nullptr, GENERIC_READ,
+                                                    WICDecodeMetadataCacheOnDemand, &decoder);
+    if (FAILED(hr)) {
+        setError(error, "デコーダ生成", hr);
+        return false;
+    }
+    UINT frameCount = 0;
+    if (FAILED(decoder->GetFrameCount(&frameCount)) || frameCount < 2) return false;
+    if (frameCount > limits.maxFrames) {
+        setError(error, std::format("フレーム数が多すぎる ({})", frameCount));
+        out.truncated = true;
+        return false;
+    }
+
+    // 論理画面の大きさ。取れなければ各フレームの矩形の和で代用する
+    ComPtr<IWICMetadataQueryReader> fileReader;
+    unsigned screenWidth = 0;
+    unsigned screenHeight = 0;
+    int loopCount = 1;
+    if (SUCCEEDED(decoder->GetMetadataQueryReader(&fileReader))) {
+        readMetadataUint(fileReader.Get(), L"/logscrdesc/Width", screenWidth);
+        readMetadataUint(fileReader.Get(), L"/logscrdesc/Height", screenHeight);
+        loopCount = readGifLoopCount(fileReader.Get());
+    }
+
+    // 各フレームの位置・大きさ・遅延・後始末を先に集める(画素はまだ読まない)
+    struct FrameMeta {
+        ComPtr<IWICBitmapFrameDecode> frame;
+        unsigned left = 0;
+        unsigned top = 0;
+        UINT width = 0;
+        UINT height = 0;
+        uint32_t delayMs = 0;
+        FrameDisposal disposal = FrameDisposal::None;
+    };
+    std::vector<FrameMeta> metas(frameCount);
+    for (UINT i = 0; i < frameCount; ++i) {
+        FrameMeta& meta = metas[i];
+        if (FAILED(decoder->GetFrame(i, &meta.frame)) ||
+            FAILED(meta.frame->GetSize(&meta.width, &meta.height))) {
+            setError(error, std::format("フレーム取得 ({}/{})", i + 1, frameCount));
+            return false;
+        }
+        ComPtr<IWICMetadataQueryReader> reader;
+        if (SUCCEEDED(meta.frame->GetMetadataQueryReader(&reader))) {
+            readMetadataUint(reader.Get(), L"/imgdesc/Left", meta.left);
+            readMetadataUint(reader.Get(), L"/imgdesc/Top", meta.top);
+            unsigned delay = 0;  // GIF の遅延は 1/100 秒単位
+            if (readMetadataUint(reader.Get(), L"/grctlext/Delay", delay)) {
+                meta.delayMs = static_cast<uint32_t>(delay) * 10;
+            }
+            unsigned disposal = 0;
+            if (readMetadataUint(reader.Get(), L"/grctlext/Disposal", disposal)) {
+                if (disposal == 2) meta.disposal = FrameDisposal::Background;
+                else if (disposal == 3) meta.disposal = FrameDisposal::Previous;
+            }
+        }
+        screenWidth = std::max<unsigned>(screenWidth, meta.left + meta.width);
+        screenHeight = std::max<unsigned>(screenHeight, meta.top + meta.height);
+    }
+    if (screenWidth == 0 || screenHeight == 0) return false;
+    if (screenWidth > kMaxDimension || screenHeight > kMaxDimension) {
+        setError(error, std::format("論理画面が大きすぎる ({} x {})", screenWidth, screenHeight));
+        return false;
+    }
+
+    // 展開後の総量は「論理画面 x フレーム数」。超えるなら静止画のまま扱う
+    const size_t totalBytes =
+        static_cast<size_t>(screenWidth) * screenHeight * 4 * frameCount;
+    if (totalBytes > limits.maxBytes) {
+        setError(error, std::format("展開に {} MB 必要", (totalBytes + (1 << 20) - 1) >> 20));
+        out.truncated = true;
+        return false;
+    }
+
+    AnimationCompositor compositor(screenWidth, screenHeight);
+    out.kind = SequenceKind::Animation;
+    out.loopCount = loopCount;
+    out.frames.clear();
+    out.frames.reserve(frameCount);
+    for (UINT i = 0; i < frameCount; ++i) {
+        const FrameMeta& meta = metas[i];
+        std::shared_ptr<DecodedImage> sub = framePixels(factory, meta.frame.Get());
+        if (!sub) {
+            setError(error, std::format("フレーム展開 ({}/{})", i + 1, frameCount));
+            return false;
+        }
+        // GIF の透明色は二値なので、事前乗算どうしの Over が「不透明な画素だけ置き換える」
+        // という GIF 本来の重ね方と一致する
+        std::shared_ptr<DecodedImage> composed =
+            compositor.addFrame(*sub, static_cast<int32_t>(meta.left),
+                                static_cast<int32_t>(meta.top), FrameBlend::Over, meta.disposal);
+        if (!composed) {
+            setError(error, std::format("フレーム合成 ({}/{})", i + 1, frameCount));
+            return false;
+        }
+        out.frames.push_back(FrameEntry{std::move(composed), meta.delayMs, {}});
+    }
+    return true;
 }
 
 std::shared_ptr<DecodedImage> DecoderWic::decodeColorManaged(const std::filesystem::path& path,
@@ -125,7 +384,8 @@ std::shared_ptr<DecodedImage> DecoderWic::decodeColorManaged(const std::filesyst
 
 std::shared_ptr<DecodedImage> DecoderWic::decodeInternal(const std::filesystem::path& path,
                                                         std::string* error,
-                                                        const bool applyColorTransform) {
+                                                        const bool applyColorTransform,
+                                                        const uint32_t frameIndex) {
     IWICImagingFactory* factory = wicFactoryForThisThread();
     if (!factory) {
         setError(error, "WICファクトリ生成");
@@ -142,8 +402,22 @@ std::shared_ptr<DecodedImage> DecoderWic::decodeInternal(const std::filesystem::
         return nullptr;
     }
 
+    // ICO だけは表示順(大きい順)と WIC のフレーム番号が食い違う。index 0 = 最大サイズ
+    UINT frameCount = 0;
+    UINT wicFrame = frameIndex;
+    if (SUCCEEDED(decoder->GetFrameCount(&frameCount)) && frameCount > 1) {
+        if (frameIndex >= frameCount) {
+            setError(error, std::format("フレーム番号が範囲外 ({} / {})", frameIndex, frameCount));
+            return nullptr;
+        }
+        wicFrame = resolveFrameIndex(decoder.Get(), frameCount, frameIndex);
+    } else if (frameIndex != 0) {
+        setError(error, std::format("フレーム番号が範囲外 ({} / 1)", frameIndex));
+        return nullptr;
+    }
+
     ComPtr<IWICBitmapFrameDecode> frame;
-    hr = decoder->GetFrame(0, &frame);
+    hr = decoder->GetFrame(wicFrame, &frame);
     if (FAILED(hr)) {
         setError(error, "フレーム取得", hr);
         return nullptr;

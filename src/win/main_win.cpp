@@ -69,7 +69,8 @@ int WINAPI wWinMain(HINSTANCE hinstance, HINSTANCE, PWSTR, int showCommand) {
 
         // 埋め込み ICC プロファイル → sRGB の変換。Display P3 の写真などで色が正しくなる
         DecoderWic decoder(config.getBool("view", "color_management", true));
-        ImageCache cache(decoder, cacheLimitsFromConfig(config));
+        ImageCache cache(decoder, cacheLimitsFromConfig(config),
+                         animationLimitsFromConfig(config));
         FileSystemWin fileSystem;
 
         const bool darkTheme = resolveDarkTheme(config);

@@ -21,6 +21,9 @@ constexpr std::array kCommandNames = {
     CommandName{"prev", Command::PrevImage},
     CommandName{"first", Command::FirstImage},
     CommandName{"last", Command::LastImage},
+    CommandName{"play_pause", Command::TogglePlay},
+    CommandName{"next_frame", Command::NextFrame},
+    CommandName{"prev_frame", Command::PrevFrame},
     CommandName{"zoom_in", Command::ZoomIn},
     CommandName{"zoom_out", Command::ZoomOut},
     CommandName{"fit", Command::ZoomFit},
@@ -146,7 +149,6 @@ Keymap Keymap::defaults() {
     };
     b(KeyCode::Right, Command::NextImage);
     b(KeyCode::Down, Command::NextImage);
-    b(KeyCode::Space, Command::NextImage);
     b(KeyCode::PageDown, Command::NextImage);
     b(KeyCode::Left, Command::PrevImage);
     b(KeyCode::Up, Command::PrevImage);
@@ -154,6 +156,12 @@ Keymap Keymap::defaults() {
     b(KeyCode::PageUp, Command::PrevImage);
     b(KeyCode::Home, Command::FirstImage);
     b(KeyCode::End, Command::LastImage);
+    // Space は「次の画像」ではなく再生 / 一時停止。動画プレイヤーと同じ意味に揃える
+    // (次の画像は Right / Down / PageDown が受け持つ)
+    b(KeyCode::Space, Command::TogglePlay);
+    // フレーム送りは画像遷移と完全に分ける(末尾のページから次のファイルへは進まない)
+    b(KeyCode::Right, Command::NextFrame, false, true);  // Shift+Right
+    b(KeyCode::Left, Command::PrevFrame, false, true);   // Shift+Left
     b(KeyCode::Plus, Command::ZoomIn);
     b(KeyCode::Minus, Command::ZoomOut);
     b(KeyCode{'0'}, Command::ZoomFit);

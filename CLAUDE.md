@@ -51,10 +51,15 @@ cmake --preset linux-release && cmake --build --preset linux-release
   `IAppHost::requestRedraw` → WM_PAINTで描画
 - **スレッドモデル**: App/Viewport/ImageListはUIスレッド専用でスレッド安全ではない。
   ワーカースレッドは3本だけで、どれも同じ形(キュー投入 → 完了をPostMessage):
-  デコードは `ImageCache` 内の1本(UI→ワーカーは `requestNow`/`setPrefetch`、
-  ワーカー→UIは `onDecoded` → `PostMessage(kMsgImageDecoded)` → `App::onDecodeCompleted`。
-  **同じパスで通知が2回来ることがある**: カラーマネジメントは遅延式で、1回目は未変換、
-  2回目が sRGB 変換後。2回目は `App::adoptRefinedImage` が画素だけ差し替える)、
+  デコードは `ImageCache` 内の1本(UI→ワーカーは `requestNow`/`setPrefetch`/
+  `requestSequence`/`requestFrame`、ワーカー→UIは `onDecoded` →
+  `PostMessage(kMsgImageDecoded)` → `App::onDecodeCompleted`。
+  **同じパスで通知が何度も来る**: カラーマネジメントは遅延式で、1回目は未変換、
+  2回目が sRGB 変換後(`App::adoptRefinedImage` が画素だけ差し替える)。
+  多フレーム画像(GIF/多ページTIFF/ICO)ではフレーム構成の調査・全フレーム展開・
+  ページのデコードでも通知が来る(`App::adoptSequence` が拾う)。
+  キャッシュの値は `ImageSequence` で、**中身は書き換えずに作り直して差し替える**
+  コピーオンライトなので、UIスレッドは持ち出した shared_ptr をロックなしで読める)、
   文字認識は `OcrService` 内の1本(`request` → `onCompleted` →
   `PostMessage(kMsgOcrCompleted)` → `App::onOcrCompleted`)、
   サブフォルダの再帰列挙は `ScanService` 内の1本(`request` → `onCompleted` →
@@ -71,6 +76,15 @@ cmake --preset linux-release && cmake --build --preset linux-release
 
 ## 規約・注意点
 
+- **`DecodedImage` は「表示できる1枚」のまま**。アニメGIF・多ページTIFF・ICOの複数サイズは
+  外側の `ImageSequence`(`platform/decoder.h`)で表し、`App::current_` は常にその中の
+  現在のフレームを指す。おかげで保存・コピー・印刷・文字認識・注釈・レンダラは
+  多フレームを意識しない。`frames[0]` は必ず `IImageDecoder::decode` が返すものと同じ絵にする
+  (並び順はデコーダが決めてよい ― ICOは大きい順)。**APNG とアニメWebPは非対応**
+  (WICがフレームを列挙しないため。詳細は architecture.md)
+- **`IAppHost::setFrameTimer` は `startTimer` と共用してはならない**。後者はステータスバーの
+  通知を消すための単発タイマーで、同じIDを張り直して満了時に止める作りのため、
+  共用すると再生中に通知が出た瞬間にアニメーションが止まる
 - 画像ピクセルは常に 32bpp PBGRA(事前乗算)。`DecodedImage` 参照は `shared_ptr` で持ち回る
   (RendererD2DのGPUビットマップキャッシュはshared_ptrをキーにしてアドレス再利用の取り違えを防いでいる)
 - **GPU 側のコピーは `DecodedImage` より小さいことがある**。描画側の上限

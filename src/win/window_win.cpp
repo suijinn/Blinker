@@ -19,6 +19,9 @@ constexpr wchar_t kWindowClass[] = L"BlinkerMainWindow";
 constexpr int kIconResourceId = 101;  // blinker.rc の IDI_APPICON
 constexpr UINT_PTR kMessageTimerId = 1;
 constexpr UINT_PTR kCaretTimerId = 2;
+/// アニメーションのフレーム送り。**kMessageTimerId と共用してはならない**
+/// (通知メッセージが出るたびに再生が止まる)
+constexpr UINT_PTR kFrameTimerId = 3;
 
 struct Modifiers {
     bool ctrl = false;
@@ -230,6 +233,9 @@ LRESULT MainWindow::handleMessage(UINT msg, WPARAM wp, LPARAM lp) {
             if (app_) app_->onTimer();
         } else if (wp == kCaretTimerId) {
             if (app_) app_->onCaretBlink();  // 編集終了で KillTimer される
+        } else if (wp == kFrameTimerId) {
+            KillTimer(hwnd_, kFrameTimerId);  // 単発。次のフレームの分は App が張り直す
+            if (app_) app_->onFrameTimer();
         }
         return 0;
     case WM_LBUTTONUP:
@@ -644,6 +650,14 @@ void MainWindow::handleImeResult(LPARAM lp) {
 
 void MainWindow::startTimer(unsigned milliseconds) {
     SetTimer(hwnd_, kMessageTimerId, milliseconds, nullptr);  // 既存タイマーは上書きされる
+}
+
+void MainWindow::setFrameTimer(unsigned milliseconds) {
+    if (milliseconds == 0) {
+        KillTimer(hwnd_, kFrameTimerId);
+        return;
+    }
+    SetTimer(hwnd_, kFrameTimerId, milliseconds, nullptr);  // 既存タイマーは上書きされる
 }
 
 void MainWindow::quit() {

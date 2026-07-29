@@ -25,6 +25,7 @@ configure_file(src/core/version.h.in
 
 # core: プラットフォーム非依存層。単体テストからもリンクする
 add_library(blinker_core STATIC
+    src/core/animation.cpp
     src/core/annotation_edit.cpp
     src/core/app.cpp
     src/core/config.cpp
