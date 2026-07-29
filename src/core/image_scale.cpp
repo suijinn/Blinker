@@ -224,4 +224,12 @@ std::shared_ptr<DecodedImage> resizeImage(const DecodedImage& src, const uint32_
     return out;
 }
 
+std::pair<uint32_t, uint32_t> scaledSize(const uint32_t width, const uint32_t height,
+                                         const double factor) {
+    const auto scale = [factor](const uint32_t v) {
+        return std::max(1u, static_cast<uint32_t>(std::lround(v * factor)));
+    };
+    return {scale(width), scale(height)};
+}
+
 } // namespace blinker

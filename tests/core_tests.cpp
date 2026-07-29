@@ -28,6 +28,7 @@
 #include "core/image_list.h"
 #include "core/image_origin.h"
 #include "core/keymap.h"
+#include "core/menu.h"
 #include "core/mousemap.h"
 #include "core/nav_arrows.h"
 #include "core/object_drag_state.h"
@@ -3460,6 +3461,199 @@ void testImageOrigin() {
     CHECK(!edits.edited());
 }
 
+void testMenuFontChoices() {
+    // 使えるフォントだけが候補に残る。並びは定義順
+    const FontAvailableFn onlyMeiryo = [](const std::string& f) { return f == "Meiryo"; };
+    const FontFamilyChoices choices = fontFamilyChoices("", onlyMeiryo);
+    CHECK(choices.size() == 2);
+    // 未指定は既定フォント。入っていなくても選び直せるよう必ず出る
+    CHECK(choices[0].family == kDefaultFontFamily && choices[0].label == "游ゴシック");
+    CHECK(choices[1].family == "Meiryo" && choices[1].label == "メイリオ");
+
+    // 候補表に無いフォント(ini で任意に指定した場合)は末尾へ足す。ラベルは名前のまま
+    const FontFamilyChoices custom = fontFamilyChoices("Comic Sans MS", onlyMeiryo);
+    CHECK(custom.size() == 2);
+    CHECK(custom[0].family == "Meiryo");
+    CHECK(custom[1].family == "Comic Sans MS" && custom[1].label == "Comic Sans MS");
+
+    // 現在のフォントが候補表にあれば、使えないと言われても定義順の位置に出る
+    const FontFamilyChoices listed = fontFamilyChoices("Consolas", onlyMeiryo);
+    CHECK(listed.size() == 2);
+    CHECK(listed[0].family == "Meiryo" && listed[1].family == "Consolas");
+}
+
+void testBuildEditMenu() {
+    const Keymap km = Keymap::defaults();
+    const FontAvailableFn all = [](const std::string&) { return true; };
+    EditStyle style;
+    style.setTool(EditTool::Arrow);
+    style.setStrokeWidth(5);
+
+    // 画像が無ければ「画像をリサイズ」は出ない
+    std::vector<EditMenuEntry> entries;
+    const std::vector<MenuItem> items = buildEditMenu(style, km, all, std::nullopt, entries);
+    CHECK(!findMenuItem(items, "画像をリサイズ"));
+    // 末端項目の一覧が index の対応そのものなので、数は一致していなければならない
+    CHECK(entries.size() == countMenuLeaves(items));
+    CHECK(entries[4].action == EditMenuEntry::Action::SelectTool);
+    CHECK(entries[4].tool == EditTool::Arrow);
+    // 末端 index 4(矢印)は、区切り線を挟むぶん items では 5 番目になる
+    CHECK(items[5].checked && !items[3].checked);
+    const MenuItem* stroke = findMenuItem(items, "線の太さ");
+    CHECK(stroke && stroke->text == "線の太さ (5px)");
+    CHECK(stroke->children[3].checked);  // {1,2,3,5,...} の 5px
+
+    // 画像があればリサイズが末尾に付き、その末端は既存の並びに続けて積まれる
+    std::vector<EditMenuEntry> withImage;
+    const std::vector<MenuItem> resizable =
+        buildEditMenu(style, km, all, MenuImageSize{800, 600}, withImage);
+    const MenuItem* resize = findMenuItem(resizable, "画像をリサイズ");
+    CHECK(resize && resize->text == "画像をリサイズ (800 x 600)");
+    CHECK(withImage.size() == countMenuLeaves(resizable));
+    CHECK(withImage.size() == entries.size() + 12);  // 倍率 5 + 長辺 7
+    CHECK(withImage[entries.size()].action == EditMenuEntry::Action::ResizePercent);
+}
+
+void testBuildResizeMenu() {
+    std::vector<EditMenuEntry> entries;
+    const std::vector<MenuItem> items = buildResizeMenu({800, 600}, entries);
+    CHECK(entries.size() == countMenuLeaves(items));
+    // 変換後の大きさを添える(選ぶ前に結果が分かるように)。'\t' で右寄せになる
+    const MenuItem* percent = findMenuItem(items, "倍率");
+    CHECK(percent && percent->children[3].text == "50%\t400 x 300");
+    const MenuItem* longEdge = findMenuItem(items, "長辺を指定");
+    CHECK(longEdge && longEdge->children[2].text == "1920 px\t1920 x 1440");
+    CHECK(entries[3].action == EditMenuEntry::Action::ResizePercent && entries[3].value == 50);
+
+    // 大きさが無くても組み立てられる(0 除算しない)
+    std::vector<EditMenuEntry> empty;
+    const std::vector<MenuItem> zero = buildResizeMenu({0, 0}, empty);
+    CHECK(empty.size() == countMenuLeaves(zero));
+    // 丸めで 0 にならないよう最低 1px は残る
+    CHECK(findMenuItem(zero, "倍率")->children[0].text == "200%\t1 x 1");
+}
+
+void testBuildSidebarMenu() {
+    const Keymap km = Keymap::defaults();
+    std::vector<SidebarMenuEntry> entries;
+    const std::vector<MenuItem> items =
+        buildSidebarMenu({SortKey::Date, true}, true, km, entries);
+    CHECK(entries.size() == countMenuLeaves(items));
+    const MenuItem* sort = findMenuItem(items, "並び替え");
+    CHECK(sort && sort->text == "並び替え (更新日時 (新しい順))");
+    CHECK(sort->children[1].checked && !sort->children[0].checked);  // 更新日時
+    CHECK(entries[1].action == SidebarMenuEntry::Action::SortKey);
+    CHECK(entries[1].key == SortKey::Date);
+    CHECK(findMenuItem(items, "降順")->checked);
+    CHECK(!findMenuItem(items, "昇順")->checked);
+    CHECK(findMenuItem(items, "サブフォルダを含める")->checked);
+
+    // 昇順・再帰なしなら逆になる
+    std::vector<SidebarMenuEntry> plain;
+    const std::vector<MenuItem> asc = buildSidebarMenu({SortKey::Name, false}, false, km, plain);
+    CHECK(findMenuItem(asc, "昇順")->checked);
+    CHECK(!findMenuItem(asc, "サブフォルダを含める")->checked);
+}
+
+void testBuildObjectMenu() {
+    const Keymap km = Keymap::defaults();
+    const FontAvailableFn all = [](const std::string&) { return true; };
+    const auto build = [&km, &all](const AnnotationSpec& spec,
+                                   std::vector<ObjectMenuEntry>& entries) {
+        std::vector<MenuItem> items = buildObjectMenu(spec, km, all, entries);
+        CHECK(entries.size() == countMenuLeaves(items));
+        return items;
+    };
+
+    // テキスト: 編集・文字サイズ・フォント・枠線が出て、線の太さは出ない
+    AnnotationSpec text;
+    text.kind = AnnotationSpec::Kind::Text;
+    text.fontSize = 24;
+    std::vector<ObjectMenuEntry> textEntries;
+    const std::vector<MenuItem> textItems = build(text, textEntries);
+    CHECK(findMenuItem(textItems, "テキストを編集"));
+    CHECK(findMenuItem(textItems, "文字サイズ")->text == "文字サイズ (24px)");
+    CHECK(findMenuItem(textItems, "フォント"));
+    CHECK(findMenuItem(textItems, "枠線"));
+    CHECK(!findMenuItem(textItems, "線の太さ"));
+    CHECK(textEntries[0].action == ObjectMenuEntry::Action::EditText);
+    CHECK(textEntries[1].action == ObjectMenuEntry::Action::Delete);
+    // フォント未指定の注釈は既定フォントで描かれるので、そちらにチェックが付く
+    const MenuItem* family = findMenuItem(textItems, "フォント");
+    CHECK(family->children[0].checked);
+
+    // 手書き: 線の不透明度が出て、太さの選択肢が広い(マーカー用)
+    AnnotationSpec pen;
+    pen.kind = AnnotationSpec::Kind::Pen;
+    std::vector<ObjectMenuEntry> penEntries;
+    const std::vector<MenuItem> penItems = build(pen, penEntries);
+    CHECK(findMenuItem(penItems, "線の不透明度"));
+    CHECK(findMenuItem(penItems, "線の太さ")->children.size() == 9);
+    CHECK(!findMenuItem(penItems, "塗りつぶし"));  // 面を持たない
+
+    // 矩形: 太さは標準の 7 通りで、塗りつぶしが出る
+    AnnotationSpec rect;
+    rect.kind = AnnotationSpec::Kind::Rect;
+    std::vector<ObjectMenuEntry> rectEntries;
+    const std::vector<MenuItem> rectItems = build(rect, rectEntries);
+    CHECK(findMenuItem(rectItems, "線の太さ")->children.size() == 7);
+    CHECK(findMenuItem(rectItems, "塗りつぶし"));
+    CHECK(!findMenuItem(rectItems, "線の不透明度"));
+
+    // 連番: 番号を振り直せる
+    AnnotationSpec number;
+    number.kind = AnnotationSpec::Kind::Number;
+    number.number = 3;
+    std::vector<ObjectMenuEntry> numberEntries;
+    const std::vector<MenuItem> numberItems = build(number, numberEntries);
+    const MenuItem* numberMenu = findMenuItem(numberItems, "番号");
+    CHECK(numberMenu && numberMenu->text == "番号 (3)" && numberMenu->children[2].checked);
+
+    // 貼り付けた画像: 自身の画素で描かれるので色も太さも塗りも効かない
+    AnnotationSpec image;
+    image.kind = AnnotationSpec::Kind::Image;
+    std::vector<ObjectMenuEntry> imageEntries;
+    const std::vector<MenuItem> imageItems = build(image, imageEntries);
+    CHECK(!findMenuItem(imageItems, "線の太さ"));
+    CHECK(!findMenuItem(imageItems, "色の変更"));
+    CHECK(!findMenuItem(imageItems, "塗りつぶし"));
+    CHECK(findMenuItem(imageItems, "回転角度"));  // 回転はできる
+}
+
+void testBuildTextStyleMenu() {
+    const FontAvailableFn onlyMeiryo = [](const std::string& f) { return f == "Meiryo"; };
+    AnnotationSpec spec;
+    spec.kind = AnnotationSpec::Kind::Text;
+    spec.colorRGB = 0x123456;
+    TextEditBuffer buffer("abcdef");
+    buffer.selectAll();
+
+    const TextStyleMenu menu = buildTextStyleMenu(spec, buffer, onlyMeiryo);
+    // 末端 index: 0-2 が太字・斜体・下線、続いてフォントの候補、最後に文字色
+    CHECK(menu.familyBase == kTextStyleFlags.size());
+    CHECK(menu.colorIndex == menu.familyBase + menu.families.size());
+    CHECK(menu.families.size() == 2);  // 既定フォント + メイリオ
+    // 指定の無い範囲は注釈全体の色・フォントで描かれるので、そちらを初期値にする
+    CHECK(menu.initialColor == 0x123456);
+    CHECK(menu.wholeFamily == kDefaultFontFamily);
+    CHECK(!menu.items[0].checked && !menu.items[1].checked && !menu.items[2].checked);
+    CHECK(findMenuItem(menu.items, "文字色")->text == "文字色... (#123456)");
+    CHECK(findMenuItem(menu.items, "フォント")->children[0].checked);  // 全体と同じ
+
+    // 選択範囲に指定があれば、そちらがチェックと初期値になる
+    buffer.toggleSelectionFlag(TextStyleFlag::Bold);
+    buffer.setSelectionColor(0xABCDEF);
+    buffer.setSelectionFontFamily("Meiryo");
+    const TextStyleMenu styled = buildTextStyleMenu(spec, buffer, onlyMeiryo);
+    CHECK(styled.items[0].checked && !styled.items[1].checked);
+    CHECK(styled.initialColor == 0xABCDEF);
+    CHECK(styled.wholeFamily == kDefaultFontFamily);  // 全体は変わらない
+    // 現在のフォントが使えるものになったので、既定フォントを足す必要がなくなる
+    CHECK(styled.families.size() == 1 && styled.families[0].family == "Meiryo");
+    CHECK(findMenuItem(styled.items, "フォント")->children[0].checked);
+    CHECK(styled.colorIndex == styled.familyBase + 1);
+}
+
 void testAnnotationGeometry() {
     AnnotationSpec rect;
     rect.kind = AnnotationSpec::Kind::Rect;
@@ -6670,6 +6864,12 @@ int main() {
     testEditStyle();
     testEditStyleConfig();
     testImageOrigin();
+    testMenuFontChoices();
+    testBuildEditMenu();
+    testBuildResizeMenu();
+    testBuildSidebarMenu();
+    testBuildObjectMenu();
+    testBuildTextStyleMenu();
     testAppSidebar();
     testAppSidebarResize();
     testAppHelpSidebar();

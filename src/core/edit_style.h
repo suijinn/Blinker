@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <string>
+#include <string_view>
 
 #include "core/config.h"
 #include "platform/annotation.h"
@@ -37,6 +38,13 @@ enum class EditTool {
     Text,     ///< テキストボックスを作り、その場で入力を始める
     Ocr,      ///< 選択した範囲の文字を認識してクリップボードへコピーする(画像は変えない)
 };
+
+/**
+ * @brief ツールの表示名を返す。
+ * @param[in] tool 対象のツール。
+ * @return 「トリミング」のような表示名(UTF-8)。メニューとステータスバーで共通。
+ */
+std::string_view toolLabel(EditTool tool);
 
 /**
  * @brief 新規注釈の設定(選択中のツールと、その見た目)。

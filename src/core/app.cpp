@@ -1,7 +1,6 @@
 #include "core/app.h"
 
 #include <algorithm>
-#include <array>
 #include <cmath>
 #include <cstddef>
 #include <format>
@@ -54,110 +53,6 @@ bool bakeRotation(DecodedImage& image, int rotationDegrees) {
     case 3: return applyExifOrientation(image, 8);
     default: return false;
     }
-}
-
-// 区切り線のメニュー項目({.separator = true} は gcc の
-// -Wmissing-field-initializers 警告になるため関数にする)
-MenuItem menuSeparator() {
-    MenuItem item;
-    item.separator = true;
-    return item;
-}
-
-// 塗りつぶしの不透明度の選択肢(0-255)。0 は塗らない = 完全な透過
-constexpr std::array<int, 5> kFillAlphaChoices{0, 64, 128, 191, 255};
-// テキストの枠線幅の選択肢(画面px基準)。0 は枠線なし
-constexpr std::array<int, 6> kBorderWidthChoices{0, 1, 2, 3, 5, 8};
-
-std::string fillAlphaLabel(int alpha) {
-    if (alpha <= 0) return "なし (透明)";
-    return std::format("{}%", std::lround(alpha * 100.0 / 255.0));
-}
-
-std::string borderWidthLabel(int width) {
-    return width <= 0 ? std::string("なし") : std::format("{}px", width);
-}
-
-// フォントの選択肢。{表示ラベル, 描画側へ渡すファミリ名}。和文ゴシック・明朝・
-// UD・欧文・等幅を一通り並べてある。入っていないものはメニューに出さない
-constexpr std::array<std::pair<const char*, const char*>, 9> kFontFamilyChoices{{
-    {"游ゴシック", "Yu Gothic"},
-    {"游ゴシック UI", "Yu Gothic UI"},
-    {"游明朝", "Yu Mincho"},
-    {"メイリオ", "Meiryo"},
-    {"BIZ UDPゴシック", "BIZ UDPGothic"},
-    {"MS ゴシック", "MS Gothic"},
-    {"MS 明朝", "MS Mincho"},
-    {"Segoe UI", "Segoe UI"},
-    {"Consolas", "Consolas"},
-}};
-
-// 実際に描画に使われるフォント名。未指定(空)は既定フォントとして扱う。
-// std::string を渡しても一時オブジェクトを作らないよう、引数・戻り値とも view で通す
-std::string_view effectiveFontFamily(std::string_view family) {
-    return family.empty() ? std::string_view(kDefaultFontFamily) : family;
-}
-
-// メニューの見出しに出す名前。候補表にあれば日本語ラベル、無ければファミリ名のまま
-std::string fontFamilyLabel(std::string_view family) {
-    const std::string_view name = effectiveFontFamily(family);
-    for (const auto& [label, value] : kFontFamilyChoices) {
-        if (name == value) return label;
-    }
-    return std::string(name);
-}
-
-// ツールの表示名(メニューとステータスバーで共通)
-std::string_view toolLabel(EditTool tool) {
-    switch (tool) {
-    case EditTool::Crop:    return "トリミング";
-    case EditTool::Rect:    return "矩形";
-    case EditTool::Ellipse: return "楕円";
-    case EditTool::Arrow:   return "矢印";
-    case EditTool::Line:    return "直線";
-    case EditTool::Pen:     return "ペン (手書き)";
-    case EditTool::Marker:  return "マーカー";
-    case EditTool::Number:  return "連番マーカー";
-    case EditTool::Text:    return "テキスト";
-    case EditTool::Ocr:     return "文字認識";
-    }
-    return "";
-}
-
-// ツール切り替えに対応するコマンド。メニュー項目にキー表記を出すために使う
-Command commandOfTool(EditTool tool) {
-    switch (tool) {
-    case EditTool::Crop:    return Command::SelectToolCrop;
-    case EditTool::Rect:    return Command::SelectToolRect;
-    case EditTool::Ellipse: return Command::SelectToolEllipse;
-    case EditTool::Arrow:   return Command::SelectToolArrow;
-    case EditTool::Line:    return Command::SelectToolLine;
-    case EditTool::Pen:     return Command::SelectToolPen;
-    case EditTool::Marker:  return Command::SelectToolMarker;
-    case EditTool::Number:  return Command::SelectToolNumber;
-    case EditTool::Text:    return Command::SelectToolText;
-    case EditTool::Ocr:     return Command::SelectToolOcr;
-    }
-    return Command::None;
-}
-
-// 並び替えキーに対応するコマンド。メニュー項目にキー表記を出すために使う
-Command commandOfSortKey(SortKey key) {
-    switch (key) {
-    case SortKey::Name:      return Command::SortByName;
-    case SortKey::Date:      return Command::SortByDate;
-    case SortKey::Size:      return Command::SortBySize;
-    case SortKey::Extension: return Command::SortByExtension;
-    }
-    return Command::None;
-}
-
-// 縦横比を保ったまま倍率を掛けた大きさ。0 にならないよう最低 1px は残す
-std::pair<uint32_t, uint32_t> scaledSize(uint32_t width, uint32_t height, double factor) {
-    const auto scale = [factor](const uint32_t v) {
-        return std::max(1u, static_cast<uint32_t>(std::lround(v * factor)));
-    };
-    return {scale(width), scale(height)};
 }
 
 // 図形ツールが作る注釈の種別。Crop は注釈ではないので Rect を返す(呼ばれない)。
@@ -947,7 +842,8 @@ void App::showToolMenu(Point screenPos) {
     // 設定を整えてからツールを選べるようにする
     while (true) {
         std::vector<EditMenuEntry> entries;
-        const std::vector<MenuItem> items = buildEditMenu(entries);
+        const std::vector<MenuItem> items =
+            buildEditMenu(style_, keymap_, fontAvailable(), menuImageSize(), entries);
         const auto choice = host_.showContextMenu(items, screenPos);
         if (!choice || *choice >= entries.size()) break;
         if (applyEditChoice(entries[*choice])) break;
@@ -955,50 +851,9 @@ void App::showToolMenu(Point screenPos) {
     host_.requestRedraw();
 }
 
-std::vector<MenuItem> App::buildSidebarMenu(std::vector<SidebarMenuEntry>& entries) const {
-    const auto leaf = [&entries](std::string text, SidebarMenuEntry entry,
-                                 const bool checked = false) {
-        entries.push_back(entry);
-        MenuItem item;
-        item.text = std::move(text);
-        item.checked = checked;
-        return item;
-    };
-    using Action = SidebarMenuEntry::Action;
-    const auto sortKey = [&leaf, this](const std::string_view label, const SortKey key) {
-        std::string text(label);
-        if (const std::string keys = keysLabel(keymap_, commandOfSortKey(key)); !keys.empty()) {
-            text += '\t';
-            text += keys;
-        }
-        return leaf(std::move(text), {Action::SortKey, key}, key == sortOrder_.key);
-    };
-
-    std::vector<MenuItem> items;
-    MenuItem sort;
-    sort.text = std::format("並び替え ({})", sortOrderLabel(sortOrder_));
-    sort.children.push_back(sortKey("名前", SortKey::Name));
-    sort.children.push_back(sortKey("更新日時", SortKey::Date));
-    sort.children.push_back(sortKey("サイズ", SortKey::Size));
-    sort.children.push_back(sortKey("種類", SortKey::Extension));
-    items.push_back(std::move(sort));
-    items.push_back(menuSeparator());
-    items.push_back(leaf("昇順", {Action::SortAscending}, !sortOrder_.descending));
-    items.push_back(leaf("降順", {Action::SortDescending}, sortOrder_.descending));
-    items.push_back(menuSeparator());
-
-    std::string recursive = "サブフォルダを含める";
-    if (const std::string keys = keysLabel(keymap_, Command::ToggleRecursive); !keys.empty()) {
-        recursive += '\t';
-        recursive += keys;
-    }
-    items.push_back(leaf(std::move(recursive), {Action::ToggleRecursive}, recursive_));
-    return items;
-}
-
 void App::showSidebarMenu(Point screenPos) {
     std::vector<SidebarMenuEntry> entries;
-    const std::vector<MenuItem> items = buildSidebarMenu(entries);
+    const std::vector<MenuItem> items = buildSidebarMenu(sortOrder_, recursive_, keymap_, entries);
     const auto choice = host_.showContextMenu(items, screenPos);
     if (!choice || *choice >= entries.size()) return;
     const SidebarMenuEntry& entry = entries[*choice];
@@ -1048,166 +903,13 @@ int App::nextMarkerNumber() const {
     return maxNumber + 1;
 }
 
-std::vector<std::pair<std::string, std::string>> App::fontFamilyChoices(
-    std::string_view current) const {
-    const std::string_view effective = effectiveFontFamily(current);
-    std::vector<std::pair<std::string, std::string>> choices;
-    bool listed = false;
-    for (const auto& [label, family] : kFontFamilyChoices) {
-        if (effective == family) {
-            listed = true;  // 現在のフォントは、入っていなくても選び直せるよう必ず出す
-        } else if (!rasterizer_.hasFontFamily(family)) {
-            continue;
-        }
-        choices.emplace_back(label, family);
-    }
-    if (!listed) choices.emplace_back(effective, effective);
-    return choices;
+FontAvailableFn App::fontAvailable() const {
+    return [this](const std::string& family) { return rasterizer_.hasFontFamily(family); };
 }
 
-std::vector<MenuItem> App::buildEditMenu(std::vector<EditMenuEntry>& entries) const {
-    const auto leaf = [&entries](std::string text, EditMenuEntry entry, bool checked = false) {
-        entries.push_back(entry);
-        MenuItem item;
-        item.text = std::move(text);
-        item.checked = checked;
-        return item;
-    };
-    // ツールは選ぶだけで、実際の適用は次の編集ドラッグで行う。現在のツールにチェックが付く。
-    // ini でキーを割り当てていれば、'\t' 区切りで右寄せのアクセラレータ表記として出る
-    const auto tool = [&leaf, this](EditTool t) {
-        std::string text(toolLabel(t));
-        if (const std::string keys = keysLabel(keymap_, commandOfTool(t)); !keys.empty()) {
-            text += '\t';
-            text += keys;
-        }
-        return leaf(std::move(text), {EditMenuEntry::Action::SelectTool, t, 0},
-                    t == style_.tool());
-    };
-    using Action = EditMenuEntry::Action;
-
-    std::vector<MenuItem> items;
-    items.push_back(tool(EditTool::Crop));
-    items.push_back(tool(EditTool::Ocr));
-    items.push_back(menuSeparator());
-    items.push_back(tool(EditTool::Rect));
-    items.push_back(tool(EditTool::Ellipse));
-    items.push_back(tool(EditTool::Arrow));
-    items.push_back(tool(EditTool::Line));
-    items.push_back(tool(EditTool::Pen));
-    items.push_back(tool(EditTool::Marker));
-    items.push_back(tool(EditTool::Number));
-    items.push_back(tool(EditTool::Text));
-    items.push_back(menuSeparator());
-
-    MenuItem stroke;
-    stroke.text = std::format("線の太さ ({}px)", static_cast<int>(style_.strokeWidth()));
-    for (const int w : {1, 2, 3, 5, 8, 12, 20}) {
-        stroke.children.push_back(
-            leaf(std::format("{}px", w),
-                 {Action::StrokeWidth, EditTool::Rect, static_cast<float>(w)},
-                 static_cast<float>(w) == style_.strokeWidth()));
-    }
-    items.push_back(std::move(stroke));
-
-    MenuItem font;
-    font.text = std::format("文字サイズ ({}px)", static_cast<int>(style_.fontSize()));
-    for (const int s : {12, 14, 18, 24, 36, 48, 72}) {
-        font.children.push_back(
-            leaf(std::format("{}px", s),
-                 {Action::FontSize, EditTool::Rect, static_cast<float>(s)},
-                 static_cast<float>(s) == style_.fontSize()));
-    }
-    items.push_back(std::move(font));
-
-    MenuItem family;
-    family.text = std::format("フォント ({})", fontFamilyLabel(style_.fontFamily()));
-    for (const auto& [label, name] : fontFamilyChoices(style_.fontFamily())) {
-        family.children.push_back(leaf(label, {Action::FontFamily, EditTool::Rect, 0, name},
-                                       name == style_.fontFamily()));
-    }
-    items.push_back(std::move(family));
-
-    items.push_back(
-        leaf(std::format("色の変更... (#{:06X})", style_.colorRGB()), {Action::PickColor}));
-
-    // 塗りつぶし(矩形・楕円・テキスト)。不透明度 0 で塗らない = 背景が透ける
-    MenuItem fill;
-    fill.text = std::format("塗りつぶし ({})", fillAlphaLabel(style_.fillAlpha()));
-    for (const int a : kFillAlphaChoices) {
-        fill.children.push_back(
-            leaf(fillAlphaLabel(a), {Action::FillAlpha, EditTool::Rect, static_cast<float>(a)},
-                 a == style_.fillAlpha()));
-    }
-    fill.children.push_back(menuSeparator());
-    fill.children.push_back(leaf(std::format("色の変更... (#{:06X})", style_.fillRGB()),
-                                 {Action::PickFillColor}));
-    items.push_back(std::move(fill));
-
-    // 枠線はテキストボックス用(矩形・楕円の輪郭は「線の太さ」「色の変更」で指定する)
-    MenuItem border;
-    border.text = std::format("テキストの枠線 ({})",
-                              borderWidthLabel(static_cast<int>(style_.borderWidth())));
-    for (const int w : kBorderWidthChoices) {
-        border.children.push_back(
-            leaf(borderWidthLabel(w),
-                 {Action::BorderWidth, EditTool::Rect, static_cast<float>(w)},
-                 static_cast<float>(w) == style_.borderWidth()));
-    }
-    border.children.push_back(menuSeparator());
-    border.children.push_back(leaf(std::format("色の変更... (#{:06X})", style_.borderRGB()),
-                                   {Action::PickBorderColor}));
-    items.push_back(std::move(border));
-
-    // リサイズはツールではなく一度きりの操作だが、画像に対する操作の入口がこのメニュー
-    // しかないのでここへ置く(Command::ResizeImage は同じ内容を単独で出す)
-    if (current_) {
-        items.push_back(menuSeparator());
-        MenuItem resize;
-        resize.text = std::format("画像をリサイズ ({} x {})", current_->width, current_->height);
-        resize.children = buildResizeMenu(entries);
-        items.push_back(std::move(resize));
-    }
-    return items;
-}
-
-std::vector<MenuItem> App::buildResizeMenu(std::vector<EditMenuEntry>& entries) const {
-    const auto leaf = [&entries](std::string text, EditMenuEntry entry) {
-        entries.push_back(entry);
-        MenuItem item;
-        item.text = std::move(text);
-        return item;
-    };
-    using Action = EditMenuEntry::Action;
-    const uint32_t width = current_ ? current_->width : 0;
-    const uint32_t height = current_ ? current_->height : 0;
-    // 変換後の大きさを項目に添える(選ぶ前に結果が分かるように)
-    const auto label = [width, height](const std::string& head, const double factor) {
-        const auto [w, h] = scaledSize(width, height, factor);
-        return std::format("{}\t{} x {}", head, w, h);
-    };
-
-    std::vector<MenuItem> items;
-    MenuItem percent;
-    percent.text = "倍率";
-    for (const int p : {200, 150, 75, 50, 25}) {
-        percent.children.push_back(
-            leaf(label(std::format("{}%", p), p / 100.0),
-                 {Action::ResizePercent, EditTool::Rect, static_cast<float>(p)}));
-    }
-    items.push_back(std::move(percent));
-
-    MenuItem longEdge;
-    longEdge.text = "長辺を指定";
-    const uint32_t longest = std::max(width, height);
-    for (const int e : {3840, 2560, 1920, 1280, 1024, 800, 640}) {
-        const double factor = longest > 0 ? static_cast<double>(e) / longest : 1.0;
-        longEdge.children.push_back(
-            leaf(label(std::format("{} px", e), factor),
-                 {Action::ResizeLongEdge, EditTool::Rect, static_cast<float>(e)}));
-    }
-    items.push_back(std::move(longEdge));
-    return items;
+std::optional<MenuImageSize> App::menuImageSize() const {
+    if (!current_) return std::nullopt;
+    return MenuImageSize{current_->width, current_->height};
 }
 
 void App::showResizeMenu(Point screenPos) {
@@ -1216,7 +918,8 @@ void App::showResizeMenu(Point screenPos) {
         return;
     }
     std::vector<EditMenuEntry> entries;
-    const std::vector<MenuItem> items = buildResizeMenu(entries);
+    const std::vector<MenuItem> items =
+        buildResizeMenu({current_->width, current_->height}, entries);
     const auto choice = host_.showContextMenu(items, screenPos);
     if (!choice || *choice >= entries.size()) return;
     applyEditChoice(entries[*choice]);
@@ -1247,140 +950,11 @@ void App::applyResize(const uint32_t width, const uint32_t height) {
     showMessage(std::format("{} x {} px にリサイズしました", width, height));
 }
 
-std::vector<MenuItem> App::buildObjectMenu(const AnnotationSpec& spec,
-                                           std::vector<ObjectMenuEntry>& entries) const {
-    const auto leaf = [&entries](std::string text, ObjectMenuEntry entry,
-                                 bool checked = false) {
-        entries.push_back(entry);
-        MenuItem item;
-        item.text = std::move(text);
-        item.checked = checked;
-        return item;
-    };
-    using Action = ObjectMenuEntry::Action;
-
-    std::vector<MenuItem> items;
-    if (spec.kind == AnnotationSpec::Kind::Text) {
-        items.push_back(leaf("テキストを編集", {Action::EditText}));
-    }
-    std::string deleteText = "削除";
-    if (const std::string keys = keysLabel(keymap_, Command::DeleteAnnotation); !keys.empty()) {
-        deleteText += '\t';
-        deleteText += keys;
-    }
-    items.push_back(leaf(std::move(deleteText), {Action::Delete}));
-    items.push_back(menuSeparator());
-
-    MenuItem angle;
-    angle.text = std::format("回転角度 ({}°)", static_cast<int>(std::lround(spec.angleDeg)));
-    for (const int a : {0, 15, 30, 45, 90, 135, 180, 270}) {
-        angle.children.push_back(leaf(std::format("{}°", a),
-                                      {Action::Angle, static_cast<float>(a)},
-                                      static_cast<float>(a) == spec.angleDeg));
-    }
-    items.push_back(std::move(angle));
-
-    // 太さ・文字サイズは画像px単位でオブジェクトへ直接適用する
-    if (spec.kind == AnnotationSpec::Kind::Text) {
-        MenuItem font;
-        font.text =
-            std::format("文字サイズ ({}px)", static_cast<int>(std::lround(spec.fontSize)));
-        for (const int s : {12, 14, 18, 24, 36, 48, 72}) {
-            font.children.push_back(leaf(std::format("{}px", s),
-                                         {Action::FontSize, static_cast<float>(s)},
-                                         static_cast<float>(s) == spec.fontSize));
-        }
-        items.push_back(std::move(font));
-
-        MenuItem family;
-        family.text = std::format("フォント ({})", fontFamilyLabel(spec.fontFamily));
-        // 未指定(空)の注釈は既定フォントで描かれるので、そちらにチェックを付ける
-        const std::string_view current = effectiveFontFamily(spec.fontFamily);
-        for (const auto& [label, name] : fontFamilyChoices(current)) {
-            family.children.push_back(
-                leaf(label, {Action::FontFamily, 0, name}, name == current));
-        }
-        items.push_back(std::move(family));
-    } else if (spec.kind != AnnotationSpec::Kind::Image) {
-        // 貼り付けた画像は線も文字も持たないので、太さの項目は出さない
-        MenuItem stroke;
-        stroke.text =
-            std::format("線の太さ ({}px)", static_cast<int>(std::lround(spec.strokeWidth)));
-        // 手書き(特にマーカー)は太い側も要るので、選択肢を広げる
-        const std::vector<int> widths = spec.kind == AnnotationSpec::Kind::Pen
-                                            ? std::vector<int>{1, 2, 3, 5, 8, 12, 20, 32, 48}
-                                            : std::vector<int>{1, 2, 3, 5, 8, 12, 20};
-        for (const int w : widths) {
-            stroke.children.push_back(leaf(std::format("{}px", w),
-                                           {Action::StrokeWidth, static_cast<float>(w)},
-                                           static_cast<float>(w) == spec.strokeWidth));
-        }
-        items.push_back(std::move(stroke));
-    }
-    // 線の不透明度は手書きだけ(マーカーとペンの違いはここと太さだけ)
-    if (spec.kind == AnnotationSpec::Kind::Pen) {
-        MenuItem alpha;
-        alpha.text = std::format("線の不透明度 ({})", fillAlphaLabel(spec.strokeAlpha));
-        for (const int a : {255, 178, 102, 64}) {
-            alpha.children.push_back(leaf(fillAlphaLabel(a),
-                                          {Action::StrokeAlpha, static_cast<float>(a)},
-                                          a == spec.strokeAlpha));
-        }
-        items.push_back(std::move(alpha));
-    }
-    // 連番は後から振り直せるようにする(順序を入れ替えたくなることがある)
-    if (spec.kind == AnnotationSpec::Kind::Number) {
-        MenuItem number;
-        number.text = std::format("番号 ({})", spec.number);
-        for (int n = 1; n <= 10; ++n) {
-            number.children.push_back(leaf(std::format("{}", n),
-                                           {Action::Number, static_cast<float>(n)},
-                                           n == spec.number));
-        }
-        items.push_back(std::move(number));
-    }
-    // 画像は自身の画素で描かれるため、色も塗りつぶしも効かない
-    if (spec.kind != AnnotationSpec::Kind::Image) {
-        items.push_back(
-            leaf(std::format("色の変更... (#{:06X})", spec.colorRGB), {Action::PickColor}));
-    }
-
-    // 塗りつぶしは面を持つ種別だけ(直線・矢印・手書き・画像には出さない)
-    if (spec.kind != AnnotationSpec::Kind::Line && spec.kind != AnnotationSpec::Kind::Arrow &&
-        spec.kind != AnnotationSpec::Kind::Pen && spec.kind != AnnotationSpec::Kind::Image) {
-        MenuItem fill;
-        fill.text = std::format("塗りつぶし ({})", fillAlphaLabel(spec.fillAlpha));
-        for (const int a : kFillAlphaChoices) {
-            fill.children.push_back(leaf(fillAlphaLabel(a),
-                                         {Action::FillAlpha, static_cast<float>(a)},
-                                         a == spec.fillAlpha));
-        }
-        fill.children.push_back(menuSeparator());
-        fill.children.push_back(leaf(std::format("色の変更... (#{:06X})", spec.fillRGB),
-                                     {Action::PickFillColor}));
-        items.push_back(std::move(fill));
-    }
-    if (spec.kind == AnnotationSpec::Kind::Text) {
-        MenuItem border;
-        border.text = std::format("枠線 ({})",
-                                  borderWidthLabel(static_cast<int>(std::lround(spec.borderWidth))));
-        for (const int w : kBorderWidthChoices) {
-            border.children.push_back(leaf(borderWidthLabel(w),
-                                           {Action::BorderWidth, static_cast<float>(w)},
-                                           static_cast<float>(w) == spec.borderWidth));
-        }
-        border.children.push_back(menuSeparator());
-        border.children.push_back(leaf(std::format("色の変更... (#{:06X})", spec.borderRGB),
-                                       {Action::PickBorderColor}));
-        items.push_back(std::move(border));
-    }
-    return items;
-}
-
 void App::showObjectMenu(Point screenPos) {
     if (!selected_ || *selected_ >= annotations_.size()) return;
     std::vector<ObjectMenuEntry> entries;
-    const std::vector<MenuItem> items = buildObjectMenu(annotations_[*selected_], entries);
+    const std::vector<MenuItem> items =
+        buildObjectMenu(annotations_[*selected_], keymap_, fontAvailable(), entries);
     const auto choice = host_.showContextMenu(items, screenPos);
     if (!choice || *choice >= entries.size()) return;
     const ObjectMenuEntry entry = entries[*choice];
@@ -1502,63 +1076,20 @@ void App::showObjectMenu(Point screenPos) {
 void App::showTextStyleMenu(Point screenPos) {
     if (!textEdit_.active() || !textEdit_.buffer().hasSelection()) return;
     if (textEdit_.index() >= annotations_.size()) return;
-    // トグルできる属性を並べ、続いてフォント、最後に文字色。
-    // 末端項目の index はこの順に対応する
-    static constexpr std::array<std::pair<const char*, TextStyleFlag>, 3> kFlags{{
-        {"太字", TextStyleFlag::Bold},
-        {"斜体", TextStyleFlag::Italic},
-        {"下線", TextStyleFlag::Underline},
-    }};
-    std::vector<MenuItem> items;
-    for (const auto& [text, flag] : kFlags) {
-        MenuItem item;
-        item.text = text;
-        item.checked = textEdit_.buffer().selectionHasFlag(flag);
-        items.push_back(std::move(item));
-    }
-    items.push_back(menuSeparator());
-    // 色・フォントを指定していない範囲は注釈全体のもので描かれるので、
-    // そちらを見出しと初期値に使う
-    const AnnotationSpec& spec = annotations_[textEdit_.index()];
-    const TextStyleRun style = textEdit_.buffer().selectionStyle();
-    const uint32_t initialColor = style.hasColor ? style.colorRGB : spec.colorRGB;
-    // 注釈全体のフォントはメニュー表示後にも使うため、参照ではなく値で持つ
-    const std::string wholeFamily{effectiveFontFamily(spec.fontFamily)};
-    const std::string_view currentFamily = style.fontFamily.empty()
-                                               ? std::string_view(wholeFamily)
-                                               : std::string_view(style.fontFamily);
-
-    // 末端 index: 0-2 が太字・斜体・下線、続いてフォントの候補、最後に文字色
-    const std::vector<std::pair<std::string, std::string>> families =
-        fontFamilyChoices(currentFamily);
-    MenuItem family;
-    family.text = std::format("フォント ({})", fontFamilyLabel(currentFamily));
-    for (const auto& [label, name] : families) {
-        MenuItem item;
-        item.text = label;
-        item.checked = name == currentFamily;
-        family.children.push_back(std::move(item));
-    }
-    items.push_back(std::move(family));
-
-    MenuItem color;
-    color.text = std::format("文字色... (#{:06X})", initialColor);
-    items.push_back(std::move(color));
-
-    const size_t familyBase = kFlags.size();                 // フォント候補の先頭
-    const size_t colorIndex = familyBase + families.size();  // 文字色
-    const auto choice = host_.showContextMenu(items, screenPos);
+    const TextStyleMenu menu =
+        buildTextStyleMenu(annotations_[textEdit_.index()], textEdit_.buffer(), fontAvailable());
+    const auto choice = host_.showContextMenu(menu.items, screenPos);
     bool changed = false;
-    if (choice && *choice < kFlags.size()) {
-        changed = textEdit_.buffer().toggleSelectionFlag(kFlags[*choice].second);
-    } else if (choice && *choice < colorIndex) {
+    if (choice && *choice < menu.familyBase) {
+        changed = textEdit_.buffer().toggleSelectionFlag(kTextStyleFlags[*choice].flag);
+    } else if (choice && *choice < menu.colorIndex) {
         // 注釈全体と同じフォントを選んだら指定を外す(範囲を残さず、
         // 以降は全体のフォント変更に追従する)
-        const std::string& picked = families[*choice - familyBase].second;
+        const std::string& picked = menu.families[*choice - menu.familyBase].family;
         changed = textEdit_.buffer().setSelectionFontFamily(
-            picked == wholeFamily ? std::string() : picked);
-    } else if (choice && *choice == colorIndex) {
-        if (const auto rgb = host_.showColorPicker(initialColor)) {
+            picked == menu.wholeFamily ? std::string() : picked);
+    } else if (choice && *choice == menu.colorIndex) {
+        if (const auto rgb = host_.showColorPicker(menu.initialColor)) {
             changed = textEdit_.buffer().setSelectionColor(*rgb);
         }
     }
