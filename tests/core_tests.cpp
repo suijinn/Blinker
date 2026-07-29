@@ -30,6 +30,7 @@
 #include "core/ocr_service.h"
 #include "core/ocr_text.h"
 #include "core/pixel_convert.h"
+#include "core/pointer_state.h"
 #include "core/print_layout.h"
 #include "core/scan_service.h"
 #include "core/sidebar_state.h"
@@ -3027,6 +3028,76 @@ void testSidebarState() {
     CHECK(nearly(drag.resizeWidth(180), 180));
     drag.endResize();
     CHECK(!drag.resizing());
+}
+
+void testPointerState() {
+    PointerState roles;
+    CHECK(roles.role(MouseButton::Left) == MouseRole::Pan);
+    CHECK(roles.role(MouseButton::Right) == MouseRole::Edit);
+    CHECK(!roles.swapButtons() && !roles.panning() && !roles.inside() && !roles.menuPressed());
+    roles.setSwapButtons(true);
+    CHECK(roles.role(MouseButton::Left) == MouseRole::Edit);
+    CHECK(roles.role(MouseButton::Right) == MouseRole::Pan);
+
+    // 移動量は直前の位置からの差分。ウィンドウ内にいる印も立つ
+    PointerState move;
+    const Point first = move.moveTo({10, 20});
+    CHECK(nearly(first.x, 10) && nearly(first.y, 20) && move.inside());
+    const Point second = move.moveTo({13, 18});
+    CHECK(nearly(second.x, 3) && nearly(second.y, -2));
+    CHECK(nearly(move.lastScreen().x, 13) && nearly(move.lastScreen().y, 18));
+    // ドラッグはウィンドウの外で終わりうるので、離した位置は内外を変えない
+    move.setInside(false);
+    move.setLastScreen({500, 500});
+    CHECK(nearly(move.lastScreen().x, 500) && !move.inside());
+
+    PointerState pan;
+    pan.beginPan();
+    CHECK(pan.panning());
+    pan.endPan();
+    CHECK(!pan.panning());
+
+    // メニューは押した場所から動かずに離したときだけ出る
+    PointerState menu;
+    CHECK(menu.releaseMenu({0, 0}) == MenuOnRelease::None);  // 押していない
+    menu.pressMenu({100, 100}, false);
+    CHECK(menu.menuPressed());
+    CHECK(menu.releaseMenu({102, 101}) == MenuOnRelease::Pointer);
+    CHECK(!menu.menuPressed());
+    CHECK(menu.releaseMenu({102, 101}) == MenuOnRelease::None);  // 押下は消費済み
+    menu.pressMenu({100, 100}, true);
+    CHECK(menu.releaseMenu({100, 100}) == MenuOnRelease::Sidebar);
+    // kDragThresholdPx 動いていればドラッグだったとみなす(パン・編集ドラッグの終わり)
+    menu.pressMenu({100, 100}, true);
+    CHECK(menu.releaseMenu({100 + PointerState::kDragThresholdPx, 100}) == MenuOnRelease::None);
+    // 別の操作が押下を消費したとき(書式メニュー)は通常のメニューを出さない
+    menu.pressMenu({100, 100}, false);
+    menu.cancelMenu();
+    CHECK(menu.releaseMenu({100, 100}) == MenuOnRelease::None);
+
+    // ホイールは 1 段に届くまで貯める。垂直と水平は別の貯金
+    PointerState wheel;
+    CHECK(wheel.wheelSteps(0.4f, false) == 0);
+    CHECK(wheel.wheelSteps(0.4f, true) == 0);
+    CHECK(wheel.wheelSteps(0.4f, false) == 0);
+    CHECK(wheel.wheelSteps(0.4f, false) == 1);   // 垂直だけ 1.2 に達した
+    CHECK(wheel.wheelSteps(0.4f, true) == 0);    // 水平は 0.8 のまま
+    CHECK(wheel.wheelSteps(3.0f, false) == 3);   // 一度に何段でも出る
+    CHECK(wheel.wheelSteps(-3.0f, false) == 3);  // 向きはコマンド側が決めるので絶対値
+    wheel.resetVerticalWheel();
+    CHECK(wheel.wheelSteps(0.9f, false) == 0);
+    wheel.resetVerticalWheel();
+    CHECK(wheel.wheelSteps(0.9f, false) == 0);  // 捨てた分は次に効かない
+    wheel.resetHorizontalWheel();
+    CHECK(wheel.wheelSteps(0.9f, true) == 0);
+
+    // 水平だけ 1 段の重みを変えられる(トラックボール等の誤爆対策)
+    PointerState heavy;
+    heavy.setHorizontalThreshold(3.0f);
+    CHECK(nearly(heavy.horizontalThreshold(), 3));
+    CHECK(heavy.wheelSteps(2.0f, true) == 0);
+    CHECK(heavy.wheelSteps(1.0f, true) == 1);
+    CHECK(heavy.wheelSteps(1.0f, false) == 1);  // 垂直は 1 ノッチ固定のまま
 }
 
 void testAnnotationGeometry() {
@@ -6232,6 +6303,7 @@ int main() {
     testScaleAnnotation();
     testSortOrder();
     testSidebarState();
+    testPointerState();
     testAppSidebar();
     testAppSidebarResize();
     testAppHelpSidebar();

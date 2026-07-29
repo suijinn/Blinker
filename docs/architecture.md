@@ -337,7 +337,7 @@ SDL 版は **GIF だけ**対応する(`stbi_load_gif_from_memory` が Disposal �
 遷移は離散なので、ホイールの回転量は `core` の `consumeWheelSteps` で 1 段に
 達するまで貯めてから消費する(1 ノッチ未満ずつ通知される高精細ホイール・
 タッチパッドで取りこぼさないため。逆向きに回したら貯金は捨てる)。垂直と水平で
-別の貯金を持つ。
+別の貯金を持ち、どちらも `PointerState`(`PointerState::wheelSteps`)が抱えている。
 
 **水平ホイールは誤爆しやすい軸**なので、貯め方に 2 つ手当てがある。トラックボールや
 タッチパッドは縦スクロール中に微小な横成分を出し続け、素朴に貯めると必ず 1 段に
@@ -380,7 +380,8 @@ BROWSER_BACKWARD/FORWARD が生成され、サイドボタンが二重に届く)
 1. `core/nav_arrows.h` / `.cpp` — 寸法と表示・当たりの判定(純粋関数、単体テスト対象)
 2. `platform/renderer.h` の `NavArrowsView` と `render` の引数
 3. `App::navArrows` / `navArrowsGeometry` / `clickNavArrow` / `updateNavArrowHover` と
-   `pointerInside_` / `navArrowsEnabled_` / `navArrowsShown_`
+   `navArrowsEnabled_` / `navArrowsShown_`(ポインタが窓内にいるかは
+   `PointerState::inside()`。こちらは矢印専用ではないので残る)
 4. `RendererD2D::drawNavArrows`(+ 山形用の `navGlyphStroke_`)
 5. `RendererSdl::drawNavArrows`
 6. `[view] nav_arrows` の読み取り
@@ -396,7 +397,8 @@ BROWSER_BACKWARD/FORWARD が生成され、サイドボタンが二重に届く)
 ### マウスボタンの役割
 
 物理ボタン (`MouseButton`) と役割 (`MouseRole`) を分けてあり、対応は
-blinker.ini の `[mouse] swap_buttons` で入れ替えられる(`App::mouseRole`)。
+blinker.ini の `[mouse] swap_buttons` で入れ替えられる(`PointerState::role`。
+`App::mouseRole` はその転送で、ウィンドウ層と操作一覧はこちらを見る)。
 こちらは左右ボタンだけの話で、上記の Mousemap とは独立している
 (`[mouse]` セクションを共有するが、`swap_buttons` はコマンド名として解決されない
 ので `Mousemap::applyConfig` は無視する)。
@@ -410,10 +412,12 @@ blinker.ini の `[mouse] swap_buttons` で入れ替えられる(`App::mouseRole`
 
 入れ替えの対象が「パン」と「編集ドラッグ」だけなのは、メニューを開くボタンが
 状況で変わると押せなくなるため。右ボタンは常にメニュー役も兼ね、ドラッグ量が
-`kDragThresholdPx` 未満のまま離されたときだけ `showPointerMenu` が開く
+`PointerState::kDragThresholdPx` 未満のまま離されたときだけ `showPointerMenu` が開く
 (既定ではその右ボタンが編集役でもあるので、編集ドラッグを始めていても
-閾値未満なら何も作らずメニューになる)。サイドバーの項目クリックは画像への操作では
-ないので、これも入れ替えず常に左ボタン。
+閾値未満なら何も作らずメニューになる)。押した場所を覚えてこれを判定するのは
+`PointerState`(`pressMenu` → `releaseMenu` が `MenuOnRelease` で「どのメニューを
+開くか」を返す)で、App はその結果でメニューを出し分けるだけ。サイドバーの項目
+クリックは画像への操作ではないので、これも入れ替えず常に左ボタン。
 
 サイドバーの幅は右端(境界をまたぐ `SidebarState::kResizeGripPx` の帯)を左ボタンで掴んで
 変えられる。`onMouseDown` はこの判定を項目クリックより先に見る(境界際のクリックで
@@ -436,8 +440,8 @@ blinker.ini の `[mouse] swap_buttons` で入れ替えられる(`App::mouseRole`
 という判断。
 
 振り分けは core に閉じている。ウィンドウ層はボタンの押下・解放・移動をそのまま
-App へ渡すだけで、パンの差分計算(`lastPointerScreen_`)もドラッグ中かの判定も
-App が持つ(役割が設定で変わるので、ウィンドウ層に状態を置くと二重管理になる)。
+App へ渡すだけで、パンの差分計算(`PointerState::moveTo`)もドラッグ中かの判定も
+core が持つ(役割が設定で変わるので、ウィンドウ層に状態を置くと二重管理になる)。
 SDL 版だけは編集役のボタンを App へ渡さない(注釈編集が未対応のため)。
 
 ### テキストのインプレース編集
@@ -509,7 +513,7 @@ Text 注釈は PowerPoint のテキストボックスと同じく**画像上で�
 
 | コンポーネント | 責務 |
 |---|---|
-| `App` | 状態機械の中心。Command を受けて状態更新、host へ再描画依頼。ステータスバー (`StatusBarView`) とサイドバー (`SidebarView`、可視範囲の項目のみ) の表示内容もここで組み立てる。サイドバーの表示状態は `SidebarState` が持ち、`SidebarMode` でファイル名一覧と操作一覧 (F1) を切り替える(レンダラからは同じ文字列リストに見える)。貼り付け画像はフォルダ一覧から独立した表示状態(`clipboardImage_`)で持ち、移動系コマンドで一覧表示へ戻る(一覧が空なら戻る先が無いので移動を無視する。`App::navigate`)。編集(現在のツール `EditTool` と編集ドラッグでの適用、プレビュー・`SelectionView`・注釈オブジェクトの選択/移動/回転ドラッグ状態・undo 履歴 (`EditHistory`))もここで管理し、画像切替で破棄する |
+| `App` | 状態機械の中心。Command を受けて状態更新、host へ再描画依頼。ステータスバー (`StatusBarView`) とサイドバー (`SidebarView`、可視範囲の項目のみ) の表示内容もここで組み立てる。サイドバーの表示状態は `SidebarState` が持ち、`SidebarMode` でファイル名一覧と操作一覧 (F1) を切り替える(レンダラからは同じ文字列リストに見える)。マウスの進行状態は `PointerState` が持つ。貼り付け画像はフォルダ一覧から独立した表示状態(`clipboardImage_`)で持ち、移動系コマンドで一覧表示へ戻る(一覧が空なら戻る先が無いので移動を無視する。`App::navigate`)。編集(現在のツール `EditTool` と編集ドラッグでの適用、プレビュー・`SelectionView`・注釈オブジェクトの選択/移動/回転ドラッグ状態・undo 履歴 (`EditHistory`))もここで管理し、画像切替で破棄する |
 | `Viewport` | ズーム/パン/フィット/回転の座標変換(純粋計算、テスト容易) |
 | `ImageList` | フォルダ内画像の一覧・現在位置・先読み候補の順序付け |
 | `sort_order.h` | 一覧の並び順(名前・更新日時・サイズ・種類 × 昇降)の適用。**列挙とプラットフォーム依存の名前順比較は `IFileSystem` の責務**で、ここは「どのキーでどちら向きに並べるか」だけを持つ純粋関数(単体テスト対象)。詳細は下記「一覧の並び順とサブフォルダ」 |
@@ -523,6 +527,7 @@ Text 注釈は PowerPoint のテキストボックスと同じく**画像上で�
 | `nav_arrows.h` | オーバーレイ矢印(左右の端に出る画像遷移ボタン)の寸法・表示条件・当たり判定(純粋関数、単体テスト対象)。**廃止しうる表示なので判定をここに閉じている**(上記「オーバーレイ矢印」) |
 | `help.h` | 現在の `Keymap` / `Mousemap` から操作一覧の表示テキストを組み立てる(`buildHelpLines`)。固定テキストを持たないので README と drift しない。コマンドの表示名の正はこのファイルの表 1 つで、キーの節とマウスの節が共有する(単体テスト対象) |
 | `SidebarState` | サイドバーの可視・モード (`SidebarMode`)・幅・スクロール量と、右端を掴む幅変更ドラッグの状態(`sidebar_state.h`。純粋な状態と幾何、単体テスト対象)。幅は設定 (ini) から来る素の `configuredWidth` と、操作一覧モードで `kHelpWidth` まで広げた表示上の `width` の 2 つを区別する。**一覧の中身も窓も知らない** ― 項目数・領域の高さのように外から決まる値は引数で受け取り、フルスクリーンで隠す判断とレイアウトの作り直しは `App` に残る |
+| `PointerState` | マウス操作の進行状態(`pointer_state.h`。純粋な状態、単体テスト対象)。左右の役割 (`MouseButton` / `MouseRole` / `swap_buttons`)、最後のポインタ位置と窓内にいるか、パン中か、右クリックの押下位置とそこから決まる `MenuOnRelease`、ホイールの貯金。**画像も窓も知らない** ― 画素に触る編集ドラッグ (`selecting_`) とオブジェクト操作 (`objectDrag_`) は `App` に残る |
 | `EditHistory` | 取り消し・やり直しの履歴(`edit_history.h`。1段は `EditSnapshot` = 画像 + 注釈一覧、上限 `kLimit` = 10。純粋な状態、単体テスト対象)。ドラッグ中・テキスト編集中の「最初の1回だけ積む」判定の旗も持つ。画像そのものや表示状態は知らず、復元は `App::restoreFrom` が行う |
 | `TextEditBuffer` | インプレース編集中の文字列・キャレット・選択範囲・部分書式(`text_edit.h`。UTF-8 バイト位置の純粋ロジック、単体テスト対象)。文字列を変えるたびに書式範囲を追従させる |
 | `text_style.h` | 部分書式(色・太字・斜体・下線・フォント)の範囲リストとその編集の純関数。範囲の切り分け・正規化・編集への追従(`adjustTextStyles`)を担う(単体テスト対象) |
