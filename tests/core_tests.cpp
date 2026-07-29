@@ -513,6 +513,12 @@ void testConfig() {
     CHECK(cfg.get("keys", "missing", "def") == "def");
     CHECK(cfg.getInt("view", "missing", 42) == 42);
     CHECK(cfg.getColorRGB("view", "fit_upscale", 7) == 7u);  // 色として不正 → 既定値
+    // UTF-8 BOM 付きでも先頭セクションが読める。剥がさないと "\xEF\xBB\xBF[view]" が
+    // '[' で始まらず、最初のセクションだけ黙って無視される
+    const Config bom = Config::parse("\xEF\xBB\xBF[view]\nfit_upscale = true\n[keys]\nnext = N\n");
+    CHECK(bom.getBool("view", "fit_upscale", false) == true);
+    CHECK(bom.get("keys", "next") == "N");
+
 }
 
 // 3x2 のテスト画像。各画素の R に連番 (10,11,12 / 20,21,22) を入れて位置を追跡する

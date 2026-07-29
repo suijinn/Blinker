@@ -17,6 +17,12 @@ Config Config::loadFile(const std::filesystem::path& path) {
 }
 
 Config Config::parse(std::string_view text) {
+    // UTF-8 BOM を剥がす。付いたままだと先頭行が "\xEF\xBB\xBF[view]" になり、
+    // '[' で始まらないので**最初のセクションが丸ごと無視される**(そのキーは無名
+    // セクション行きになるので、エラーも出ずに設定だけが効かない)。
+    // Windows PowerShell の Set-Content -Encoding UTF8 や旧 Notepad が既定で付ける
+    if (text.starts_with("\xEF\xBB\xBF")) text.remove_prefix(3);
+
     Config config;
     std::string sectionName;
     std::istringstream stream{std::string(text)};
