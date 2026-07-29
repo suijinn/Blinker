@@ -1235,6 +1235,26 @@ private:
     std::shared_ptr<DecodedImage> compositeImage() const;
 
     /**
+     * @brief 選択中の注釈オブジェクト 1 件だけをラスタライズする(コピー用)。
+     *
+     * 下地は含めず、オブジェクトのバウンディングボックス分の画像を返す。
+     * 覆われていない部分は透過のままなので、透過を解さない貼り付け先では
+     * IClipboard 側で白と合成される。
+     *
+     * @return オブジェクトの画像。何も選んでいない、またはラスタライズに
+     *         失敗したときは nullptr。
+     */
+    std::shared_ptr<DecodedImage> selectedObjectImage() const;
+
+    /**
+     * @brief 画像をクリップボードへコピーする(Command::CopyImage)。
+     *
+     * オブジェクトを選択している間は、そのオブジェクトだけをコピーする。
+     * 何も選んでいなければ compositeImage()(注釈と表示回転を焼き込んだもの)。
+     */
+    void executeCopyImage();
+
+    /**
      * @brief クリップボードの画像を表示中の画像として開く(Command::PasteImage)。
      *
      * 編集中の内容は捨てられ、一覧の位置から切り離された「貼り付け画像」になる

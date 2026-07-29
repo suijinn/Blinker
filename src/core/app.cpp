@@ -458,13 +458,7 @@ void App::execute(Command command) {
         if (const auto path = host_.showOpenDialog()) openPath(*path);
         break;
     case Command::CopyImage:
-        if (!current_) {
-            showMessage("コピーする画像がありません");
-        } else if (clipboard_.setImage(*compositeImage())) {
-            showMessage("画像をクリップボードにコピーしました");
-        } else {
-            showMessage("画像のコピーに失敗しました");
-        }
+        executeCopyImage();
         break;
     case Command::CopyPath:
         if (clipboardImage_ || list_.empty()) {
@@ -2418,6 +2412,38 @@ std::shared_ptr<DecodedImage> App::compositeImage() const {
     // 注釈は画像座標なので、焼き込んでから回す(画面で見えているとおりに出る)
     bakeRotation(*out, rotation);
     return out;
+}
+
+std::shared_ptr<DecodedImage> App::selectedObjectImage() const {
+    if (!selected_ || *selected_ >= annotations_.size()) return nullptr;
+    AnnotationOverlay overlay = rasterizer_.rasterize(annotations_[*selected_]);
+    if (!overlay.image) return nullptr;
+    // 注釈は画像座標なので、compositeImage と同じく表示回転は最後に焼き込む
+    // (画面で見えているとおりの向きで貼り付けられる)
+    bakeRotation(*overlay.image, viewport_.rotationDegrees());
+    return std::move(overlay.image);
+}
+
+void App::executeCopyImage() {
+    // オブジェクトを選んでいる間はそれだけをコピーする。選択中は操作の対象が
+    // オブジェクトなので、Ctrl+C の対象もそちらに合わせる(下地ごと欲しいときは
+    // Esc で選択を外す)
+    if (selected_ && *selected_ < annotations_.size()) {
+        const std::shared_ptr<DecodedImage> object = selectedObjectImage();
+        if (object && clipboard_.setImage(*object)) {
+            showMessage("オブジェクトをクリップボードにコピーしました");
+        } else {
+            showMessage("オブジェクトのコピーに失敗しました");
+        }
+        return;
+    }
+    if (!current_) {
+        showMessage("コピーする画像がありません");
+    } else if (clipboard_.setImage(*compositeImage())) {
+        showMessage("画像をクリップボードにコピーしました");
+    } else {
+        showMessage("画像のコピーに失敗しました");
+    }
 }
 
 void App::markEdited() {
