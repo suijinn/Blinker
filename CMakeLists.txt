@@ -33,6 +33,7 @@ add_library(blinker_core STATIC
     src/core/edit.cpp
     src/core/edit_drag_state.cpp
     src/core/edit_history.cpp
+    src/core/edit_style.cpp
     src/core/exif.cpp
     src/core/help.cpp
     src/core/image_cache.cpp
