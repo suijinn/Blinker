@@ -37,6 +37,7 @@
 #include "core/sort_order.h"
 #include "core/str_util.h"
 #include "core/text_edit.h"
+#include "core/text_edit_state.h"
 #include "core/text_style.h"
 #include "core/unicode.h"
 #include "core/version.h"
@@ -3098,6 +3099,82 @@ void testPointerState() {
     CHECK(heavy.wheelSteps(2.0f, true) == 0);
     CHECK(heavy.wheelSteps(1.0f, true) == 1);
     CHECK(heavy.wheelSteps(1.0f, false) == 1);  // 垂直は 1 ノッチ固定のまま
+}
+
+void testTextEditState() {
+    // 開始でキャレットは末尾、点滅は表示相、変換中でもドラッグ選択中でもない
+    TextEditState edit;
+    CHECK(!edit.active() && !edit.composing() && !edit.mouseSelecting());
+    edit.begin(3, true, "abc", {TextStyleRun{0, 3, true, false, false, false, 0}});
+    CHECK(edit.active() && edit.index() == 3 && edit.created());
+    CHECK(edit.caretOn() && !edit.mouseSelecting() && !edit.composing());
+    CHECK(edit.buffer().text() == "abc" && edit.buffer().caret() == 3);
+    CHECK(edit.buffer().styles().size() == 1);
+
+    // 終了しても index・新規作成中の旗・バッファは残る(確定処理が後から読む)
+    edit.setComposition("かな", 3, 0, 3);
+    edit.endMouseSelect();
+    edit.beginMouseSelect();
+    edit.end();
+    CHECK(!edit.active() && !edit.mouseSelecting() && !edit.composing());
+    CHECK(edit.index() == 3 && edit.created() && edit.buffer().text() == "abc");
+
+    // 開始し直すと新規作成中の旗もバッファも入れ替わる
+    edit.begin(1, false, "xy", {});
+    CHECK(edit.index() == 1 && !edit.created() && edit.buffer().text() == "xy");
+    CHECK(edit.buffer().styles().empty());
+
+    // キャレットの点滅。動かした直後は必ず表示相へ戻す
+    TextEditState blink;
+    blink.begin(0, false, "", {});
+    blink.blinkCaret();
+    CHECK(!blink.caretOn());
+    blink.blinkCaret();
+    CHECK(blink.caretOn());
+    blink.blinkCaret();
+    blink.showCaret();
+    CHECK(blink.caretOn());
+
+    // 書式メニューは押下を覚えて離した位置で出す。消費するので 2 回目は出ない
+    TextEditState menu;
+    CHECK(!menu.consumeStyleMenu());
+    menu.pressStyleMenu();
+    CHECK(menu.consumeStyleMenu());
+    CHECK(!menu.consumeStyleMenu());
+    menu.pressStyleMenu();
+    menu.begin(0, false, "", {});  // 編集を始め直したら押下は捨てる
+    CHECK(!menu.consumeStyleMenu());
+
+    // 変換中文字列はキャレット位置へ挿入した形で描かれる(バッファには入らない)
+    TextEditState ime;
+    ime.begin(0, false, "AB", {});
+    ime.buffer().setCaret(1, false);
+    CHECK(ime.displayText() == "AB" && ime.caretOffset() == 1);
+    ime.setComposition("かな", 3, 0, 3);
+    CHECK(ime.composing() && ime.composition() == "かな");
+    CHECK(ime.displayText() == "AかなB");
+    CHECK(ime.buffer().text() == "AB");                 // 確定するまで混ざらない
+    CHECK(ime.caretOffset() == 1 + 3);                  // 変換中文字列内のキャレット分
+    CHECK(ime.compositionTargetBegin() == 0 && ime.compositionTargetEnd() == 3);
+    ime.resetComposition();
+    CHECK(!ime.composing() && ime.displayText() == "AB" && ime.caretOffset() == 1);
+
+    // IME が返す位置は信用せず、変換中文字列の長さへクランプする
+    TextEditState clamp;
+    clamp.begin(0, false, "", {});
+    clamp.setComposition("abc", 99, 99, 1);  // 終了位置が開始位置より手前
+    CHECK(clamp.caretOffset() == 3);
+    CHECK(clamp.compositionTargetBegin() == 3 && clamp.compositionTargetEnd() == 3);
+
+    // 部分書式は変換中文字列の挿入分だけ後ろへずれる(挿入と同じ扱い)
+    TextEditState styles;
+    styles.begin(0, false, "abcd", {TextStyleRun{2, 4, true, false, false, false, 0}});
+    styles.buffer().setCaret(1, false);
+    styles.setComposition("XY", 2, 0, 2);
+    CHECK(styles.displayStyles().size() == 1);
+    CHECK((styles.displayStyles()[0] == TextStyleRun{4, 6, true, false, false, false, 0}));
+    styles.resetComposition();
+    CHECK((styles.displayStyles()[0] == TextStyleRun{2, 4, true, false, false, false, 0}));
 }
 
 void testAnnotationGeometry() {
@@ -6304,6 +6381,7 @@ int main() {
     testSortOrder();
     testSidebarState();
     testPointerState();
+    testTextEditState();
     testAppSidebar();
     testAppSidebarResize();
     testAppHelpSidebar();

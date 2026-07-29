@@ -49,6 +49,7 @@ add_library(blinker_core STATIC
     src/core/sidebar_state.cpp
     src/core/sort_order.cpp
     src/core/text_edit.cpp
+    src/core/text_edit_state.cpp
     src/core/text_style.cpp
     src/core/unicode.cpp
     src/core/viewport.cpp

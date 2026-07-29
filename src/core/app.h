@@ -25,7 +25,7 @@
 #include "core/scan_service.h"
 #include "core/sidebar_state.h"
 #include "core/sort_order.h"
-#include "core/text_edit.h"
+#include "core/text_edit_state.h"
 #include "core/viewport.h"
 #include "platform/annotation.h"
 #include "platform/clipboard.h"
@@ -350,7 +350,7 @@ public:
      * @return 編集中なら true。
      * @note win 層はこれを見てキー入力を文字入力として App へ回す。
      */
-    bool isTextEditing() const { return textEditing_; }
+    bool isTextEditing() const { return textEdit_.active(); }
 
     /**
      * @brief 編集中のテキストへ文字列を挿入する(文字キー入力・IME 確定・貼り付け)。
@@ -394,7 +394,7 @@ public:
      * @brief IME で変換中かを返す。
      * @return 変換中文字列があれば true。
      */
-    bool isComposing() const { return !composition_.empty(); }
+    bool isComposing() const { return textEdit_.composing(); }
 
     /// @brief 編集中のテキストを確定して編集を終了する(内容が空なら注釈を削除する)。
     void commitTextEdit();
@@ -1116,28 +1116,6 @@ private:
      */
     void refreshTextEditSpec();
 
-    /**
-     * @brief 描画に使うテキストを組み立てる。
-     * @return 編集中の文字列に、変換中文字列をキャレット位置へ挿入したもの(UTF-8)。
-     */
-    std::string textEditDisplayText() const;
-
-    /**
-     * @brief 描画に使う部分書式を組み立てる。
-     * @return 編集中の部分書式を、変換中文字列の挿入分だけずらしたもの。
-     * @note 変換中文字列そのものは直前の文字の書式を継ぐ(adjustTextStyles と同じ規則)。
-     */
-    std::vector<TextStyleRun> textEditDisplayStyles() const;
-
-    /**
-     * @brief 表示用テキスト内でのキャレット位置を返す。
-     * @return バイト位置。変換中は変換中文字列内のキャレットを加えた位置。
-     */
-    size_t textEditCaretOffset() const;
-
-    /// @brief 変換中文字列の状態を消す。
-    void resetComposition();
-
     /// @brief キャレット位置を host へ通知し(IME の位置合わせ)、点滅を表示相に戻す。
     void notifyCaretMoved();
 
@@ -1148,7 +1126,7 @@ private:
      * @brief 編集中のテキスト内で、画像座標に対応する文字位置を求める。
      * @param[in] imagePos 対象の位置(画像座標)。回転は内部で打ち消す。
      * @return テキスト内のバイト位置(UTF-8)。
-     * @pre textEditing_ が true であること。
+     * @pre TextEditState::active() が true であること。
      */
     size_t textOffsetAt(Point imagePos) const;
 
@@ -1451,19 +1429,10 @@ private:
     ResizeHandle dragResizeHandle_ = ResizeHandle::BottomRight;  ///< Resize: 掴んだハンドル
 
     // Text 注釈のインプレース編集(画像上で直接入力する状態)
-    bool textEditing_ = false;      ///< 編集中か
-    size_t textEditIndex_ = 0;      ///< 編集中の注釈 index(annotations_ 内)
-    TextEditBuffer textBuffer_;     ///< 編集中の文字列・キャレット・選択範囲
-    bool textEditCreated_ = false;  ///< 新規作成中(空のまま終了したら注釈を消す)
-    bool textEditCaretOn_ = true;   ///< キャレット点滅の表示相
-    bool textEditMouseSelect_ = false;  ///< ドラッグで選択範囲を広げている最中
-    /// 右ボタンを選択範囲の上で押した。離した位置で書式メニューを出す(編集は確定しない)
-    bool textStyleMenuPending_ = false;
-    /// IME の変換中文字列(UTF-8)。確定するまで textBuffer_ には入れず、表示にだけ混ぜる
-    std::string composition_;
-    size_t compositionCaret_ = 0;        ///< 変換中文字列内のキャレット(バイト位置)
-    size_t compositionTargetBegin_ = 0;  ///< 変換対象の節の開始(同上)
-    size_t compositionTargetEnd_ = 0;    ///< 変換対象の節の終了(同上)
+    /// 編集中かどうか・対象の注釈 index・編集バッファ・キャレットの点滅・
+    /// ドラッグ選択・書式メニューの押下・IME の変換中文字列。
+    /// 対象の注釈そのもの(annotations_)と、枠の実測・キャレット位置の通知は App 側
+    TextEditState textEdit_;
 
     /// 取り消し・やり直しの履歴。ドラッグ中・テキスト編集中の「最初の 1 回だけ積む」
     /// 判定もここが持つ(旗と積み先が食い違わないようにするため)
