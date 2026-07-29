@@ -179,7 +179,12 @@ jobs:
         #
         # 除外する 1 件は「日本語の翻訳が 1.8.15 以降更新されていない」という
         # Doxygen 側の無害な通知で、こちらでは消せない(2 行に折り返して出る)。
+        #
+        # 先に mkdir -p が要る。OUTPUT_DIRECTORY = build/doxygen は入れ子のディレクトリを
+        # 作ってくれず、build/ は .gitignore 対象なのでクリーンなチェックアウトには無い。
+        # 手元では build/ が既にあるので気付けない (この CI の初回実行で踏んだ)
         run: |
+          mkdir -p build/doxygen
           doxygen docs/Doxyfile 2> doxygen-warnings.txt || true
           grep -v 'The selected output language "japanese" has not been updated' doxygen-warnings.txt \
             | grep -v 'since release 1.8.15' \
