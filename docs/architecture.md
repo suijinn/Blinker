@@ -168,10 +168,16 @@ Text 注釈を選択中の `Ctrl+B` だけは `App::onKey` が Keymap より先�
 `Command::ToggleSidebar` と同じキーだが、選んでいるオブジェクトへの操作を優先する。
 インプレース編集中の Ctrl+B/I/U が Keymap を通らないのと同じ扱いで、
 選択 → 編集を行き来しても Ctrl+B の意味が変わらない。
-Ctrl+Z で1段階ずつ取り消し、Ctrl+Y(Shift+Ctrl+Z も可)でやり直せる(履歴は画像 +
-注釈一覧のスナップショット、undo・redo とも上限10)。undo は現在の状態を redo 側へ、
-redo は undo 側へ積み替えるだけの対称な操作 (`App::restoreFrom`) で、
-新しい編集を積む (`pushUndoState`) と redo 履歴は捨てる(分岐した未来は残さない)。
+Ctrl+Z で1段階ずつ取り消し、Ctrl+Y(Shift+Ctrl+Z も可)でやり直せる。履歴は core の
+`EditHistory` (`edit_history.h`) が持つ(1段は画像 + 注釈一覧のスナップショット
+`EditSnapshot`、undo・redo とも上限 `EditHistory::kLimit` = 10)。undo は現在の状態を
+redo 側へ、redo は undo 側へ積み替えるだけの対称な操作で、新しい編集を積む
+(`EditHistory::push`)と redo 履歴は捨てる(分岐した未来は残さない)。
+取り出したスナップショットを表示状態へ戻すのは App 側 (`App::restoreFrom`)。
+ドラッグ(移動・回転・リサイズ)とテキスト入力は 1 回の操作で変更が何度も届くので、
+積むのは最初の 1 回だけにする。その判定の旗も `EditHistory` が持つ
+(`consumeDragPush` / `consumeTextEditSnapshot`)。旗と積み先が離れていると
+「積んだつもりで積んでいない」が起きるため。
 保存は明示した時だけで、勝手に書き換えることはない。上書き保存 (Ctrl+S) は元の
 ファイルを置き換えるため既定で確認ダイアログ (`IAppHost::showConfirm`) を出し
 (`[save] confirm_overwrite`)、成功したら `ImageCache::invalidate` でその 1 件を捨てる
@@ -503,7 +509,7 @@ Text 注釈は PowerPoint のテキストボックスと同じく**画像上で�
 
 | コンポーネント | 責務 |
 |---|---|
-| `App` | 状態機械の中心。Command を受けて状態更新、host へ再描画依頼。ステータスバー (`StatusBarView`) とサイドバー (`SidebarView`、可視範囲の項目のみ) の表示内容もここで組み立てる。サイドバーは `SidebarMode` でファイル名一覧と操作一覧 (F1) を切り替える(レンダラからは同じ文字列リストに見える)。貼り付け画像はフォルダ一覧から独立した表示状態(`clipboardImage_`)で持ち、移動系コマンドで一覧表示へ戻る(一覧が空なら戻る先が無いので移動を無視する。`App::navigate`)。編集(現在のツール `EditTool` と編集ドラッグでの適用、プレビュー・`SelectionView`・注釈オブジェクトの選択/移動/回転ドラッグ状態・undo 履歴)もここで管理し、画像切替で破棄する |
+| `App` | 状態機械の中心。Command を受けて状態更新、host へ再描画依頼。ステータスバー (`StatusBarView`) とサイドバー (`SidebarView`、可視範囲の項目のみ) の表示内容もここで組み立てる。サイドバーは `SidebarMode` でファイル名一覧と操作一覧 (F1) を切り替える(レンダラからは同じ文字列リストに見える)。貼り付け画像はフォルダ一覧から独立した表示状態(`clipboardImage_`)で持ち、移動系コマンドで一覧表示へ戻る(一覧が空なら戻る先が無いので移動を無視する。`App::navigate`)。編集(現在のツール `EditTool` と編集ドラッグでの適用、プレビュー・`SelectionView`・注釈オブジェクトの選択/移動/回転ドラッグ状態・undo 履歴 (`EditHistory`))もここで管理し、画像切替で破棄する |
 | `Viewport` | ズーム/パン/フィット/回転の座標変換(純粋計算、テスト容易) |
 | `ImageList` | フォルダ内画像の一覧・現在位置・先読み候補の順序付け |
 | `sort_order.h` | 一覧の並び順(名前・更新日時・サイズ・種類 × 昇降)の適用。**列挙とプラットフォーム依存の名前順比較は `IFileSystem` の責務**で、ここは「どのキーでどちら向きに並べるか」だけを持つ純粋関数(単体テスト対象)。詳細は下記「一覧の並び順とサブフォルダ」 |
@@ -516,6 +522,7 @@ Text 注釈は PowerPoint のテキストボックスと同じく**画像上で�
 | `Mousemap` | MouseChord → Command(中・サイドボタン・ホイール・ダブルクリック)。`Keymap` と同じ形。ini 用の表記 (`chordToString`) と操作一覧用の日本語表記 (`chordToDisplayString`) を持つ。ホイール量の蓄積 (`consumeWheelSteps`) も同じヘッダ(いずれも単体テスト対象) |
 | `nav_arrows.h` | オーバーレイ矢印(左右の端に出る画像遷移ボタン)の寸法・表示条件・当たり判定(純粋関数、単体テスト対象)。**廃止しうる表示なので判定をここに閉じている**(上記「オーバーレイ矢印」) |
 | `help.h` | 現在の `Keymap` / `Mousemap` から操作一覧の表示テキストを組み立てる(`buildHelpLines`)。固定テキストを持たないので README と drift しない。コマンドの表示名の正はこのファイルの表 1 つで、キーの節とマウスの節が共有する(単体テスト対象) |
+| `EditHistory` | 取り消し・やり直しの履歴(`edit_history.h`。1段は `EditSnapshot` = 画像 + 注釈一覧、上限 `kLimit` = 10。純粋な状態、単体テスト対象)。ドラッグ中・テキスト編集中の「最初の1回だけ積む」判定の旗も持つ。画像そのものや表示状態は知らず、復元は `App::restoreFrom` が行う |
 | `TextEditBuffer` | インプレース編集中の文字列・キャレット・選択範囲・部分書式(`text_edit.h`。UTF-8 バイト位置の純粋ロジック、単体テスト対象)。文字列を変えるたびに書式範囲を追従させる |
 | `text_style.h` | 部分書式(色・太字・斜体・下線・フォント)の範囲リストとその編集の純関数。範囲の切り分け・正規化・編集への追従(`adjustTextStyles`)を担う(単体テスト対象) |
 | `MainWindow` | Win32 メッセージ変換、フルスクリーン、ダイアログ(開く・保存・上書き確認・色選択)・編集メニュー(サブメニュー対応)・テキストのインプレース編集まわり(`WM_CHAR`・IME・キャレット点滅タイマー)(IAppHost 実装) |
