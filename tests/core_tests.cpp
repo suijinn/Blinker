@@ -207,9 +207,10 @@ void testKeymap() {
     CHECK(custom.find({KeyCode::Right}) == Command::None);       // 置き換え済み
     CHECK(custom.find({KeyCode::Left}) == Command::PrevImage);   // 他コマンドは無傷
 
-    // 編集ツールの切り替えは既定のキーを持たず、ini で割り当てる
+    // 編集ツールの切り替えとトリミングは既定のキーを持たず、ini で割り当てる
     CHECK(commandFromName("tool_arrow") == Command::SelectToolArrow);
-    CHECK(commandFromName("tool_crop") == Command::SelectToolCrop);
+    CHECK(commandFromName("crop_selection") == Command::CropToSelection);
+    CHECK(commandFromName("tool_crop") == Command::None);  // トリミングはツールではなくなった
     Keymap tools = Keymap::defaults();
     CHECK(tools.find({KeyCode{'A'}}) == Command::None);
     tools.applyConfig({{"tool_arrow", "A"}, {"tool_text", "T"}});
@@ -1181,12 +1182,13 @@ const MenuItem* findMenuItem(const std::vector<MenuItem>& items, std::string_vie
 }
 
 // 注釈のない場所での右クリック(ドラッグなし)= ツール切り替えメニュー。
-// leafIndex はメニューの末端項目: 0 トリミング, 1 文字認識, 2 矩形, 3 楕円, 4 矢印,
-// 5 直線, 6 ペン, 7 マーカー, 8 連番マーカー, 9 テキスト,
-// 10-16 太さ {1,2,3,5,8,12,20}, 17-23 文字サイズ {12,14,18,24,36,48,72},
-// 24-32 フォント(候補9種。FakeAnnotationRasterizer は全て入っていることにする), 33 色,
-// 34-38 塗りつぶし {0,64,128,191,255}, 39 塗りつぶしの色,
-// 40-45 テキストの枠線 {0,1,2,3,5,8}, 46 枠線の色
+// leafIndex はメニューの末端項目: 0 文字認識, 1 矩形, 2 楕円, 3 矢印,
+// 4 直線, 5 ペン, 6 マーカー, 7 連番マーカー, 8 テキスト,
+// 9-15 太さ {1,2,3,5,8,12,20}, 16-22 文字サイズ {12,14,18,24,36,48,72},
+// 23-31 フォント(候補9種。FakeAnnotationRasterizer は全て入っていることにする), 32 色,
+// 33-37 塗りつぶし {0,64,128,191,255}, 38 塗りつぶしの色,
+// 39-44 テキストの枠線 {0,1,2,3,5,8}, 45 枠線の色
+// (トリミングはツールではなくなったのでここには無い。矩形オブジェクトのメニューにある)
 constexpr Point kEmptySpot{600, 450};  // 画像・注釈の外(ツールメニューが開く位置)
 
 // ツールメニューで末端項目を順に選ぶ。設定系(太さ・色など)を選ぶとメニューは
@@ -2837,6 +2839,40 @@ void testEditFunctions() {
     CHECK(cropImage(src, {4, 0, 2, 2}) == nullptr);
     CHECK(cropImage(src, {1, 1, 0, 0}) == nullptr);
 
+    // 切り出す範囲の丸め: 部分的にかかった画素も残すよう外側へ寄せる
+    const auto exact = cropRectFor({1.2f, 0.8f}, {3.1f, 1.9f}, 4, 2);
+    CHECK(exact && exact->x == 1 && exact->y == 0 && exact->w == 3 && exact->h == 2);
+    // 対角の向きは問わない(正規化される)
+    const auto flipped = cropRectFor({3.1f, 1.9f}, {1.2f, 0.8f}, 4, 2);
+    CHECK(flipped && flipped->x == 1 && flipped->w == 3);
+    // 画像の外まで広げた範囲はクランプされる。原点もクランプ後の値になるので、
+    // そのまま注釈の平行移動量に使える
+    const auto over = cropRectFor({-10.0f, -10.0f}, {100.0f, 100.0f}, 4, 2);
+    CHECK(over && over->x == 0 && over->y == 0 && over->w == 4 && over->h == 2);
+    // 重なりが無ければ nullopt(cropImage が nullptr を返す条件と一致する)
+    CHECK(!cropRectFor({10.0f, 0.0f}, {20.0f, 2.0f}, 4, 2));
+    CHECK(!cropRectFor({1.0f, 1.0f}, {1.0f, 1.0f}, 4, 2));
+    CHECK(!cropRectFor({0.0f, 0.0f}, {4.0f, 2.0f}, 0, 0));
+
+    // 縦横比を整える: 比の整数倍へ丸めるので、画素数で比がぴったり保たれる。
+    // 80x40 に収まる 16:9 の最大の整数倍は 4 倍 = 64x36
+    const auto wide = fitRectToAspect({10, 20, 80, 40}, 16, 9, 200, 100);
+    CHECK(wide && wide->w == 64 && wide->h == 36);
+    CHECK(wide->w * 9 == wide->h * 16);  // 比は厳密
+    CHECK(wide->x == 18 && wide->y == 22);  // 中心 (50,40) を保つ
+    // 既にその比なら同じ矩形が返る(メニューのチェック判定がこれに乗る)
+    const auto same = fitRectToAspect(*wide, 16, 9, 200, 100);
+    CHECK(same && same->x == wide->x && same->y == wide->y);
+    CHECK(same->w == wide->w && same->h == wide->h);
+    // 縦長の比も同じ規則。80x40 に収まる 9:16 は 2 倍 = 18x32
+    const auto tall = fitRectToAspect({10, 20, 80, 40}, 9, 16, 200, 100);
+    CHECK(tall && tall->w == 18 && tall->h == 32);
+    CHECK(tall->x == 41 && tall->y == 24);
+    // 比 1 倍ぶんにも満たない範囲、および不正な比
+    CHECK(!fitRectToAspect({0, 0, 4, 4}, 16, 9, 200, 100));
+    CHECK(!fitRectToAspect({0, 0, 80, 40}, 0, 9, 200, 100));
+    CHECK(!fitRectToAspect({0, 0, 0, 0}, 16, 9, 200, 100));
+
     // 半透明 (a=128) の事前乗算 over 合成
     DecodedImage dst;
     dst.width = 2;
@@ -3288,16 +3324,13 @@ void testObjectDragState() {
 
 void testEditStyle() {
     EditStyle style;
-    CHECK(style.tool() == EditTool::Rect && style.toolAfterCrop() == EditTool::Rect);
+    CHECK(style.tool() == EditTool::Rect);
     CHECK(!style.penActive());
 
-    // トリミングを選んでも戻り先は直前の図形ツールのまま
     style.setTool(EditTool::Line);
-    CHECK(style.toolAfterCrop() == EditTool::Line);
-    style.setTool(EditTool::Crop);
-    CHECK(style.tool() == EditTool::Crop && style.toolAfterCrop() == EditTool::Line);
+    CHECK(style.tool() == EditTool::Line);
     style.setTool(EditTool::Pen);
-    CHECK(style.penActive() && style.toolAfterCrop() == EditTool::Pen);
+    CHECK(style.penActive());
     style.setTool(EditTool::Marker);
     CHECK(style.penActive());  // マーカーも手書き
     style.setTool(EditTool::Text);
@@ -3379,7 +3412,7 @@ void testEditStyleConfig() {
     style.applyConfig(Config::parse("[edit]\ntool = marker\ncolor = #00FF00\nstroke_width = 5\n"
                                     "font_size = 36\nfont_family = Meiryo\nfill_color = 112233\n"
                                     "fill_alpha = 128\nborder_color = 445566\nborder_width = 2\n"));
-    CHECK(style.tool() == EditTool::Marker && style.toolAfterCrop() == EditTool::Marker);
+    CHECK(style.tool() == EditTool::Marker);
     CHECK(style.colorRGB() == 0x00FF00 && nearly(style.strokeWidth(), 5));
     CHECK(nearly(style.fontSize(), 36) && style.fontFamily() == "Meiryo");
     CHECK(style.fillRGB() == 0x112233 && style.fillAlpha() == 128);
@@ -3398,6 +3431,12 @@ void testEditStyleConfig() {
     CHECK(clamped.tool() == EditTool::Rect);  // 未知の名前は無視して既定のまま
     CHECK(nearly(clamped.strokeWidth(), 100) && nearly(clamped.fontSize(), 6));
     CHECK(clamped.fillAlpha() == 0 && nearly(clamped.borderWidth(), 100));
+
+    // 旧版の tool = crop が残っていても、未知の名前として無視されるだけで壊れない
+    EditStyle legacy;
+    legacy.setTool(EditTool::Line);
+    legacy.applyConfig(Config::parse("[edit]\ntool = crop\n"));
+    CHECK(legacy.tool() == EditTool::Line);
 
     // 空のフォント指定は既定を消さない
     EditStyle empty;
@@ -3496,10 +3535,10 @@ void testBuildEditMenu() {
     CHECK(!findMenuItem(items, "画像をリサイズ"));
     // 末端項目の一覧が index の対応そのものなので、数は一致していなければならない
     CHECK(entries.size() == countMenuLeaves(items));
-    CHECK(entries[4].action == EditMenuEntry::Action::SelectTool);
-    CHECK(entries[4].tool == EditTool::Arrow);
-    // 末端 index 4(矢印)は、区切り線を挟むぶん items では 5 番目になる
-    CHECK(items[5].checked && !items[3].checked);
+    CHECK(entries[3].action == EditMenuEntry::Action::SelectTool);
+    CHECK(entries[3].tool == EditTool::Arrow);
+    // 末端 index 3(矢印)は、区切り線を挟むぶん items では 4 番目になる
+    CHECK(items[4].checked && !items[3].checked);
     const MenuItem* stroke = findMenuItem(items, "線の太さ");
     CHECK(stroke && stroke->text == "線の太さ (5px)");
     CHECK(stroke->children[3].checked);  // {1,2,3,5,...} の 5px
@@ -3559,9 +3598,10 @@ void testBuildSidebarMenu() {
 void testBuildObjectMenu() {
     const Keymap km = Keymap::defaults();
     const FontAvailableFn all = [](const std::string&) { return true; };
+    // 画像なしで組み立てる(範囲としての項目は出ない)
     const auto build = [&km, &all](const AnnotationSpec& spec,
                                    std::vector<ObjectMenuEntry>& entries) {
-        std::vector<MenuItem> items = buildObjectMenu(spec, km, all, entries);
+        std::vector<MenuItem> items = buildObjectMenu(spec, km, all, std::nullopt, entries);
         CHECK(entries.size() == countMenuLeaves(items));
         return items;
     };
@@ -3600,6 +3640,91 @@ void testBuildObjectMenu() {
     CHECK(findMenuItem(rectItems, "線の太さ")->children.size() == 7);
     CHECK(findMenuItem(rectItems, "塗りつぶし"));
     CHECK(!findMenuItem(rectItems, "線の不透明度"));
+
+    // 回転していない矩形は「範囲」でもある。切り出す大きさを見出しに添えて先頭に出す
+    const auto buildWithImage = [&km, &all](const AnnotationSpec& spec, MenuImageSize image,
+                                            std::vector<ObjectMenuEntry>& entries) {
+        std::vector<MenuItem> items = buildObjectMenu(spec, km, all, image, entries);
+        CHECK(entries.size() == countMenuLeaves(items));
+        return items;
+    };
+    AnnotationSpec range;
+    range.kind = AnnotationSpec::Kind::Rect;
+    range.p1 = {10.5f, 20.5f};
+    range.p2 = {90.0f, 60.0f};
+    std::vector<ObjectMenuEntry> rangeEntries;
+    const std::vector<MenuItem> rangeItems = buildWithImage(range, {200, 100}, rangeEntries);
+    // 部分的にかかった画素も含めるので 10..90 (80px) / 20..60 (40px)
+    CHECK(findMenuItem(rangeItems, "この範囲でトリミング")->text == "この範囲でトリミング (80 x 40)");
+    CHECK(findMenuItem(rangeItems, "この範囲を文字認識"));
+    CHECK(rangeEntries[0].action == ObjectMenuEntry::Action::Crop);
+    CHECK(rangeEntries[1].action == ObjectMenuEntry::Action::Ocr);
+
+    // 縦横比: 見出しは今の比を約分したもの (80:40 → 2:1)。項目には整えたあとの
+    // 大きさを添える。16:9 は 80x40 に収まる最大の整数倍 = 4 倍で 64x36
+    const MenuItem* aspect = findMenuItem(rangeItems, "縦横比");
+    CHECK(aspect && aspect->text == "縦横比 (2:1)");
+    CHECK(aspect->children.size() == 7);
+    CHECK(aspect->children[0].text == "16:9\t64 x 36");
+    CHECK(aspect->children[3].text == "1:1\t40 x 40");
+    CHECK(rangeEntries[2].action == ObjectMenuEntry::Action::Aspect);
+    // 中心を保つので原点は (10,20) から (18,22) へ寄る
+    CHECK(rangeEntries[2].rect.x == 18 && rangeEntries[2].rect.y == 22);
+    CHECK(rangeEntries[2].rect.w == 64 && rangeEntries[2].rect.h == 36);
+    // どの比にも一致しないのでチェックは付かない
+    for (const MenuItem& child : aspect->children) CHECK(!child.checked);
+    CHECK(rangeEntries[9].action == ObjectMenuEntry::Action::Delete);
+
+    // 既にその比ちょうどなら、その項目にチェックが付く(範囲は変わらない)
+    AnnotationSpec exact;
+    exact.kind = AnnotationSpec::Kind::Rect;
+    exact.p2 = {64.0f, 36.0f};
+    std::vector<ObjectMenuEntry> exactEntries;
+    const std::vector<MenuItem> exactItems = buildWithImage(exact, {200, 100}, exactEntries);
+    const MenuItem* exactAspect = findMenuItem(exactItems, "縦横比");
+    CHECK(exactAspect && exactAspect->text == "縦横比 (16:9)");
+    CHECK(exactAspect->children[0].checked && !exactAspect->children[1].checked);
+
+    // 範囲が小さすぎて作れない比は出さない(4x4 では 16:9 と 9:16 が落ちる)
+    AnnotationSpec tiny;
+    tiny.kind = AnnotationSpec::Kind::Rect;
+    tiny.p2 = {4.0f, 4.0f};
+    std::vector<ObjectMenuEntry> tinyEntries;
+    const std::vector<MenuItem> tinyItems = buildWithImage(tiny, {200, 100}, tinyEntries);
+    const MenuItem* tinyAspect = findMenuItem(tinyItems, "縦横比");
+    CHECK(tinyAspect && tinyAspect->children.size() == 5);
+    CHECK(tinyAspect->children[0].text == "3:2\t3 x 2");
+
+    // 画像からはみ出す範囲は、実際に切れる大きさ(クランプ後)を出す
+    AnnotationSpec overflow = range;
+    overflow.p2 = {400.0f, 400.0f};
+    std::vector<ObjectMenuEntry> overflowEntries;
+    const std::vector<MenuItem> overflowItems =
+        buildWithImage(overflow, {200, 100}, overflowEntries);
+    CHECK(findMenuItem(overflowItems, "この範囲でトリミング")->text ==
+          "この範囲でトリミング (190 x 80)");
+
+    // 回転した矩形は、見えている枠と軸平行の切り出し範囲が食い違うので出さない
+    AnnotationSpec rotated = range;
+    rotated.angleDeg = 30;
+    std::vector<ObjectMenuEntry> rotatedEntries;
+    const std::vector<MenuItem> rotatedItems = buildWithImage(rotated, {200, 100}, rotatedEntries);
+    CHECK(!findMenuItem(rotatedItems, "この範囲でトリミング"));
+    CHECK(!findMenuItem(rotatedItems, "縦横比"));
+    CHECK(rotatedEntries[0].action == ObjectMenuEntry::Action::Delete);
+
+    // 画像の外にある矩形と、矩形以外の種別にも出さない
+    AnnotationSpec outside = range;
+    outside.p1 = {300.0f, 300.0f};
+    outside.p2 = {400.0f, 400.0f};
+    std::vector<ObjectMenuEntry> outsideEntries;
+    CHECK(!findMenuItem(buildWithImage(outside, {200, 100}, outsideEntries),
+                        "この範囲でトリミング"));
+    AnnotationSpec ellipse = range;
+    ellipse.kind = AnnotationSpec::Kind::Ellipse;
+    std::vector<ObjectMenuEntry> ellipseEntries;
+    CHECK(!findMenuItem(buildWithImage(ellipse, {200, 100}, ellipseEntries),
+                        "この範囲でトリミング"));
 
     // 連番: 番号を振り直せる
     AnnotationSpec number;
@@ -3759,6 +3884,11 @@ void testPixelInfoText() {
     CHECK(pixelInfoText(image, 0, 1).empty());
     CHECK(pixelInfoText(image, -1, 0).empty());
     CHECK(pixelInfoText(image, 0, -1).empty());
+
+    // 選択中のオブジェクトの大きさ(寸法を合わせるための唯一の数値表示)
+    CHECK(objectSizeText(640, 480) == "選択 640 x 480");
+    CHECK(objectSizeText(0, 480).empty());
+    CHECK(objectSizeText(640, -1).empty());
 }
 
 void testAnnotationGeometry() {
@@ -4125,18 +4255,34 @@ void testAppAnnotationObjects() {
     app.execute(Command::Undo);
     CHECK(nearly(app.annotations().specs->front().angleDeg, 0));
 
-    // 右クリック(ドラッグ閾値未満)でオブジェクトメニュー。末端 index (図形):
-    // 0 削除, 1-8 回転 {0,15,30,45,90,135,180,270}, 9-15 太さ {1,2,3,5,8,12,20}, 16 色,
-    // 17-21 塗りつぶし {0,64,128,191,255}, 22 塗りつぶしの色
-    host.menuChoice = 5;  // 90°
+    // 右クリック(ドラッグ閾値未満)でオブジェクトメニュー。回転していない矩形は
+    // 画像に対する「範囲」でもあるので、末端 index (図形): 0 トリミング, 1 文字認識,
+    // 2-6 縦横比 {3:2, 4:3, 1:1, 3:4, 2:3}(4x4 では 16:9 と 9:16 が作れないので出ない),
+    // 7 削除, 8-15 回転 {0,15,30,45,90,135,180,270}, 16-22 太さ {1,2,3,5,8,12,20},
+    // 23 色, 24-28 塗りつぶし {0,64,128,191,255}, 29 塗りつぶしの色
+    host.menuChoice = 5;  // 縦横比 3:4 (範囲を 4x4 → 3x4 にする。切り出しはしない)
     app.onMouseDown(MouseButton::Right, {396, 283});
     app.onMouseUp(MouseButton::Right, {397, 283});
-    CHECK(countMenuLeaves(host.lastMenuItems) == 23);
+    CHECK(countMenuLeaves(host.lastMenuItems) == 30);
+    {
+        const AnnotationSpec& spec = app.annotations().specs->front();
+        CHECK(nearly(spec.p1.x, 0) && nearly(spec.p2.x, 3));  // 中心を保って幅だけ縮む
+        CHECK(nearly(spec.p1.y, 0) && nearly(spec.p2.y, 4));
+    }
+    app.execute(Command::Undo);
+    CHECK(nearly(app.annotations().specs->front().p2.x, 4));
+
+    host.menuChoice = 12;  // 90°
+    app.onMouseDown(MouseButton::Right, {396, 283});
+    app.onMouseUp(MouseButton::Right, {397, 283});
     CHECK(nearly(app.annotations().specs->front().angleDeg, 90));
 
+    // 回転すると軸平行の切り出し範囲と食い違うので、範囲としての 7 項目が消えて
+    // index が 7 つ戻る
     host.menuChoice = 13;  // 太さ 8px
     app.onMouseDown(MouseButton::Right, {396, 283});
     app.onMouseUp(MouseButton::Right, {396, 283});
+    CHECK(countMenuLeaves(host.lastMenuItems) == 23);
     CHECK(nearly(app.annotations().specs->front().strokeWidth, 8));
 
     host.colorChoice = 0x123456;
@@ -4146,7 +4292,7 @@ void testAppAnnotationObjects() {
     CHECK(app.annotations().specs->front().colorRGB == 0x123456);
 
     // テキスト注釈はその場で入力して追加し、ダブルクリックで再編集する
-    chooseInToolMenu(app, host, {9});  // テキスト
+    chooseInToolMenu(app, host, {8});  // テキスト
     CHECK(app.currentTool() == EditTool::Text);
     rasterizer.overlayWidth = 24;
     rasterizer.overlayHeight = 44;  // 実測境界 20x40(リサイズテストでハンドルを離すため縦長)
@@ -4181,19 +4327,28 @@ void testAppAnnotationObjects() {
     CHECK(app.annotations().specs->size() == 2);
     CHECK(app.annotations().specs->back().text == "更新後");
 
-    // トリミング後も注釈はオブジェクトのまま維持され、座標が平行移動する
-    chooseInToolMenu(app, host, {0});  // トリミング
-    CHECK(app.currentTool() == EditTool::Crop);
+    // トリミングの範囲は矩形オブジェクトで作り、そのメニュー(= 同じ操作をする
+    // Command::CropToSelection)から切り出す。範囲に使った矩形は消え、残りの注釈は
+    // オブジェクトのまま維持されて座標が平行移動する
+    chooseInToolMenu(app, host, {1});  // 矩形
     app.onMouseDown(MouseButton::Right, {398, 285});  // 画像 (2,2)
-    app.onMouseUp(MouseButton::Right, {402, 289});    // 画像 (6,6) → 4x4 に切り出し
-    CHECK(app.currentImage()->width == 4);
-    CHECK(app.annotations().specs->size() == 2);
+    app.onMouseUp(MouseButton::Right, {402, 289});    // 画像 (6,6)
+    CHECK(app.annotations().specs->size() == 3);
+    CHECK(app.annotations().selected == std::optional<size_t>(2));  // 追加直後は選択状態
+    app.execute(Command::CropToSelection);
+    CHECK(app.currentImage()->width == 4 && app.currentImage()->height == 4);
+    CHECK(app.annotations().specs->size() == 2);  // 範囲に使った矩形は消える
+    CHECK(!app.annotations().selected);
     CHECK(nearly(app.annotations().specs->front().p1.x, -2));  // (0,0) → (-2,-2)
-    // トリミングは一度きり。実行すると直前に使っていた図形ツール(テキスト)へ戻る
-    CHECK(app.currentTool() == EditTool::Text);
+    CHECK(app.currentTool() == EditTool::Rect);  // ツールは切り替わらない
+    // 矩形の消去と切り出しは 1 段。もう 1 段戻すと矩形の追加も取り消される
     app.execute(Command::Undo);
     CHECK(app.currentImage()->width == 8);
+    CHECK(app.annotations().specs->size() == 3);
     CHECK(nearly(app.annotations().specs->front().p1.x, 0));
+    app.execute(Command::Undo);
+    CHECK(app.annotations().specs->size() == 2);
+    chooseInToolMenu(app, host, {8});  // 後続はテキストツール前提なので戻しておく
 
     // 保存は注釈を合成した画像を出力する(注釈の数だけラスタライズされる)
     const int rasterizeBeforeSave = rasterizer.rasterizeCount;
@@ -4358,21 +4513,52 @@ void testAppEdit() {
     CHECK(app.annotations().specs->empty());
 
     // 閾値未満の右ドラッグ(ただの右クリック)はツール切り替えメニューを開く。
-    // 末端項目: ツール10種 + 太さ7 + 文字サイズ7 + フォント9 + 色1 + 塗りつぶし(5+色1)
-    // + 枠線(6+色1) + リサイズ(倍率5+長辺7) = 59(回転角度はオブジェクト側にある)
+    // 末端項目: ツール9種 + 太さ7 + 文字サイズ7 + フォント9 + 色1 + 塗りつぶし(5+色1)
+    // + 枠線(6+色1) + リサイズ(倍率5+長辺7) = 58(回転角度とトリミングはオブジェクト側)
     host.menuChoice = std::nullopt;  // キャンセルするので何も起きない
     app.onMouseDown(MouseButton::Right, {400, 300});
     app.onMouseUp(MouseButton::Right, {402, 301});
     CHECK(host.menuCount == 1);
-    CHECK(countMenuLeaves(host.lastMenuItems) == 59);
+    CHECK(countMenuLeaves(host.lastMenuItems) == 58);
     CHECK(app.currentTool() == EditTool::Rect);
     CHECK(app.annotations().specs->empty());
     CHECK(app.currentImage()->width == 8);
     CHECK(rasterizer.rasterizeCount == 0);
 
-    // トリミングとテキストは形が定まらないのでラバーバンドを出す
-    chooseInToolMenu(app, host, {0});  // トリミング
-    CHECK(app.currentTool() == EditTool::Crop);
+    // 範囲を選んでいなければトリミングはメッセージだけ出して何も変えない
+    app.execute(Command::CropToSelection);
+    CHECK(app.statusBar().leftText == "トリミングする範囲を選んでください (回転していない矩形)");
+    CHECK(app.currentImage()->width == 8);
+    app.onTimer();
+
+    // トリミング: 矩形で画像座標 (0,0)-(4,4) を囲み、そのままコマンドで切り出す。
+    // 選択中は寸法がステータスバーに出る(微調整の手がかり)
+    app.onMouseDown(MouseButton::Right, {396, 283});
+    app.onMouseUp(MouseButton::Right, {400, 287});
+    app.onMouseLeave();  // カーソル位置の表示を消して、選択の寸法だけを見る
+    CHECK(app.statusBar().rightText == "選択 4 x 4");
+    app.execute(Command::CropToSelection);
+    CHECK(app.currentImage()->width == 4 && app.currentImage()->height == 4);
+    CHECK(app.annotations().specs->empty());  // 範囲に使った矩形は残らない
+    CHECK(app.statusBar().leftText == "4 x 4 px  |  ツール: 矩形");
+    CHECK(app.statusBar().rightText.empty());
+    CHECK(host.lastTitle.find("(編集済み)") != std::string::npos);
+    CHECK(!app.selection().visible);
+
+    // Undo で元に戻る(切り出しと矩形の消去で 1 段、矩形の追加でもう 1 段)。
+    // 履歴が空ならメッセージ
+    app.execute(Command::Undo);
+    CHECK(app.currentImage()->width == 8);
+    CHECK(app.annotations().specs->size() == 1);
+    app.execute(Command::Undo);
+    CHECK(app.annotations().specs->empty());
+    CHECK(host.lastTitle.find("(編集済み)") == std::string::npos);
+    app.execute(Command::Undo);
+    CHECK(app.statusBar().leftText == "取り消す編集はありません");
+    app.onTimer();
+
+    // テキストと文字認識は形が定まらないのでラバーバンドを出す(図形はプレビュー)
+    chooseInToolMenu(app, host, {8});  // テキスト
     app.onMouseDown(MouseButton::Right, {396, 283});
     app.onMouseMove({400, 287});
     {
@@ -4382,22 +4568,10 @@ void testAppEdit() {
         CHECK(nearly(sel.p2.x, 400) && nearly(sel.p2.y, 287));
         CHECK(app.annotations().preview == nullptr);
     }
-
-    // トリミング: 画像座標 (0,0)-(4,4) → 4x4。一度きりの操作なので実行後は矩形へ戻る
-    app.onMouseUp(MouseButton::Right, {400, 287});
-    CHECK(app.currentImage()->width == 4 && app.currentImage()->height == 4);
-    CHECK(app.currentTool() == EditTool::Rect);
-    CHECK(app.statusBar().leftText == "4 x 4 px  |  ツール: 矩形");
-    CHECK(host.lastTitle.find("(編集済み)") != std::string::npos);
-    CHECK(!app.selection().visible);
-
-    // Undo で元に戻る。履歴が空ならメッセージ
-    app.execute(Command::Undo);
-    CHECK(app.currentImage()->width == 8);
-    CHECK(host.lastTitle.find("(編集済み)") == std::string::npos);
-    app.execute(Command::Undo);
-    CHECK(app.statusBar().leftText == "取り消す編集はありません");
-    app.onTimer();
+    app.onMouseUp(MouseButton::Right, {400, 287});  // 空のテキストボックスができる
+    app.onKey({KeyCode::Escape});                   // 中身が空なので注釈ごと消える
+    app.execute(Command::SelectToolRect);
+    CHECK(app.annotations().specs->empty());
 
     // 矩形: 画像へは焼き込まず注釈オブジェクトとして追加され、追加直後は選択状態になる
     app.onMouseDown(MouseButton::Right, {396, 283});
@@ -4436,7 +4610,7 @@ void testAppEdit() {
     CHECK(source->pixels[(1 * 8 + 1) * 4 + 2] == 0);
 
     // テキスト: 空のまま確定すると追加されない。入力があれば実測して追加される
-    chooseInToolMenu(app, host, {9});
+    chooseInToolMenu(app, host, {8});
     app.onMouseDown(MouseButton::Right, {396, 283});
     app.onMouseUp(MouseButton::Right, {400, 287});
     CHECK(app.isTextEditing());
@@ -4461,17 +4635,16 @@ void testAppEdit() {
         CHECK(nearly(text.p2.x, 20) && nearly(text.p2.y, 8));  // 実測境界が p2 に入る
     }
 
-    // 設定変更を選ぶとメニューが再表示され、続けてツールを選べる。
-    // 末端 index: 0-5 ツール, 6-12 太さ {1,2,3,5,8,12,20}, 13-19 文字サイズ
-    // {12,14,18,24,36,48,72}, 20-27 フォント, 28 色
-    chooseInToolMenu(app, host, {14 /*太さ8px*/, 2 /*矩形*/});
+    // 設定変更を選ぶとメニューが再表示され、続けてツールを選べる
+    // (末端 index は kEmptySpot の上の対応表を参照)
+    chooseInToolMenu(app, host, {13 /*太さ8px*/, 1 /*矩形*/});
     CHECK(host.menuQueue.empty());
     app.onMouseDown(MouseButton::Right, {396, 283});
     app.onMouseUp(MouseButton::Right, {400, 287});
     CHECK(nearly(app.annotations().specs->back().strokeWidth, 8));
 
     // 文字サイズ 24px + 複数行テキスト。変更済みの設定も引き継がれる
-    chooseInToolMenu(app, host, {20 /*文字24px*/, 9 /*テキスト*/});
+    chooseInToolMenu(app, host, {19 /*文字24px*/, 8 /*テキスト*/});
     app.onMouseDown(MouseButton::Right, {396, 283});
     app.onMouseUp(MouseButton::Right, {400, 287});
     app.insertText("1行目");
@@ -4483,14 +4656,14 @@ void testAppEdit() {
 
     // 色の変更: ダイアログの結果が以降の編集に使われる。キャンセルなら元のまま
     host.colorChoice = 0x00CC66;
-    chooseInToolMenu(app, host, {33 /*色*/, 5 /*直線*/});
+    chooseInToolMenu(app, host, {32 /*色*/, 4 /*直線*/});
     app.onMouseDown(MouseButton::Right, {396, 283});
     app.onMouseUp(MouseButton::Right, {400, 287});
     CHECK(host.colorPickerCount == 1);
     CHECK(host.lastColorPickerInitial == 0xFF3B30);
     CHECK(app.annotations().specs->back().colorRGB == 0x00CC66);
     host.colorChoice = std::nullopt;
-    chooseInToolMenu(app, host, {33 /*色 (キャンセル)*/, 5 /*直線*/});
+    chooseInToolMenu(app, host, {32 /*色 (キャンセル)*/, 4 /*直線*/});
     app.onMouseDown(MouseButton::Right, {396, 283});
     app.onMouseUp(MouseButton::Right, {400, 287});
     CHECK(host.colorPickerCount == 2);
@@ -4498,24 +4671,24 @@ void testAppEdit() {
 
     // 設定変更だけしてメニューを閉じる → 何も追加されず設定だけ残る
     const size_t annotationCountBefore = app.annotations().specs->size();
-    chooseInToolMenu(app, host, {12 /*太さ3px*/});  // ツールは選ばずに閉じる
+    chooseInToolMenu(app, host, {11 /*太さ3px*/});  // ツールは選ばずに閉じる
     CHECK(app.annotations().specs->size() == annotationCountBefore);
     CHECK(!app.selection().visible);
     CHECK(app.currentTool() == EditTool::Line);  // 直前のツールのまま
-    chooseInToolMenu(app, host, {2 /*矩形*/});
+    chooseInToolMenu(app, host, {1 /*矩形*/});
     app.onMouseDown(MouseButton::Right, {396, 283});
     app.onMouseUp(MouseButton::Right, {400, 287});
     CHECK(nearly(app.annotations().specs->back().strokeWidth, 3));  // 3px に戻っている
 
     // 塗りつぶし: 末端 index 33-37 が不透明度 {0,64,128,191,255}、38 が塗りつぶしの色。
     // 色を選ぶと塗りなしのままにならないよう不透明で塗り始める
-    chooseInToolMenu(app, host, {36 /*不透明度 128*/, 2 /*矩形*/});
+    chooseInToolMenu(app, host, {35 /*不透明度 128*/, 1 /*矩形*/});
     app.onMouseDown(MouseButton::Right, {396, 283});
     app.onMouseUp(MouseButton::Right, {400, 287});
     CHECK(app.annotations().specs->back().fillAlpha == 128);
     CHECK(app.annotations().specs->back().fillRGB == 0xFFFFFF);  // 既定は白
     host.colorChoice = 0x3366FF;
-    chooseInToolMenu(app, host, {34 /*塗りなしへ戻す*/, 39 /*塗りつぶしの色*/, 3 /*楕円*/});
+    chooseInToolMenu(app, host, {33 /*塗りなしへ戻す*/, 38 /*塗りつぶしの色*/, 2 /*楕円*/});
     app.onMouseDown(MouseButton::Right, {396, 283});
     app.onMouseUp(MouseButton::Right, {400, 287});
     {
@@ -4539,7 +4712,7 @@ void testAppEdit() {
 
     // テキストの枠線: 末端 index 39-44 が太さ {0,1,2,3,5,8}、45 が枠線の色。
     // 枠線ぶん余白が広がるので実測境界も縮む (24x12 の overlay - 余白 (2+太さ/2)*2)
-    chooseInToolMenu(app, host, {42 /*枠線 2px*/, 9 /*テキスト*/});
+    chooseInToolMenu(app, host, {41 /*枠線 2px*/, 8 /*テキスト*/});
     rasterizer.overlayWidth = 24;
     rasterizer.overlayHeight = 12;
     app.onMouseDown(MouseButton::Right, {396, 283});
@@ -4551,11 +4724,11 @@ void testAppEdit() {
         CHECK(nearly(spec.borderWidth, 2));
         CHECK(nearly(spec.p2.x - spec.p1.x, 18) && nearly(spec.p2.y - spec.p1.y, 6));
     }
-    chooseInToolMenu(app, host, {40 /*枠線なしへ戻す*/});
+    chooseInToolMenu(app, host, {39 /*枠線なしへ戻す*/});
 
     // 確定時の実測(ラスタライズ)失敗はメッセージを出す。入力済みの内容は残す
     rasterizer.ok = false;
-    chooseInToolMenu(app, host, {9 /*テキスト*/});
+    chooseInToolMenu(app, host, {8 /*テキスト*/});
     const size_t countBeforeFail = app.annotations().specs->size();
     app.onMouseDown(MouseButton::Right, {396, 283});
     app.onMouseUp(MouseButton::Right, {400, 287});
@@ -4964,7 +5137,7 @@ void testAppTextEditing() {
     const auto screenOf = [&toScreen](float x, float y) { return toScreen.apply({x, y}); };
 
     // テキストボックスを作って入力する
-    chooseInToolMenu(app, host, {9});  // テキストツールへ切り替える
+    chooseInToolMenu(app, host, {8});  // テキストツールへ切り替える
     app.onMouseDown(MouseButton::Right, screenOf(10, 10));
     app.onMouseUp(MouseButton::Right, screenOf(50, 30));
     CHECK(app.isTextEditing());
@@ -5145,7 +5318,7 @@ void testAppTextStyles() {
         return KeyChord{static_cast<KeyCode>(c), true, false, false};
     };
 
-    chooseInToolMenu(app, host, {9});  // テキストツールへ切り替える
+    chooseInToolMenu(app, host, {8});  // テキストツールへ切り替える
     app.onMouseDown(MouseButton::Right, screenOf(10, 10));
     app.onMouseUp(MouseButton::Right, screenOf(50, 30));
     app.insertText("abcdef");
@@ -5325,13 +5498,13 @@ void testAppFontFamily() {
     CHECK(rasterizer.hasFontFamilyCount == 0);
 
     // 既定のフォントは新規テキストへそのまま載る
-    chooseInToolMenu(app, host, {9 /*テキスト*/});
+    chooseInToolMenu(app, host, {8 /*テキスト*/});
     CHECK(rasterizer.hasFontFamilyCount > 0);
     addText("あ");
     CHECK(app.annotations().specs->back().fontFamily == kDefaultFontFamily);
 
     // ツールメニューのフォント(末端 index 23-31)から選ぶと以降の新規テキストへ効く
-    chooseInToolMenu(app, host, {27 /*メイリオ*/});
+    chooseInToolMenu(app, host, {26 /*メイリオ*/});
     addText("い");
     CHECK(app.annotations().specs->back().fontFamily == "Meiryo");
     CHECK(app.annotations().specs->front().fontFamily == kDefaultFontFamily);  // 既存は不変

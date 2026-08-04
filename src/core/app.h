@@ -745,6 +745,14 @@ private:
     std::string hoverInfoText(Point screenPos) const;
 
     /**
+     * @brief 選択中の注釈オブジェクトの大きさをステータスバー右側用に組み立てる。
+     * @return 大きさを表す文字列(UTF-8)。何も選んでいなければ空文字列。
+     * @note 範囲として使える矩形では、実際に切り出される大きさ(オブジェクトメニューの
+     *       見出しと同じ値)を出す。それ以外は回転前のバウンディングボックスの大きさ。
+     */
+    std::string selectionSizeText() const;
+
+    /**
      * @brief ステータスバーに通知メッセージを表示する(一定時間で消える)。
      * @param[in] text 表示する文字列(UTF-8)。所有権を受け取る。
      */
@@ -915,8 +923,6 @@ private:
     /**
      * @brief 現在のツールを切り替え、表示を更新する。
      * @param[in] tool 切り替え先のツール。
-     * @note Crop 以外を選ぶと、トリミング実行後に戻る図形ツールも更新される
-     *       (EditStyle::setTool)。
      */
     void setTool(EditTool tool);
 
@@ -962,10 +968,26 @@ private:
     void showTextStyleMenu(Point screenPos);
 
     /**
-     * @brief 選択領域で現在の画像をトリミングする。
-     * @return 切り出せたら true。有効領域が残らなければ false(画像は変わらない)。
+     * @brief 範囲として使える注釈を選んでいれば返す。
+     * @return 選択中の注釈。回転していない矩形を選んでいなければ nullptr。
+     * @note トリミングと範囲指定の文字認識で共通の入口。切り出しが軸平行にしか
+     *       定義されていないため、回転した矩形は範囲として扱わない。
      */
-    bool applyCrop();
+    const AnnotationSpec* selectedRangeRect() const;
+
+    /**
+     * @brief 選択中の矩形の範囲で現在の画像をトリミングする (Command::CropToSelection)。
+     *
+     * 範囲に使った矩形は消し、残りの注釈はオブジェクトのまま切り出した原点ぶん
+     * 平行移動する。undo は 1 段(矩形の消去と切り出しがまとめて戻る)。
+     *
+     * @note 範囲を選んでいない・切り出す領域が残らない場合はステータスバーへ出して
+     *       何も変えない。
+     */
+    void cropToSelection();
+
+    /// @brief 選択中の矩形の範囲で文字認識を予約する(オブジェクトメニューから)。
+    void ocrSelectedRange();
 
     /**
      * @brief 選択領域に注釈オブジェクトを追加する。
@@ -1290,7 +1312,9 @@ private:
     NavArrowsState navArrowsShown_;
 
     // 編集(トリミング・図形・テキスト)の状態
-    static constexpr float kHitTolerancePx = 4.0f;   ///< 注釈ヒットテストの許容(画面px)
+    /// 注釈ヒットテストの許容(画面px)。塗りの無い矩形・楕円は輪郭線しか当たらないため、
+    /// 「範囲として作った矩形を右クリックしてトリミングする」操作が狙いやすいよう広めに取る
+    static constexpr float kHitTolerancePx = 6.0f;
     static constexpr float kRotationHandleOffsetPx = 20.0f;  ///< 選択枠上辺からハンドルまで
     static constexpr float kRotationHandleRadiusPx = 5.0f;   ///< 回転ハンドルの半径(画面px)
     static constexpr float kRotationHandleHitPx = 9.0f;      ///< 回転ハンドルのヒット判定半径

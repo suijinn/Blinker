@@ -56,7 +56,7 @@ bool bakeRotation(DecodedImage& image, int rotationDegrees) {
     }
 }
 
-// 図形ツールが作る注釈の種別。Crop は注釈ではないので Rect を返す(呼ばれない)。
+// 図形ツールが作る注釈の種別。Ocr は注釈を作らないので Rect を返す(呼ばれない)。
 // ペンとマーカーは同じ Pen 注釈で、違いは線幅と不透明度だけ(makeAnnotationSpec が付ける)
 AnnotationSpec::Kind kindOfTool(EditTool tool) {
     switch (tool) {
@@ -67,7 +67,6 @@ AnnotationSpec::Kind kindOfTool(EditTool tool) {
     case EditTool::Marker:  return AnnotationSpec::Kind::Pen;
     case EditTool::Number:  return AnnotationSpec::Kind::Number;
     case EditTool::Text:    return AnnotationSpec::Kind::Text;
-    case EditTool::Crop:
     case EditTool::Ocr:
     case EditTool::Rect:    break;
     }
@@ -393,8 +392,8 @@ void App::execute(Command command) {
     case Command::DeleteAnnotation:
         deleteSelectedAnnotation();
         break;
-    case Command::SelectToolCrop:
-        setTool(EditTool::Crop);
+    case Command::CropToSelection:
+        cropToSelection();
         break;
     case Command::SelectToolRect:
         setTool(EditTool::Rect);
@@ -883,13 +882,8 @@ void App::setTool(EditTool tool) {
 }
 
 void App::applyCurrentTool() {
-    if (style_.tool() == EditTool::Crop) {
-        // 切り出せたら図形ツールへ戻る
-        if (applyCrop()) setTool(style_.toolAfterCrop());
-        return;
-    }
     if (style_.tool() == EditTool::Ocr) {
-        // トリミングと違い画像を変えないので、続けて別の範囲を読めるようツールは維持する
+        // 画像を変えないので、続けて別の範囲を読めるようツールは維持する
         applyOcrSelection();
         return;
     }
@@ -954,8 +948,8 @@ void App::applyResize(const uint32_t width, const uint32_t height) {
 void App::showObjectMenu(Point screenPos) {
     if (!selected_ || *selected_ >= annotations_.size()) return;
     std::vector<ObjectMenuEntry> entries;
-    const std::vector<MenuItem> items =
-        buildObjectMenu(annotations_[*selected_], keymap_, fontAvailable(), entries);
+    const std::vector<MenuItem> items = buildObjectMenu(annotations_[*selected_], keymap_,
+                                                        fontAvailable(), menuImageSize(), entries);
     const auto choice = host_.showContextMenu(items, screenPos);
     if (!choice || *choice >= entries.size()) return;
     const ObjectMenuEntry entry = entries[*choice];
@@ -967,6 +961,26 @@ void App::showObjectMenu(Point screenPos) {
         notifyCaretMoved();
         host_.requestRedraw();
         return;
+    case ObjectMenuEntry::Action::Crop:
+        cropToSelection();
+        return;
+    case ObjectMenuEntry::Action::Ocr:
+        ocrSelectedRange();
+        return;
+    case ObjectMenuEntry::Action::Aspect: {
+        // メニューの見出しに出した矩形をそのまま入れる。整数座標なので、次に
+        // cropRectFor を通しても同じ大きさに戻り、比が丸めでずれない
+        const Point p1{static_cast<float>(entry.rect.x), static_cast<float>(entry.rect.y)};
+        const Point p2{static_cast<float>(entry.rect.x + entry.rect.w),
+                       static_cast<float>(entry.rect.y + entry.rect.h)};
+        if (spec.p1.x == p1.x && spec.p1.y == p1.y && spec.p2.x == p2.x && spec.p2.y == p2.y) {
+            return;  // 既にその比・その位置なら何もしない
+        }
+        pushUndo();
+        spec.p1 = p1;
+        spec.p2 = p2;
+        break;
+    }
     case ObjectMenuEntry::Action::Delete:
         deleteSelectedAnnotation();
         return;
@@ -1149,28 +1163,58 @@ bool App::applyEditChoice(const EditMenuEntry& entry) {
     return true;
 }
 
-bool App::applyCrop() {
-    if (!current_) return false;
-    // 部分的にかかったピクセルも含める(floor/ceil)
-    const Point p1 = drag_.startImage();
-    const Point p2 = drag_.endImage();
-    const int x0 = static_cast<int>(std::floor(std::min(p1.x, p2.x)));
-    const int y0 = static_cast<int>(std::floor(std::min(p1.y, p2.y)));
-    const int x1 = static_cast<int>(std::ceil(std::max(p1.x, p2.x)));
-    const int y1 = static_cast<int>(std::ceil(std::max(p1.y, p2.y)));
-    auto cropped = cropImage(*current_, {x0, y0, x1 - x0, y1 - y0});
-    if (!cropped) return false;
+const AnnotationSpec* App::selectedRangeRect() const {
+    if (!current_ || !selected_ || *selected_ >= annotations_.size()) return nullptr;
+    const AnnotationSpec& spec = annotations_[*selected_];
+    if (spec.kind != AnnotationSpec::Kind::Rect || spec.angleDeg != 0) return nullptr;
+    return &spec;
+}
+
+void App::cropToSelection() {
+    if (textEdit_.active()) commitTextEdit();  // 編集を確定してから対象を確定させる
+    const AnnotationSpec* range = selectedRangeRect();
+    if (!range) {
+        showMessage("トリミングする範囲を選んでください (回転していない矩形)");
+        return;
+    }
+    const auto rect = cropRectFor(range->p1, range->p2, current_->width, current_->height);
+    if (!rect) {
+        showMessage("選択した範囲が画像の外です");
+        return;
+    }
+    auto cropped = cropImage(*current_, *rect);
+    if (!cropped) return;  // cropRectFor を通っていれば起きない
     pushUndo();
+    // 範囲に使った矩形は役目を終えたので消す(残すと保存時に焼き込まれてしまう)。
+    // 画像の差し替えと同じ undo 段になるので、Ctrl+Z 一発で矩形ごと戻る
+    annotations_.erase(annotations_.begin() + static_cast<std::ptrdiff_t>(*selected_));
+    selected_.reset();
+    objectDrag_.end();
     current_ = std::move(cropped);
-    // 注釈はオブジェクトのまま維持し、切り出した原点ぶんだけ平行移動する
+    // 残りの注釈はオブジェクトのまま維持し、切り出した原点ぶんだけ平行移動する
     for (AnnotationSpec& spec : annotations_) {
-        translateAnnotation(spec, static_cast<float>(-x0), static_cast<float>(-y0));
+        translateAnnotation(spec, static_cast<float>(-rect->x), static_cast<float>(-rect->y));
     }
     viewport_.setImage(
         {static_cast<float>(current_->width), static_cast<float>(current_->height)});
     origin_.setEdited(true);
     updateTitle();
-    return true;
+    host_.requestRedraw();
+}
+
+void App::ocrSelectedRange() {
+    const AnnotationSpec* range = selectedRangeRect();
+    if (!range) {
+        showMessage("文字を認識する範囲を選んでください (回転していない矩形)");
+        return;
+    }
+    const auto rect = cropRectFor(range->p1, range->p2, current_->width, current_->height);
+    if (!rect) {
+        showMessage("選択した範囲が画像の外です");
+        return;
+    }
+    // 認識するのは下地の画素だけ(範囲に使った矩形の枠線は焼き込まない)
+    requestOcr(cropImage(*current_, *rect));
 }
 
 void App::requestOcr(const std::shared_ptr<DecodedImage>& image) {
@@ -1196,18 +1240,13 @@ void App::requestOcr(const std::shared_ptr<DecodedImage>& image) {
 bool App::applyOcrSelection() {
     if (!current_) return false;
     // トリミングと同じ丸め方(部分的にかかったピクセルも含める)
-    const Point p1 = drag_.startImage();
-    const Point p2 = drag_.endImage();
-    const int x0 = static_cast<int>(std::floor(std::min(p1.x, p2.x)));
-    const int y0 = static_cast<int>(std::floor(std::min(p1.y, p2.y)));
-    const int x1 = static_cast<int>(std::ceil(std::max(p1.x, p2.x)));
-    const int y1 = static_cast<int>(std::ceil(std::max(p1.y, p2.y)));
-    auto region = cropImage(*current_, {x0, y0, x1 - x0, y1 - y0});
-    if (!region) {
+    const auto rect =
+        cropRectFor(drag_.startImage(), drag_.endImage(), current_->width, current_->height);
+    if (!rect) {
         showMessage("選択した範囲が画像の外です");
         return false;
     }
-    requestOcr(region);
+    requestOcr(cropImage(*current_, *rect));
     return true;
 }
 
@@ -1262,10 +1301,10 @@ AnnotationSpec App::makeAnnotationSpec(AnnotationSpec::Kind kind) const {
 }
 
 bool App::previewVisible() const {
-    // トリミングは切り出す範囲、テキストは中身の無い箱、文字認識は読み取る範囲で、
-    // どれも実物を描けない。その 3 つはラバーバンド(App::selection)に任せる
-    return drag_.dragging() && current_ != nullptr && style_.tool() != EditTool::Crop &&
-           style_.tool() != EditTool::Text && style_.tool() != EditTool::Ocr;
+    // テキストは中身の無い箱、文字認識は読み取る範囲で、どちらも実物を描けない。
+    // その 2 つはラバーバンド(App::selection)に任せる
+    return drag_.dragging() && current_ != nullptr && style_.tool() != EditTool::Text &&
+           style_.tool() != EditTool::Ocr;
 }
 
 void App::updatePreview() {
@@ -2473,7 +2512,24 @@ StatusBarView App::statusBar() const {
     state.failed = origin_.failed();
     bar.leftText = statusText(state);
     bar.rightText = hoverText_;
+    // 寸法を合わせる手がかりは他に無いので、選択中は大きさを常に見せる
+    if (std::string size = selectionSizeText(); !size.empty()) {
+        if (!bar.rightText.empty()) size += "  |  ";
+        bar.rightText = std::move(size) + bar.rightText;
+    }
     return bar;
+}
+
+std::string App::selectionSizeText() const {
+    if (!selected_ || *selected_ >= annotations_.size()) return {};
+    // 範囲として使える矩形は、実際に切り出される大きさ(メニューの見出しと同じ値)を出す
+    if (const AnnotationSpec* range = selectedRangeRect()) {
+        const auto rect = cropRectFor(range->p1, range->p2, current_->width, current_->height);
+        return rect ? objectSizeText(rect->w, rect->h) : std::string();
+    }
+    const BoundsF bounds = annotationBounds(annotations_[*selected_]);
+    return objectSizeText(static_cast<int>(std::lround(bounds.maxX - bounds.minX)),
+                          static_cast<int>(std::lround(bounds.maxY - bounds.minY)));
 }
 
 std::optional<FrameStatus> App::frameStatus() const {

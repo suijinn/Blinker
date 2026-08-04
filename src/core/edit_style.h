@@ -24,10 +24,13 @@ namespace blinker {
  * 事前に選んだツールが編集ドラッグ(既定では右ドラッグ。MouseRole::Edit の
  * ボタン)で即座に適用される(ドラッグ中はプレビューが出る)。
  * 切り替えは注釈のない場所での右クリック(ドラッグなし)で開くメニュー、または
- * Command::SelectToolCrop 以降のコマンドで行う。
+ * Command::SelectToolRect 以降のコマンドで行う。
+ *
+ * @note トリミングはツールではない。範囲は Rect の注釈オブジェクトとして作り、
+ *       切り出しはその右クリックメニュー(Command::CropToSelection)から行う
+ *       ―― ドラッグを離した時点で確定させず、ハンドルで微調整できるようにするため。
  */
 enum class EditTool {
-    Crop,     ///< 選択領域で画像を切り出す(実行すると直前の図形ツールへ戻る)
     Rect,     ///< 矩形を描く
     Ellipse,  ///< 楕円を描く
     Arrow,    ///< 矢印を描く
@@ -67,14 +70,8 @@ public:
     /**
      * @brief 現在のツールを切り替える。
      * @param[in] tool 切り替え先のツール。
-     * @note Crop 以外を選ぶと toolAfterCrop() も更新される(トリミングは一度きりの
-     *       操作なので、実行後に戻る先として直前の図形ツールを覚えておく)。
      */
-    void setTool(EditTool tool);
-
-    /// @brief トリミング実行後に戻る図形ツールを返す。
-    /// @return 直近で選ばれた Crop 以外のツール。
-    EditTool toolAfterCrop() const { return toolAfterCrop_; }
+    void setTool(EditTool tool) { tool_ = tool; }
 
     /**
      * @brief 現在のツールが手書き(ペン・マーカー)かを返す。
@@ -189,8 +186,6 @@ private:
     static constexpr int kMarkerAlpha = 102;  ///< マーカーの線の不透明度(0-255。約 40%)
 
     EditTool tool_ = EditTool::Rect;  ///< 編集ドラッグで実行するツール
-    /// トリミングは一度きりの操作なので、実行したらこのツールへ戻す(直前の図形ツール)
-    EditTool toolAfterCrop_ = EditTool::Rect;
     uint32_t colorRGB_ = 0xFF3B30;  ///< 新規注釈の色(0xRRGGBB)
     float strokeWidth_ = 3.0f;      ///< 新規注釈の線幅(画像座標)
     float fontSize_ = 18.0f;        ///< 新規テキストのフォントサイズ(画像座標)

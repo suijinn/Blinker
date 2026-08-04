@@ -57,7 +57,7 @@ constexpr std::array kCommandLabels = {
     CommandLabel{Command::Undo, "元に戻す"},
     CommandLabel{Command::Redo, "やり直す"},
     CommandLabel{Command::DeleteAnnotation, "選択中の図形・テキストを削除"},
-    CommandLabel{Command::SelectToolCrop, "トリミングツール"},
+    CommandLabel{Command::CropToSelection, "選択中の矩形でトリミング"},
     CommandLabel{Command::SelectToolOcr, "文字認識ツール (範囲指定)"},
     CommandLabel{Command::SelectToolRect, "矩形ツール"},
     CommandLabel{Command::SelectToolEllipse, "楕円ツール"},
@@ -191,7 +191,7 @@ std::vector<HelpLine> buildHelpLines(const Keymap& keymap, const Mousemap& mouse
     row(Command::Redo);
     row(Command::ResizeImage);
     row(Command::DeleteAnnotation);
-    row(Command::SelectToolCrop);
+    row(Command::CropToSelection);
     row(Command::SelectToolOcr);
     row(Command::SelectToolRect);
     row(Command::SelectToolEllipse);
@@ -205,6 +205,9 @@ std::vector<HelpLine> buildHelpLines(const Keymap& keymap, const Mousemap& mouse
     text("選択中のテキストを太字", "Ctrl+B");
     // オブジェクト選択中は copy_image の対象が変わる(Command は同じなのでキーも同じ)
     text("選択中のオブジェクトをコピー", keysLabel(keymap, Command::CopyImage));
+    // トリミングは既定のキーを持たないので上の row() は出ない。主な入口である
+    // 矩形のメニューをここで案内する(ハンドルで範囲を微調整してから実行できる)
+    text("トリミング / 範囲の文字認識 / 縦横比", "矩形を描いて右クリック");
 
     header("画面");
     row(Command::ToggleSidebar);

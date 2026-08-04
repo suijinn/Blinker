@@ -3,9 +3,11 @@
 #include <algorithm>
 #include <cmath>
 #include <format>
+#include <numeric>
 #include <utility>
 
 #include "core/command.h"
+#include "core/edit.h"
 #include "core/help.h"
 #include "core/image_scale.h"
 
@@ -32,6 +34,21 @@ constexpr std::array<std::pair<const char*, const char*>, 9> kFontFamilyChoices{
     {"Consolas", "Consolas"},
 }};
 
+// トリミング範囲の縦横比プリセット(横長 → 正方 → 縦長)。写真・画面・印刷でよく使う
+// ものに絞ってある。範囲が小さすぎて作れない比はメニューに出さない
+constexpr std::array<std::pair<int, int>, 7> kAspectRatios{{
+    {16, 9}, {3, 2}, {4, 3}, {1, 1}, {3, 4}, {2, 3}, {9, 16},
+}};
+
+// 今の縦横比の表し方。約分して短ければ「16:9」、そうでなければ小数で「1.78:1」
+std::string aspectRatioLabel(const int w, const int h) {
+    if (w <= 0 || h <= 0) return "-";
+    const int g = std::gcd(w, h);
+    if (w / g <= 99 && h / g <= 99) return std::format("{}:{}", w / g, h / g);
+    return w >= h ? std::format("{:.2f}:1", static_cast<double>(w) / h)
+                  : std::format("1:{:.2f}", static_cast<double>(h) / w);
+}
+
 std::string fillAlphaLabel(int alpha) {
     if (alpha <= 0) return "なし (透明)";
     return std::format("{}%", std::lround(alpha * 100.0 / 255.0));
@@ -53,7 +70,6 @@ std::string fontFamilyLabel(std::string_view family) {
 // ツール切り替えに対応するコマンド。メニュー項目にキー表記を出すために使う
 Command commandOfTool(EditTool tool) {
     switch (tool) {
-    case EditTool::Crop:    return Command::SelectToolCrop;
     case EditTool::Rect:    return Command::SelectToolRect;
     case EditTool::Ellipse: return Command::SelectToolEllipse;
     case EditTool::Arrow:   return Command::SelectToolArrow;
@@ -144,7 +160,6 @@ std::vector<MenuItem> buildEditMenu(const EditStyle& style, const Keymap& keymap
     using Action = EditMenuEntry::Action;
 
     std::vector<MenuItem> items;
-    items.push_back(tool(EditTool::Crop));
     items.push_back(tool(EditTool::Ocr));
     items.push_back(menuSeparator());
     items.push_back(tool(EditTool::Rect));
@@ -296,6 +311,7 @@ std::vector<MenuItem> buildSidebarMenu(const SortOrder order, const bool recursi
 
 std::vector<MenuItem> buildObjectMenu(const AnnotationSpec& spec, const Keymap& keymap,
                                       const FontAvailableFn& available,
+                                      const std::optional<MenuImageSize> image,
                                       std::vector<ObjectMenuEntry>& entries) {
     const auto leaf = [&entries](std::string text, ObjectMenuEntry entry, bool checked = false) {
         return leafItem(entries, std::move(text), std::move(entry), checked);
@@ -305,6 +321,37 @@ std::vector<MenuItem> buildObjectMenu(const AnnotationSpec& spec, const Keymap& 
     std::vector<MenuItem> items;
     if (spec.kind == AnnotationSpec::Kind::Text) {
         items.push_back(leaf("テキストを編集", {Action::EditText}));
+    }
+    // 回転していない矩形は画像に対する「範囲」でもある。切り出す大きさを見出しに添えて、
+    // 選ぶ前に結果が分かるようにする(リサイズのプリセットと同じ考え方)
+    if (spec.kind == AnnotationSpec::Kind::Rect && spec.angleDeg == 0 && image) {
+        if (const auto rect = cropRectFor(spec.p1, spec.p2, image->width, image->height)) {
+            items.push_back(
+                leaf(withKeys(std::format("この範囲でトリミング ({} x {})", rect->w, rect->h),
+                              keymap, Command::CropToSelection),
+                     {Action::Crop}));
+            items.push_back(leaf("この範囲を文字認識", {Action::Ocr}));
+
+            // 縦横比は範囲を整えるだけで切り出さない(整えてから位置を直せるように)。
+            // 各項目には整えたあとの大きさを添える(選ぶ前に結果が分かるように)
+            MenuItem aspect;
+            aspect.text = std::format("縦横比 ({})", aspectRatioLabel(rect->w, rect->h));
+            for (const auto& [ratioW, ratioH] : kAspectRatios) {
+                const auto fitted =
+                    fitRectToAspect(*rect, ratioW, ratioH, image->width, image->height);
+                if (!fitted) continue;  // 範囲が小さすぎて作れない比は出さない
+                ObjectMenuEntry entry;
+                entry.action = Action::Aspect;
+                entry.rect = *fitted;
+                // 既にその比なら fitRectToAspect が今の範囲をそのまま返すのでチェックが付く
+                const bool current = fitted->w == rect->w && fitted->h == rect->h;
+                aspect.children.push_back(
+                    leaf(std::format("{}:{}\t{} x {}", ratioW, ratioH, fitted->w, fitted->h),
+                         std::move(entry), current));
+            }
+            if (!aspect.children.empty()) items.push_back(std::move(aspect));
+            items.push_back(menuSeparator());
+        }
     }
     items.push_back(leaf(withKeys("削除", keymap, Command::DeleteAnnotation), {Action::Delete}));
     items.push_back(menuSeparator());

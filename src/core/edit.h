@@ -2,7 +2,9 @@
 
 #include <cstdint>
 #include <memory>
+#include <optional>
 
+#include "core/geometry.h"
 #include "platform/decoder.h"
 
 /**
@@ -32,6 +34,43 @@ struct RectI {
  * @return 切り出された画像。有効領域が残らなければ nullptr。
  */
 std::shared_ptr<DecodedImage> cropImage(const DecodedImage& src, RectI rect);
+
+/**
+ * @brief 対角 2 点で表した範囲を、切り出す整数矩形へ丸めて画像内へ収める。
+ *
+ * 部分的にかかった画素も残すよう外側へ丸める(floor/ceil)。画像内へクランプ済みの
+ * 矩形を返すので、原点 (x, y) はそのまま「切り出しで注釈をどれだけ平行移動するか」に
+ * 使える ―― 画像の外まで広げた範囲でも、実際に切れる位置とずれない。
+ *
+ * @param[in] p1          範囲の対角の一方(画像座標)。
+ * @param[in] p2          範囲の対角の他方(画像座標)。
+ * @param[in] imageWidth  画像の幅(ピクセル)。
+ * @param[in] imageHeight 画像の高さ(ピクセル)。
+ * @return 切り出す矩形。画像と重ならなければ std::nullopt。
+ * @note ここを通した矩形なら cropImage は必ず成功する(判定を二重に持たないため、
+ *       メニューの表示可否と実行のどちらもこの関数で決める)。
+ */
+std::optional<RectI> cropRectFor(Point p1, Point p2, uint32_t imageWidth, uint32_t imageHeight);
+
+/**
+ * @brief 切り出す矩形を、指定の縦横比ちょうどになるよう整える。
+ *
+ * 画素数で比を厳密に保つため、大きさは比の**整数倍**へ丸める(16:9 なら 16k x 9k)。
+ * 今の範囲へ収まる最大の整数倍を選び、中心を保ったまま置き直してから、はみ出す分だけ
+ * 画像内へ寄せる(大きさは変えない)。丸めで最大 ratioW-1 px 縮むが、そのぶん
+ * 「16:9」と表示したものが本当に 16:9 の画素数になる。
+ *
+ * @param[in] rect        今の範囲(cropRectFor が返したもの)。
+ * @param[in] ratioW      縦横比の横。正であること。
+ * @param[in] ratioH      縦横比の縦。正であること。
+ * @param[in] imageWidth  画像の幅(ピクセル)。
+ * @param[in] imageHeight 画像の高さ(ピクセル)。
+ * @return 整えた矩形。比が不正、または今の範囲が比 1 倍ぶんにも満たなければ std::nullopt。
+ * @pre rect が画像内に収まっていること(cropRectFor の戻り値ならば満たす)。
+ * @note 既に指定の比ちょうどなら rect をそのまま返す(メニューのチェック判定に使える)。
+ */
+std::optional<RectI> fitRectToAspect(RectI rect, int ratioW, int ratioH, uint32_t imageWidth,
+                                     uint32_t imageHeight);
 
 /**
  * @brief オーバーレイ画像を over 合成する。

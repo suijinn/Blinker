@@ -57,8 +57,9 @@ constexpr std::array kCommandNames = {
     CommandName{"undo", Command::Undo},
     CommandName{"redo", Command::Redo},
     CommandName{"delete_annotation", Command::DeleteAnnotation},
-    // ツール切り替えは既定のキーを持たない(blinker.ini の [keys] で割り当てる)
-    CommandName{"tool_crop", Command::SelectToolCrop},
+    // ツール切り替えとトリミングの実行は既定のキーを持たない
+    // (blinker.ini の [keys] で割り当てる)
+    CommandName{"crop_selection", Command::CropToSelection},
     CommandName{"tool_rect", Command::SelectToolRect},
     CommandName{"tool_ellipse", Command::SelectToolEllipse},
     CommandName{"tool_arrow", Command::SelectToolArrow},
