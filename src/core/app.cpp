@@ -89,7 +89,10 @@ App::App(IAppHost& host, IFileSystem& fileSystem, ImageCache& cache, IClipboard&
       scan_(scan) {}
 
 void App::applyConfig(const Config& config) {
-    keymap_.applyConfig(config.section("keys"));
+    // [keys] は 1 セクションのまま、文脈ごとの表それぞれに渡す(自分に属さない
+    // コマンドの記述は読み飛ばされるので、利用者は表の区別を意識しなくてよい)
+    keymap_.applyConfig(config.section("keys"), KeyScope::Global);
+    selectionKeymap_.applyConfig(config.section("keys"), KeyScope::Selection);
     // [mouse] はコマンド割り当てと swap_buttons が同居する(後者はコマンド名として
     // 解決されないので Mousemap 側では無視される)
     mousemap_.applyConfig(config.section("mouse"));
@@ -253,6 +256,10 @@ void App::setRecursive(const bool enabled) {
 }
 
 void App::execute(Command command) {
+    // 矢印での移動が途切れたら次からは新しい undo 段にする(連なりの区切り)。
+    // ここに置くと、間に挟まる操作(取り消し・選択解除・ツール切り替え…)を
+    // すべて区切りとして拾える
+    if (keyScopeOf(command) != KeyScope::Selection) history_.resetKeyMove();
     switch (command) {
     case Command::NextImage:
         navigate(list_.next());
@@ -392,6 +399,18 @@ void App::execute(Command command) {
     case Command::DeleteAnnotation:
         deleteSelectedAnnotation();
         break;
+    case Command::MoveObjectLeft:
+        moveSelectedObject({-1, 0});
+        break;
+    case Command::MoveObjectRight:
+        moveSelectedObject({1, 0});
+        break;
+    case Command::MoveObjectUp:
+        moveSelectedObject({0, -1});
+        break;
+    case Command::MoveObjectDown:
+        moveSelectedObject({0, 1});
+        break;
     case Command::CropToSelection:
         cropToSelection();
         break;
@@ -433,7 +452,8 @@ void App::execute(Command command) {
     case Command::ToggleHelp:
         if (sidebar_.toggle(SidebarMode::Help)) {
             // ini 適用後のキーバインドから作る。開くたびに作り直すので設定変更にも追従する
-            helpLines_ = buildHelpLines(keymap_, mousemap_, pointer_.swapButtons());
+            helpLines_ =
+                buildHelpLines(keymap_, selectionKeymap_, mousemap_, pointer_.swapButtons());
             sidebar_.setScroll(0);
         }
         applyLayout();
@@ -478,6 +498,17 @@ bool App::onKey(const KeyChord& chord) {
     if (chord.ctrl && !chord.shift && !chord.alt && chord.key == KeyCode{'B'} &&
         toggleSelectedTextBold()) {
         return true;
+    }
+    // オブジェクトを選んでいる間だけ効く表を先に引く(既定では矢印での移動)。
+    // Ctrl+B の横取りと同じ「選んでいるオブジェクトへの操作を優先する」規則を、
+    // 直書きの例外ではなく Keymap の層として持たせたもの。ここに無いキーは
+    // 下の通常の表へ落ちるので、選択中でも Shift+矢印・PageDown などはそのまま効く
+    if (selected_ && *selected_ < annotations_.size()) {
+        if (const Command selectionCommand = selectionKeymap_.find(chord);
+            selectionCommand != Command::None) {
+            execute(selectionCommand);
+            return true;
+        }
     }
     const Command command = keymap_.find(chord);
     if (command == Command::None) {
@@ -629,6 +660,7 @@ bool App::beginObjectGrab(Point screenPos) {
     if (screenPos.y >= clientSize_.h - barHeight) return false;
     objectDrag_.end();
     history_.resetDrag();
+    history_.resetKeyMove();  // マウスへ持ち替えたら矢印での移動の連なりも切る
     // 選択中オブジェクトのハンドル(スクリーン座標で判定)→ 回転 / リサイズ開始
     if (selected_ && *selected_ < annotations_.size()) {
         const AnnotationSpec& spec = annotations_[*selected_];
@@ -1630,6 +1662,18 @@ void App::deleteSelectedAnnotation() {
     annotations_.erase(annotations_.begin() + static_cast<std::ptrdiff_t>(*selected_));
     selected_.reset();
     objectDrag_.end();
+    markEdited();
+    host_.requestRedraw();
+}
+
+void App::moveSelectedObject(const Point screenDelta) {
+    if (!selected_ || *selected_ >= annotations_.size()) return;
+    // 移動量は画像 1px 固定(ズームで刻みが変わらない)。向きだけ表示回転を打ち消す
+    const Point delta = screenNudgeToImage(screenDelta, viewport_.rotationDegrees());
+    // 連続した移動は 1 段にまとめる。1 打ごとに積むと上限 10 段を数回で使い切り、
+    // それ以前の編集が取り消せなくなる(まとめてあるので Ctrl+Z 一発で移動前に戻る)
+    if (history_.consumeKeyMovePush()) pushUndo();
+    translateAnnotation(annotations_[*selected_], delta.x, delta.y);
     markEdited();
     host_.requestRedraw();
 }

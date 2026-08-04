@@ -25,7 +25,9 @@ struct HelpLine {
 
 /**
  * @brief 操作一覧の全行を組み立てる。
- * @param[in] keymap            表示対象のキーバインド。
+ * @param[in] keymap            表示対象のキーバインド(KeyScope::Global)。
+ * @param[in] selectionKeymap   オブジェクト選択中だけ効くキーバインド
+ *                              (KeyScope::Selection)。「編集」の節に出す。
  * @param[in] mousemap          表示対象のマウス割り当て(「マウス」の節に出す)。
  * @param[in] swapMouseButtons  マウスの左右の役割を入れ替えているか
  *                              (`[mouse] swap_buttons`)。マウス操作の行の
@@ -34,8 +36,8 @@ struct HelpLine {
  * @note キー表記は Keymap::chordToString と同じ(そのまま blinker.ini に書ける)。
  *       マウスの表記だけは日本語(Mousemap::chordToDisplayString)で、ini には書けない。
  */
-std::vector<HelpLine> buildHelpLines(const Keymap& keymap, const Mousemap& mousemap,
-                                     bool swapMouseButtons);
+std::vector<HelpLine> buildHelpLines(const Keymap& keymap, const Keymap& selectionKeymap,
+                                     const Mousemap& mousemap, bool swapMouseButtons);
 
 /**
  * @brief 指定コマンドに割り当てられたキーを 1 つの文字列にまとめる。

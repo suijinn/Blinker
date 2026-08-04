@@ -222,6 +222,53 @@ void testKeymap() {
     CHECK(commandFromName("help") == Command::ToggleHelp);
 }
 
+void testSelectionKeymap() {
+    // オブジェクト選択中だけ効く表。既定は修飾なしの矢印での移動だけを持つ
+    const Keymap sel = Keymap::selectionDefaults();
+    CHECK(sel.find({KeyCode::Left}) == Command::MoveObjectLeft);
+    CHECK(sel.find({KeyCode::Right}) == Command::MoveObjectRight);
+    CHECK(sel.find({KeyCode::Up}) == Command::MoveObjectUp);
+    CHECK(sel.find({KeyCode::Down}) == Command::MoveObjectDown);
+    // ここに無いキーは通常の表へ落ちる。選択中も意味が変わらないことの担保
+    CHECK(sel.find({KeyCode::Right, false, true}) == Command::None);  // Shift+Right = ページ送り
+    CHECK(sel.find({KeyCode::Left, true}) == Command::None);          // Ctrl+Left = パン
+    CHECK(sel.find({KeyCode::PageDown}) == Command::None);            // 画像遷移
+    CHECK(sel.find({KeyCode::Delete}) == Command::None);              // 削除は通常の表のまま
+
+    // 通常の表は矢印を手放していない(選択していなければ従来どおり画像遷移)
+    const Keymap global = Keymap::defaults();
+    CHECK(global.find({KeyCode::Right}) == Command::NextImage);
+    CHECK(global.find({KeyCode::Left}) == Command::PrevImage);
+    CHECK(global.find({KeyCode::Left}) != Command::MoveObjectLeft);
+
+    // コマンドはどちらか一方の文脈にだけ属する
+    CHECK(keyScopeOf(Command::MoveObjectLeft) == KeyScope::Selection);
+    CHECK(keyScopeOf(Command::MoveObjectDown) == KeyScope::Selection);
+    CHECK(keyScopeOf(Command::NextImage) == KeyScope::Global);
+    CHECK(keyScopeOf(Command::DeleteAnnotation) == KeyScope::Global);
+    CHECK(commandFromName("move_object_left") == Command::MoveObjectLeft);
+    CHECK(commandFromName("move_object_down") == Command::MoveObjectDown);
+
+    // ini は [keys] の 1 セクションのまま。同じ記述を両方の表へ渡しても、
+    // 自分の文脈に属さないコマンドは読み飛ばす(取り違えて未割り当てにしない)
+    const std::unordered_map<std::string, std::string> keys{{"next", "N"},
+                                                            {"move_object_left", "A"}};
+    Keymap customGlobal = Keymap::defaults();
+    Keymap customSelection = Keymap::selectionDefaults();
+    customGlobal.applyConfig(keys, KeyScope::Global);
+    customSelection.applyConfig(keys, KeyScope::Selection);
+    CHECK(customGlobal.find({KeyCode{'N'}}) == Command::NextImage);
+    CHECK(customGlobal.find({KeyCode{'A'}}) == Command::None);
+    CHECK(customSelection.find({KeyCode{'A'}}) == Command::MoveObjectLeft);
+    CHECK(customSelection.find({KeyCode::Left}) == Command::None);  // 記述で置き換わる
+    CHECK(customSelection.find({KeyCode{'N'}}) == Command::None);
+    // 通常の表の既定(矢印 = 画像遷移)は move_object_* の記述では動かない
+    CHECK(customGlobal.find({KeyCode::Left}) == Command::PrevImage);
+
+    // 表記は通常の表と同じ規則(F1 の一覧からそのまま ini へ書ける)
+    CHECK(keysLabel(sel, Command::MoveObjectRight) == "Right");
+}
+
 void testChordToString() {
     CHECK(Keymap::chordToString({KeyCode{'O'}, true}) == "Ctrl+O");
     CHECK(Keymap::chordToString({KeyCode{'C'}, true, true}) == "Ctrl+Shift+C");
@@ -411,6 +458,7 @@ void testNavArrows() {
 
 void testHelpLines() {
     const Keymap km = Keymap::defaults();
+    const Keymap sel = Keymap::selectionDefaults();
     const Mousemap mm = Mousemap::defaults();
     CHECK(keysLabel(km, Command::NextImage) == "Right Down PageDown");
     CHECK(keysLabel(km, Command::ToggleHelp) == "F1");
@@ -418,7 +466,7 @@ void testHelpLines() {
     CHECK(mouseLabel(mm, Command::NextImage) == "サイド(進む) チルト→ Ctrl+ホイール↓");
     CHECK(mouseLabel(mm, Command::ZoomIn).empty());  // ズームは割り当てではない
 
-    const std::vector<HelpLine> lines = buildHelpLines(km, mm, false);
+    const std::vector<HelpLine> lines = buildHelpLines(km, sel, mm, false);
     const auto has = [&lines](std::string_view text) {
         return std::any_of(lines.begin(), lines.end(),
                            [text](const HelpLine& line) { return line.text == text; });
@@ -441,6 +489,11 @@ void testHelpLines() {
     CHECK(has("名前を付けて保存  Ctrl+Shift+S"));
     CHECK(has("印刷  Ctrl+P"));
     CHECK(has("ファイルをコピー  Shift+C"));
+    // 同じ矢印キーが文脈で意味を変えるので、節を分けて両方出す
+    CHECK(hasHeader("オブジェクト選択中"));
+    CHECK(has("選択中のオブジェクトを右へ 1px  Right"));
+    CHECK(has("選択中のオブジェクトを上へ 1px  Up"));
+    CHECK(has("選択中の図形・テキストを削除  Delete"));
     // キーの割り当てがない操作は行ごと出ない
     CHECK(!has("矢印ツール  "));
     CHECK(std::none_of(lines.begin(), lines.end(), [](const HelpLine& line) {
@@ -456,7 +509,7 @@ void testHelpLines() {
     CHECK(has("前の画像  サイド(戻る) チルト← Ctrl+ホイール↑"));
     // 素のホイールが空いている限りズームは「ホイール」
     CHECK(has("拡大 / 縮小  ホイール"));
-    const std::vector<HelpLine> swapped = buildHelpLines(km, mm, true);
+    const std::vector<HelpLine> swapped = buildHelpLines(km, sel, mm, true);
     const auto hasSwapped = [&swapped](std::string_view text) {
         return std::any_of(swapped.begin(), swapped.end(),
                            [text](const HelpLine& line) { return line.text == text; });
@@ -475,7 +528,7 @@ void testHelpLines() {
     custom.applyConfig({{"next", "N"}, {"tool_arrow", "A"}});
     Mousemap customMouse = Mousemap::defaults();
     customMouse.applyConfig({{"next", "WheelDown"}, {"prev", "WheelUp"}, {"fit", "Middle"}});
-    const std::vector<HelpLine> customLines = buildHelpLines(custom, customMouse, false);
+    const std::vector<HelpLine> customLines = buildHelpLines(custom, sel, customMouse, false);
     const auto hasCustom = [&customLines](std::string_view text) {
         return std::any_of(customLines.begin(), customLines.end(),
                            [text](const HelpLine& line) { return line.text == text; });
@@ -501,7 +554,7 @@ void testHelpLines() {
     stripped.unbindCommand(Command::CopyOcrText);
     stripped.unbindCommand(Command::PasteImage);
     stripped.unbindCommand(Command::PasteObject);
-    const std::vector<HelpLine> strippedLines = buildHelpLines(stripped, mm, false);
+    const std::vector<HelpLine> strippedLines = buildHelpLines(stripped, sel, mm, false);
     CHECK(std::none_of(strippedLines.begin(), strippedLines.end(),
                        [](const HelpLine& line) { return line.text == "ファイル"; }));
 }
@@ -2970,6 +3023,20 @@ void testEditHistory() {
     CHECK(!drag.dragPushed());
     CHECK(drag.consumeDragPush());
 
+    // キーでの移動も同じ仕組み。区切りまでの連続した移動は 1 段にまとめる
+    EditHistory keyMove;
+    keyMove.resetKeyMove();
+    CHECK(keyMove.consumeKeyMovePush());
+    CHECK(!keyMove.consumeKeyMovePush());  // 押し続けても積むのは最初の 1 回
+    keyMove.resetKeyMove();                // 別の操作を挟んだら次は新しい段
+    CHECK(keyMove.consumeKeyMovePush());
+    keyMove.clear();  // 画像の切り替えで旗も落ちる
+    CHECK(keyMove.consumeKeyMovePush());
+    // ドラッグとキー移動の旗は独立(持ち替えても取りこぼさない)
+    EditHistory both;
+    CHECK(both.consumeKeyMovePush());
+    CHECK(both.consumeDragPush());
+
     // テキスト編集も同じ。ただし積むのは開始時に控えた「編集前」の状態
     EditHistory text;
     text.beginTextEdit(snapshotWithWidth(7));
@@ -3891,6 +3958,30 @@ void testPixelInfoText() {
     CHECK(objectSizeText(640, -1).empty());
 }
 
+void testScreenNudgeToImage() {
+    // 表示回転なしなら画面の向きがそのまま画像の向き
+    CHECK(nearly(screenNudgeToImage({1, 0}, 0).x, 1));
+    CHECK(nearly(screenNudgeToImage({1, 0}, 0).y, 0));
+    CHECK(nearly(screenNudgeToImage({0, 1}, 0).y, 1));
+
+    // 右 90 度回転中は、画面の右が画像の上(-Y)になる
+    const Point right90 = screenNudgeToImage({1, 0}, 90);
+    CHECK(nearly(right90.x, 0) && nearly(right90.y, -1));
+    const Point down90 = screenNudgeToImage({0, 1}, 90);
+    CHECK(nearly(down90.x, 1) && nearly(down90.y, 0));
+
+    // 180 度は反転、270 度は 90 度の逆
+    CHECK(nearly(screenNudgeToImage({1, 0}, 180).x, -1));
+    CHECK(nearly(screenNudgeToImage({0, 1}, 180).y, -1));
+    const Point right270 = screenNudgeToImage({1, 0}, 270);
+    CHECK(nearly(right270.x, 0) && nearly(right270.y, 1));
+
+    // 一周した角度・負の角度も正規化する(Viewport は 90 の倍数を返す)
+    CHECK(nearly(screenNudgeToImage({1, 0}, 360).x, 1));
+    const Point rightMinus90 = screenNudgeToImage({1, 0}, -90);
+    CHECK(nearly(rightMinus90.x, right270.x) && nearly(rightMinus90.y, right270.y));
+}
+
 void testAnnotationGeometry() {
     AnnotationSpec rect;
     rect.kind = AnnotationSpec::Kind::Rect;
@@ -4371,6 +4462,87 @@ void testAppAnnotationObjects() {
     CHECK(rasterizer.rasterizeCount == beforeResize + 1);
     CHECK(nearly(app.annotations().specs->back().p2.x, 25));
     CHECK(nearly(app.annotations().specs->back().p2.y, 43));
+}
+
+void testAppKeyboardObjectMove() {
+    FakeDecoder decoder;
+    ImageCache cache(decoder);
+    FakeHost host;
+    FakeFileSystem fileSystem;
+    FakeClipboard clipboard;
+    FakeEncoder encoder;
+    FakeAnnotationRasterizer rasterizer;
+    FakeOcrEngine ocrEngine;
+    OcrService ocrService(ocrEngine);
+    ScanService scanService(fileSystem);
+    FakePrinter printer;
+    App app(host, fileSystem, cache, clipboard, encoder, rasterizer, ocrService, printer,
+            scanService);
+    app.onResize(800, 600);
+
+    // 8x8 画像を貼り付け、矩形注釈 (0,0)-(4,4) を描く(描いた直後は選択状態)
+    auto source = std::make_shared<DecodedImage>();
+    source->width = 8;
+    source->height = 8;
+    source->pixels.resize(8 * 8 * 4);
+    clipboard.pasteImage = source;
+    app.execute(Command::PasteImage);
+    app.onMouseDown(MouseButton::Right, {396, 283});
+    app.onMouseUp(MouseButton::Right, {400, 287});
+    CHECK(app.annotations().selected == std::optional<size_t>(0));
+    const auto p1 = [&app] { return app.annotations().specs->front().p1; };
+
+    // 選択中の矢印はオブジェクトを 1px 動かす。画像遷移が起きていないことは
+    // 注釈が残っていることで分かる(遷移すると discardEdits で消える)
+    CHECK(app.onKey({KeyCode::Right}));
+    CHECK(app.annotations().specs->size() == 1);
+    CHECK(nearly(p1().x, 1) && nearly(p1().y, 0));
+    CHECK(app.onKey({KeyCode::Down}));
+    CHECK(app.onKey({KeyCode::Down}));
+    CHECK(nearly(p1().x, 1) && nearly(p1().y, 2));
+    CHECK(app.onKey({KeyCode::Left}));
+    CHECK(app.onKey({KeyCode::Up}));
+    CHECK(nearly(p1().x, 0) && nearly(p1().y, 1));
+
+    // 連続した移動は 1 段の undo にまとめる(上限 10 段を数打で使い切らせない)。
+    // 取り消すと連なりの開始位置(0,0)まで一度に戻る
+    app.execute(Command::Undo);
+    CHECK(nearly(p1().x, 0) && nearly(p1().y, 0));
+    CHECK(app.annotations().specs->size() == 1);
+
+    // 別のコマンドを挟むと連なりが切れ、次の移動は新しい段になる
+    CHECK(app.onMouseDown(MouseButton::Left, {396, 283}));  // 選択し直す
+    app.onMouseUp(MouseButton::Left);
+    CHECK(app.onKey({KeyCode::Right}));
+    app.execute(Command::CopyPath);  // 区切り(移動以外のコマンド。表示は変えないもの)
+    CHECK(app.onKey({KeyCode::Right}));
+    CHECK(nearly(p1().x, 2));
+    app.execute(Command::Undo);
+    CHECK(nearly(p1().x, 1));  // 2 段目だけ戻る
+    app.execute(Command::Undo);
+    CHECK(nearly(p1().x, 0));
+
+    // 選択中でも修飾キー付きの矢印と PageDown は通常どおり(意味が変わらない)。
+    // Ctrl+Right はパンなので注釈は動かない
+    CHECK(app.onMouseDown(MouseButton::Left, {396, 283}));
+    app.onMouseUp(MouseButton::Left);
+    CHECK(app.onKey({KeyCode::Right, true}));  // Ctrl+Right = パン
+    CHECK(nearly(p1().x, 0));
+    CHECK(app.annotations().specs->size() == 1);
+
+    // 表示回転中は画面で見えているとおりの向きへ動く(右 90 度なら画面右 = 画像の上)
+    app.execute(Command::RotateCW);
+    CHECK(app.onKey({KeyCode::Right}));
+    CHECK(nearly(p1().x, 0) && nearly(p1().y, -1));
+    app.execute(Command::RotateCCW);
+
+    // 選択を解くと矢印は画像遷移に戻る。一覧が空(貼り付け画像)なので遷移はしないが、
+    // 移動コマンドとしては効かないことを注釈が動かないことで確かめる
+    app.execute(Command::Escape);
+    CHECK(!app.annotations().selected.has_value());
+    const Point before = p1();
+    app.onKey({KeyCode::Right});
+    CHECK(nearly(p1().x, before.x) && nearly(p1().y, before.y));
 }
 
 void testAppEdit() {
@@ -7107,6 +7279,7 @@ int main() {
     testViewportFit();
     testViewportZoomAt();
     testKeymap();
+    testSelectionKeymap();
     testChordToString();
     testMousemap();
     testNavArrows();
@@ -7159,10 +7332,12 @@ int main() {
     testAppHelpHint();
     testEditFunctions();
     testEditHistory();
+    testScreenNudgeToImage();
     testAnnotationGeometry();
     testPenGeometry();
     testPastedImageGeometry();
     testAppAnnotationObjects();
+    testAppKeyboardObjectMove();
     testAppEdit();
     testAppTextEditing();
     testAppTextStyles();

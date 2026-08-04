@@ -57,6 +57,12 @@ constexpr std::array kCommandNames = {
     CommandName{"undo", Command::Undo},
     CommandName{"redo", Command::Redo},
     CommandName{"delete_annotation", Command::DeleteAnnotation},
+    // 移動はオブジェクト選択中だけ効く(KeyScope::Selection)。
+    // 既定の矢印は画像遷移と同じキーだが、表が別なので衝突しない
+    CommandName{"move_object_left", Command::MoveObjectLeft},
+    CommandName{"move_object_right", Command::MoveObjectRight},
+    CommandName{"move_object_up", Command::MoveObjectUp},
+    CommandName{"move_object_down", Command::MoveObjectDown},
     // ツール切り替えとトリミングの実行は既定のキーを持たない
     // (blinker.ini の [keys] で割り当てる)
     CommandName{"crop_selection", Command::CropToSelection},
@@ -135,6 +141,18 @@ unsigned modifierRank(const KeyChord& chord) {
 
 } // namespace
 
+KeyScope keyScopeOf(const Command cmd) {
+    switch (cmd) {
+    case Command::MoveObjectLeft:
+    case Command::MoveObjectRight:
+    case Command::MoveObjectUp:
+    case Command::MoveObjectDown:
+        return KeyScope::Selection;
+    default:
+        return KeyScope::Global;
+    }
+}
+
 Command commandFromName(std::string_view name) {
     const std::string lower = toLower(trim(name));
     for (const auto& e : kCommandNames) {
@@ -195,6 +213,18 @@ Keymap Keymap::defaults() {
     b(KeyCode::Escape, Command::Escape);
     b(KeyCode{'Q'}, Command::Quit);
     b(KeyCode{'W'}, Command::Quit, true);
+    return km;
+}
+
+Keymap Keymap::selectionDefaults() {
+    Keymap km;
+    // 修飾なしの矢印だけを奪う。Shift+矢印(ページ送り)・Ctrl+矢印(パン)・
+    // PageUp/PageDown(画像遷移)は選択中もそのまま効かせる ―― 同じキーの意味が
+    // 選択の有無で変わらないほうが覚えやすく、選択を解かずに画像も送れる
+    km.bind({KeyCode::Left, false, false, false}, Command::MoveObjectLeft);
+    km.bind({KeyCode::Right, false, false, false}, Command::MoveObjectRight);
+    km.bind({KeyCode::Up, false, false, false}, Command::MoveObjectUp);
+    km.bind({KeyCode::Down, false, false, false}, Command::MoveObjectDown);
     return km;
 }
 
@@ -321,10 +351,13 @@ std::optional<KeyChord> Keymap::parseChord(std::string_view text) {
     return std::nullopt;
 }
 
-void Keymap::applyConfig(const std::unordered_map<std::string, std::string>& keysSection) {
+void Keymap::applyConfig(const std::unordered_map<std::string, std::string>& keysSection,
+                         const KeyScope scope) {
     for (const auto& [name, value] : keysSection) {
         const Command cmd = commandFromName(name);
         if (cmd == Command::None) continue;
+        // 文脈の違うコマンドは別の表の担当。ここで消すと未割り当てになってしまう
+        if (keyScopeOf(cmd) != scope) continue;
         unbindCommand(cmd);
         // カンマ区切りで複数キーを許可
         std::string_view rest = value;

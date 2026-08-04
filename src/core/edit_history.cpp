@@ -22,6 +22,7 @@ void EditHistory::clear() {
     undo_.clear();
     redo_.clear();
     resetDrag();
+    resetKeyMove();
     textEditPushed_ = false;
     textEditBefore_ = {};  // 控えたままの画像を抱え込まないよう手放す
 }
@@ -33,6 +34,16 @@ void EditHistory::resetDrag() {
 bool EditHistory::consumeDragPush() {
     if (dragPushed_) return false;
     dragPushed_ = true;
+    return true;
+}
+
+void EditHistory::resetKeyMove() {
+    keyMovePushed_ = false;
+}
+
+bool EditHistory::consumeKeyMovePush() {
+    if (keyMovePushed_) return false;
+    keyMovePushed_ = true;
     return true;
 }
 

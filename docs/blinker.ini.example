@@ -188,6 +188,12 @@ border_width = 0
 #   undo redo delete_annotation resize crop_selection
 #     (resize = 倍率・長辺のプリセットメニューを出して画像をリサイズ、
 #      crop_selection = 選択中の矩形の範囲で画像をトリミング。矩形自身は消える)
+#   move_object_left move_object_right move_object_up move_object_down
+#     (選択中の図形・テキストを 1px 動かす。既定は矢印キー。
+#      これらは「オブジェクトを選択している間だけ」効く別の対応表なので、
+#      next / prev などと同じキーを書いても取り合いにはならない。
+#      選択していないときの矢印は従来どおり画像遷移で、選択中でも
+#      Shift+矢印(ページ送り)・Ctrl+矢印(パン)・PageUp/PageDown はそのまま)
 #   sort_name sort_date sort_size sort_ext sort_reverse sort_cycle recursive
 #     (一覧の並び順。既定のキーは割り当てていない ―― サイドバーの右クリックが入口。
 #      sort_* は同じキーを選び直すと昇順 / 降順が入れ替わる)
@@ -209,6 +215,12 @@ border_width = 0
 #
 # 例: 矩形を描いたあと Enter 一発でトリミングする場合
 #crop_selection = Enter
+#
+# 例: 選択中のオブジェクトの移動を Vim風のキーにする場合(矢印は画像遷移に戻る)
+#move_object_left = H
+#move_object_right = L
+#move_object_up = K
+#move_object_down = J
 
 [ocr]
 # 文字認識 (Ctrl+T、または ocr ツールで範囲を選ぶ) に使う言語 (BCP-47)。

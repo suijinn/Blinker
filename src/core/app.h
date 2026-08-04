@@ -1077,6 +1077,19 @@ private:
     void deleteSelectedAnnotation();
 
     /**
+     * @brief 選択中の注釈オブジェクトをキーで 1px 動かす。
+     *
+     * 向きは画面基準で、表示回転は screenNudgeToImage が打ち消す。画像の外へ
+     * はみ出す位置も許す(マウスでの移動ドラッグに合わせる。Ctrl+Z で戻せる)。
+     * 連続した移動は 1 段の undo にまとめる(EditHistory::consumeKeyMovePush)。
+     *
+     * @param[in] screenDelta 画面上の移動量(右・下が正。通常は ±1px)。
+     * @note 選択が無ければ何もしない(選択中しか呼ばれないが、
+     *       削除・トリミングとの競合に備えて index も検査する)。
+     */
+    void moveSelectedObject(Point screenDelta);
+
+    /**
      * @brief 注釈と表示回転を焼き込んだ保存・コピー用の画像を作る。
      * @return 焼き込んだ画像。注釈も回転もなければ current_ をそのまま返す。
      * @note 回転は Viewport が持つ表示状態で current_ のピクセルには入っていないため、
@@ -1263,6 +1276,8 @@ private:
     uint64_t scanGeneration_ = 0;
     bool scanAnnounce_ = false;  ///< 走査の完了時に件数をステータスバーへ出すか
     Keymap keymap_ = Keymap::defaults();
+    /// オブジェクト選択中だけ効くキー(矢印での移動)。onKey が keymap_ より先に引く
+    Keymap selectionKeymap_ = Keymap::selectionDefaults();
     Mousemap mousemap_ = Mousemap::defaults();
     ImageList list_;
     /// 一覧の起点フォルダ。並び順の変更・再帰の切り替えで列挙し直すのに使う

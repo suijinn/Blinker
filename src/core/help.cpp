@@ -57,6 +57,10 @@ constexpr std::array kCommandLabels = {
     CommandLabel{Command::Undo, "元に戻す"},
     CommandLabel{Command::Redo, "やり直す"},
     CommandLabel{Command::DeleteAnnotation, "選択中の図形・テキストを削除"},
+    CommandLabel{Command::MoveObjectLeft, "選択中のオブジェクトを左へ 1px"},
+    CommandLabel{Command::MoveObjectRight, "選択中のオブジェクトを右へ 1px"},
+    CommandLabel{Command::MoveObjectUp, "選択中のオブジェクトを上へ 1px"},
+    CommandLabel{Command::MoveObjectDown, "選択中のオブジェクトを下へ 1px"},
     CommandLabel{Command::CropToSelection, "選択中の矩形でトリミング"},
     CommandLabel{Command::SelectToolOcr, "文字認識ツール (範囲指定)"},
     CommandLabel{Command::SelectToolRect, "矩形ツール"},
@@ -118,8 +122,8 @@ std::string mouseLabel(const Mousemap& mousemap, const Command cmd) {
     return result;
 }
 
-std::vector<HelpLine> buildHelpLines(const Keymap& keymap, const Mousemap& mousemap,
-                                     const bool swapMouseButtons) {
+std::vector<HelpLine> buildHelpLines(const Keymap& keymap, const Keymap& selectionKeymap,
+                                     const Mousemap& mousemap, const bool swapMouseButtons) {
     std::vector<HelpLine> lines;
 
     // 見出しは中身が 1 行でも出てから追加する(ini で全部外された節を空のまま残さない)
@@ -140,6 +144,11 @@ std::vector<HelpLine> buildHelpLines(const Keymap& keymap, const Mousemap& mouse
     // キーが割り当てられていない操作は行ごと出さない(既定の tool_* など)
     const auto row = [&](const Command cmd) {
         text(commandLabel(cmd), keysLabel(keymap, cmd));
+    };
+    // オブジェクト選択中だけ効く操作は別の表から引く(同じキーが上の節にも出るため、
+    // どちらの意味になるかは節の見出しで区別する)
+    const auto selectionRow = [&](const Command cmd) {
+        text(commandLabel(cmd), keysLabel(selectionKeymap, cmd));
     };
 
     header("表示");
@@ -190,8 +199,6 @@ std::vector<HelpLine> buildHelpLines(const Keymap& keymap, const Mousemap& mouse
     row(Command::Undo);
     row(Command::Redo);
     row(Command::ResizeImage);
-    row(Command::DeleteAnnotation);
-    row(Command::CropToSelection);
     row(Command::SelectToolOcr);
     row(Command::SelectToolRect);
     row(Command::SelectToolEllipse);
@@ -201,6 +208,16 @@ std::vector<HelpLine> buildHelpLines(const Keymap& keymap, const Mousemap& mouse
     row(Command::SelectToolMarker);
     row(Command::SelectToolNumber);
     row(Command::SelectToolText);
+
+    // 図形・テキストを選んでいる間だけ意味が変わる操作。矢印は画像遷移と同じキーなので、
+    // どちらになるかが分かるよう節を分けて出す(選択中は枠とハンドルが見えている)
+    header("オブジェクト選択中");
+    selectionRow(Command::MoveObjectLeft);
+    selectionRow(Command::MoveObjectRight);
+    selectionRow(Command::MoveObjectUp);
+    selectionRow(Command::MoveObjectDown);
+    row(Command::DeleteAnnotation);
+    row(Command::CropToSelection);
     // Ctrl+B は App が横取りするため Command を持たない(キー変更もできない)
     text("選択中のテキストを太字", "Ctrl+B");
     // オブジェクト選択中は copy_image の対象が変わる(Command は同じなのでキーも同じ)
