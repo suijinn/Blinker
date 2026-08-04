@@ -155,6 +155,19 @@ std::optional<size_t> hitTestAnnotations(const std::vector<AnnotationSpec>& spec
 void translateAnnotation(AnnotationSpec& spec, float dx, float dy);
 
 /**
+ * @brief 画面上で動かしたい向きを、表示回転を打ち消して画像座標の移動量へ直す。
+ *
+ * キーでの移動(矢印キー)は「画面で見えているとおりの向き」に動くべきだが、
+ * 表示回転 (Command::RotateCW) 中は画像座標の +X が画面の右とは限らない。
+ * 拡大率は掛けない ―― 移動量は画像 1px 固定で、ズームしても刻みが変わらないようにする。
+ *
+ * @param[in] screenDelta    画面上で動かしたい量(右・下が正)。
+ * @param[in] rotationDegrees 現在の表示回転角(度。90 の倍数。Viewport::rotationDegrees)。
+ * @return 画像座標での移動量(translateAnnotation へ渡せる)。
+ */
+Point screenNudgeToImage(Point screenDelta, int rotationDegrees);
+
+/**
  * @brief 注釈を原点基準で拡大縮小する(画像のリサイズに追従させる)。
  *
  * トリミングが translateAnnotation で注釈をオブジェクトのまま維持するのと同じ発想で、

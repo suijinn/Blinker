@@ -98,6 +98,21 @@ public:
     /// @return consumeDragPush が true を返したあとなら true。
     bool dragPushed() const { return dragPushed_; }
 
+    /// @brief キーでの移動の連なりを区切り、「まだ積んでいない」状態へ戻す。
+    /// @note 別のコマンドを実行したときとオブジェクトを掴んだときに呼ぶ。
+    void resetKeyMove();
+
+    /**
+     * @brief キーでの移動の連なりの最初の 1 回かを判定し、旗を立てる。
+     *
+     * ドラッグの consumeDragPush と同じ「最初の 1 回だけ積む」仕組み。矢印キーを
+     * 押した回数だけ履歴が積まれると、上限 kLimit(10 段)を数回のキー入力で
+     * 使い切ってしまうため、区切りまでの連続した移動をまとめて 1 段にする。
+     *
+     * @return 連なりの最初の移動なら true。2 回目以降は false。
+     */
+    bool consumeKeyMovePush();
+
     /**
      * @brief テキスト編集の開始時に、編集前のスナップショットを控える。
      *
@@ -129,6 +144,7 @@ private:
     std::vector<EditSnapshot> undo_;  ///< 取り消し履歴(末尾が直前の状態)
     std::vector<EditSnapshot> redo_;  ///< やり直し履歴。push で捨てられる
     bool dragPushed_ = false;         ///< ドラッグ中の記録は最初の変更時の 1 回だけ
+    bool keyMovePushed_ = false;      ///< キーでの移動の記録も、連なりの最初の 1 回だけ
     bool textEditPushed_ = false;     ///< テキスト編集中の記録も同様
     EditSnapshot textEditBefore_;     ///< 上で積む編集前のスナップショット
 };

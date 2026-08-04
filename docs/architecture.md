@@ -195,6 +195,8 @@ Text 注釈を選択中の `Ctrl+B` だけは `App::onKey` が Keymap より先�
 `Command::ToggleSidebar` と同じキーだが、選んでいるオブジェクトへの操作を優先する。
 インプレース編集中の Ctrl+B/I/U が Keymap を通らないのと同じ扱いで、
 選択 → 編集を行き来しても Ctrl+B の意味が変わらない。
+矢印キーでの 1px 移動も「選んでいるオブジェクトを優先する」同じ規則だが、
+こちらは直書きの例外ではなく Keymap の層として持つ(下記「選択中のキーバインド」)。
 Ctrl+Z で1段階ずつ取り消し、Ctrl+Y(Shift+Ctrl+Z も可)でやり直せる。履歴は core の
 `EditHistory` (`edit_history.h`) が持つ(1段は画像 + 注釈一覧のスナップショット
 `EditSnapshot`、undo・redo とも上限 `EditHistory::kLimit` = 10)。undo は現在の状態を
@@ -203,8 +205,9 @@ redo 側へ、redo は undo 側へ積み替えるだけの対称な操作で、�
 取り出したスナップショットを表示状態へ戻すのは App 側 (`App::restoreFrom`)。
 ドラッグ(移動・回転・リサイズ)とテキスト入力は 1 回の操作で変更が何度も届くので、
 積むのは最初の 1 回だけにする。その判定の旗も `EditHistory` が持つ
-(`consumeDragPush` / `consumeTextEditSnapshot`)。旗と積み先が離れていると
-「積んだつもりで積んでいない」が起きるため。
+(`consumeDragPush` / `consumeTextEditSnapshot` / `consumeKeyMovePush`)。旗と積み先が
+離れていると「積んだつもりで積んでいない」が起きるため。
+
 保存は明示した時だけで、勝手に書き換えることはない。上書き保存 (Ctrl+S) は元の
 ファイルを置き換えるため既定で確認ダイアログ (`IAppHost::showConfirm`) を出し
 (`[save] confirm_overwrite`)、成功したら `ImageCache::invalidate` でその 1 件を捨てる
@@ -221,6 +224,39 @@ redo 側へ、redo は undo 側へ積み替えるだけの対称な操作で、�
 アルファを見ない)で `flattenOnBackground` で白へ焼き込んでから渡す。用紙のどこに
 どう置くかだけが `[print]` の設定で、プリンタ・用紙・向き・部数は OS の印刷ダイアログ
 に任せる(自前の印刷設定 UI は持たない)。
+
+### 選択中のキーバインド (KeyScope)
+
+「選んでいるオブジェクトへの操作を優先する」規則は、Ctrl+B のような直書きの例外では
+なく **Keymap の第 2 レイヤー**として持つ。`Command` は `keyScopeOf` で
+`KeyScope::Global` と `KeyScope::Selection` のどちらか一方に属し、App は表を 2 本持つ
+(`keymap_` / `selectionKeymap_`)。`App::onKey` は**選択中だけ**
+`selectionKeymap_` を先に引き、当たらなければ通常の表へ落とす。表を分けるのは、
+`Keymap` が KeyChord → Command の 1 対 1 の map で、同じ `Right` に `NextImage` と
+`MoveObjectRight` を同居させられないため。
+
+既定は修飾なしの矢印 4 つ = `Command::MoveObject*`(画像座標で 1px 移動)だけ。
+**Shift+矢印(ページ送り)・Ctrl+矢印(パン)・PageUp/PageDown(画像遷移)は
+選択中もそのまま効く** ―― 同じキーの意味が選択の有無で変わらないほうが覚えやすく、
+選択を解かずに画像も送れる。逆に修飾なしの矢印を渡すのは、選択中の画像遷移が
+`discardEdits` で**未保存の注釈を確認なしに捨てる**(undo でも戻せない)ためで、
+取り違えたときの損害は「1px 動く」側が軽い。選択中は破線枠とハンドルが出ているので、
+どちらの意味になるかは画面から分かる(「モードが見えないと誤操作になる」)。
+
+向きは**画面基準**で、表示回転 (`R`) は `screenNudgeToImage`(純関数・単体テスト対象)が
+打ち消す。移動量は画像 1px 固定でズーム率では変えない(トリミング枠の微調整が主用途で、
+ハンドルでの 1px 調整と刻みを揃える)。画像の外へはみ出す位置も許す(マウスでの移動と同じ)。
+
+**連続した移動は 1 段の undo にまとめる**(`EditHistory::consumeKeyMovePush`)。
+1 打ごとに積むと上限 `kLimit` = 10 段をキーリピート数回で使い切り、それ以前の編集が
+取り消せなくなるため。連なりの区切りは「移動以外の `Command` を実行したとき」
+(`App::execute` の先頭)と「マウスで掴んだとき」(`beginObjectGrab`)の 2 か所で、
+時計は使わない(core は時刻に依存しない)。
+
+ini は `[keys]` の 1 セクションのままで、`applyConfig` に `KeyScope` を渡して
+**自分の文脈に属さないコマンドの記述を読み飛ばす**(利用者は `move_object_left = A` と
+書くだけでよく、表の区別を意識しなくてよい)。`F1` の一覧は「オブジェクト選択中」の
+節を分けて出す(`buildHelpLines` は両方の表を受け取る)。
 
 ### アニメーションと多フレーム画像
 
@@ -554,10 +590,10 @@ Text 注釈は PowerPoint のテキストボックスと同じく**画像上で�
 | `animation.h` | アニメーションの合成(`AnimationCompositor`。部分矩形の配置・Disposal・Blend)、遅延時間の正規化(`normalizedDelayMs`)、再生位置の前進(`advanceFrame`)。いずれも純粋関数・単体テスト対象で、時計にも OS にも依存しない。設定(`[animation]`)の読み取りもここ |
 | `OcrService` | ワーカースレッド1本で非同期に文字認識(`ImageCache` と同じ形)。予約は最後の1件だけが走り、結果は generation 付きで返るので、画像を切り替えた後に届いた古い結果を App 側で捨てられる |
 | `ocr_text.h` | 認識結果の後処理。テキストの整形(`ocrResultToText`。行の連結と、CJK 文字に挟まれた空白の除去 — Windows の OCR は日本語でも語間に空白を入れて返す)と、拡大して読み直すかの判断(`ocrRetryUpscale`)。閾値は実測で決めてあり、根拠はヘッダのコメントに残してある。純粋関数で単体テスト対象 |
-| `Keymap` | KeyChord → Command。デフォルト表 + ini 上書き。逆引き (`chordsFor` / `chordToString`) も持ち、操作一覧の生成に使う |
+| `Keymap` | KeyChord → Command。デフォルト表 + ini 上書き。逆引き (`chordsFor` / `chordToString`) も持ち、操作一覧の生成に使う。表は文脈 (`KeyScope`) ごとに別インスタンスで、`defaults` が通常、`selectionDefaults` がオブジェクト選択中(上記「選択中のキーバインド」) |
 | `Mousemap` | MouseChord → Command(中・サイドボタン・ホイール・ダブルクリック)。`Keymap` と同じ形。ini 用の表記 (`chordToString`) と操作一覧用の日本語表記 (`chordToDisplayString`) を持つ。ホイール量の蓄積 (`consumeWheelSteps`) も同じヘッダ(いずれも単体テスト対象) |
 | `nav_arrows.h` | オーバーレイ矢印(左右の端に出る画像遷移ボタン)の寸法・表示条件・当たり判定(純粋関数、単体テスト対象)。**廃止しうる表示なので判定をここに閉じている**(上記「オーバーレイ矢印」) |
-| `help.h` | 現在の `Keymap` / `Mousemap` から操作一覧の表示テキストを組み立てる(`buildHelpLines`)。固定テキストを持たないので README と drift しない。コマンドの表示名の正はこのファイルの表 1 つで、キーの節とマウスの節が共有する(単体テスト対象) |
+| `help.h` | 現在の `Keymap`(通常と選択中の 2 本)/ `Mousemap` から操作一覧の表示テキストを組み立てる(`buildHelpLines`)。固定テキストを持たないので README と drift しない。コマンドの表示名の正はこのファイルの表 1 つで、キーの節とマウスの節が共有する(単体テスト対象) |
 | `SidebarState` | サイドバーの可視・モード (`SidebarMode`)・幅・スクロール量と、右端を掴む幅変更ドラッグの状態(`sidebar_state.h`。純粋な状態と幾何、単体テスト対象)。幅は設定 (ini) から来る素の `configuredWidth` と、操作一覧モードで `kHelpWidth` まで広げた表示上の `width` の 2 つを区別する。**一覧の中身も窓も知らない** ― 項目数・領域の高さのように外から決まる値は引数で受け取り、フルスクリーンで隠す判断とレイアウトの作り直しは `App` に残る |
 | `PointerState` | マウス操作の進行状態(`pointer_state.h`。純粋な状態、単体テスト対象)。左右の役割 (`MouseButton` / `MouseRole` / `swap_buttons`)、最後のポインタ位置と窓内にいるか、パン中か、右クリックの押下位置とそこから決まる `MenuOnRelease`、ホイールの貯金。**画像も窓も知らない** ― 画素に触る編集ドラッグ (`EditDragState`) とオブジェクト操作 (`ObjectDragState`) は別に持つ |
 | `EditDragState` | 編集ドラッグの進行状態(`edit_drag_state.h`。純粋な状態、単体テスト対象)。ドラッグ中か・始点と終点(画像座標)・押下位置から十分に動いたか・手書きの軌跡と Shift の直線アンカー(アンカーから先を 1 本に引き直す)。**画像もツールも窓も知らない** ― 画像座標への変換とクランプ・Shift での方向合わせ (`App::dragEndImage`)・どのツールを適用するかは `App` に残る |
@@ -565,7 +601,7 @@ Text 注釈は PowerPoint のテキストボックスと同じく**画像上で�
 | `EditStyle` | これから描く注釈の設定(`edit_style.h`。純粋な状態、単体テスト対象)。選択中のツール (`EditTool`) と、色・線幅・文字サイズ・フォント・塗り・枠線。値の丸め(線幅 1〜100px など)と ini の `[edit]` の読み取り (`applyConfig`) もここが持つ。**画像も注釈の一覧も窓も知らない** ― 次に作る 1 件へ写す (`applyTo`) だけで、何をどこへ描くか(種別・位置)と既にある注釈の書式変更は `App` に残る |
 | `menu.h` | ポップアップメニューの組み立て(`MenuItem` の木と末端項目の一覧を作る純関数。単体テスト対象)。ツール切り替え (`buildEditMenu`)・リサイズのプリセット (`buildResizeMenu`)・サイドバー (`buildSidebarMenu`)・注釈オブジェクト (`buildObjectMenu`)・編集中テキストの書式 (`buildTextStyleMenu`) の 5 つと、フォント候補の解決 (`fontFamilyChoices`)。**メニューを出さないし、選ばれた結果も適用しない** ― 表示 (`IAppHost::showContextMenu`) と適用 (`App::applyEditChoice` など) は `App` に残る。実在するフォントの問い合わせも `FontAvailableFn` で受け取るので、描画側 (`IAnnotationRasterizer`) を知らない |
 | `view_text.h` | 常に見えている表示文字列の組み立て(状態 → 文字列の純関数。単体テスト対象)。タイトルバー (`windowTitle`)・ステータスバー左側 (`statusText`)・カーソル位置の座標と色 (`pixelInfoText`) の 3 つ。**設定も描画もしない** ― `IAppHost::setTitle` を呼ぶのも `StatusBarView` に詰めるのも `App` に残る。窓の状態(フルスクリーンでバーを隠す判断)も、カーソルがビューポート内にいるかの判定も知らない |
-| `EditHistory` | 取り消し・やり直しの履歴(`edit_history.h`。1段は `EditSnapshot` = 画像 + 注釈一覧、上限 `kLimit` = 10。純粋な状態、単体テスト対象)。ドラッグ中・テキスト編集中の「最初の1回だけ積む」判定の旗も持つ。画像そのものや表示状態は知らず、復元は `App::restoreFrom` が行う |
+| `EditHistory` | 取り消し・やり直しの履歴(`edit_history.h`。1段は `EditSnapshot` = 画像 + 注釈一覧、上限 `kLimit` = 10。純粋な状態、単体テスト対象)。ドラッグ中・テキスト編集中・キーでの連続移動中の「最初の1回だけ積む」判定の旗も持つ。画像そのものや表示状態は知らず、復元は `App::restoreFrom` が行う |
 | `TextEditBuffer` | インプレース編集中の文字列・キャレット・選択範囲・部分書式(`text_edit.h`。UTF-8 バイト位置の純粋ロジック、単体テスト対象)。文字列を変えるたびに書式範囲を追従させる |
 | `TextEditState` | インプレース編集の進行状態(`text_edit_state.h`。純粋な状態、単体テスト対象)。編集中か・対象の注釈 index・新規作成中か・`TextEditBuffer` 本体・キャレットの点滅相・ドラッグでの範囲選択・書式メニューの押下・IME の変換中文字列(とそれを混ぜた描画用のテキスト・書式・キャレット位置)。**注釈も画像も窓も知らない** ― 注釈への書き戻し・枠の実測・キャレット位置の通知はラスタライザの計測を要するため `App` に残る |
 | `text_style.h` | 部分書式(色・太字・斜体・下線・フォント)の範囲リストとその編集の純関数。範囲の切り分け・正規化・編集への追従(`adjustTextStyles`)を担う(単体テスト対象) |
@@ -623,6 +659,8 @@ Text 注釈は PowerPoint のテキストボックスと同じく**画像上で�
 1. `core/command.h` の `Command` に `ToggleSlideshow` を追加
 2. `core/app.cpp` の `App::execute` にハンドラを追加(タイマーは IAppHost に API を足す)
 3. `core/keymap.cpp` の `kCommandNames`(ini 名)とデフォルトキー表に追加
+   (オブジェクト選択中だけ効く操作なら `keyScopeOf` を `KeyScope::Selection` にし、
+   既定は `Keymap::defaults` ではなく `selectionDefaults` へ書く)
 4. `core/help.cpp` の `kCommandLabels` に表示名を追加し、操作一覧の節へ `row()` を足す
    (表示名が無いと `F1` の一覧に出ない。マウスへの割り当ても同じ表を通る)
 5. マウスにも既定で割り当てるなら `core/mousemap.cpp` の `Mousemap::defaults`

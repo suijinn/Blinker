@@ -28,6 +28,17 @@ cmd /c '"C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Bu
   `-Wall -Wextra -Wno-missing-field-initializers`)。CI は `-DBLINKER_WERROR=ON` を渡して
   `/WX` ・ `-Werror` を足すので、警告を1つでも残すと落ちる。手元で同じ厳しさにするなら
   同じオプションを付ける(既定は OFF)
+- **`src/core/*.h` を書き換えたら、ビルドログに `src/win/` の再コンパイルが出ているか
+  確認すること。** 出ていなければ `cmake --build --preset release --clean-first` で
+  作り直す(または `build/release/` を消す)。`build/<preset>/` は使い回すため、
+  `.ninja_deps`(ヘッダ依存の記録)が過去に途中でリセットされていると、ninja が
+  「その `.obj` は `app.h` に依存する」ことを知らないまま**古い `.obj` を再利用して
+  リンクする**。`App` や `EditHistory` にメンバを1つ足しただけでも
+  `sizeof` とフィールドのオフセットが変わるので、新旧を混ぜると実質メモリ破壊になり、
+  **ビルドもテストも通るのに GUI だけが起動ごとにおかしくなる**
+  (2026-08 に踏んだ: 画像が描かれずタイトルが「(読み込み中)」のまま、
+  10回起動して5回失敗。ソースは無傷で、クリーンビルドすると 10/10 正常)。
+  `.ninja_deps` が数十 KB より明らかに小さいときは記録が欠けている疑いが濃い
 
 Linux (WSL2) では:
 
@@ -172,10 +183,24 @@ Doxygen側の翻訳が1.8.15以降未更新なことによる無害な通知で�
 
 ## 動作確認の方法
 
-GUIアプリのためスクリーンショットは取れないが、タイトルバーに状態が出るので
 `Start-Process` + `WScript.Shell` の `AppActivate`/`SendKeys` でキー操作をシミュレートし、
 `MainWindowTitle`(`ファイル名 [i/n] ズーム% - Blinker`)の変化で検証できる。
 テスト画像はSystem.Drawingで生成可能(過去の検証ではjpg/png/bmp/gif各サイズを生成して確認)。
+
+**画面の見た目も確認できる**(「スクリーンショットは取れない」は誤り。2026-08 に確立):
+`GetWindowRect` で窓の矩形を取り、`System.Drawing.Graphics.CopyFromScreen` で
+その範囲をPNGに保存すれば、描画結果をそのまま読める。タイトルバーだけでは
+「画像が描かれていない」類の不具合が見えないので、描画に関わる変更ではこちらを使う。
+マウス操作も `SetCursorPos` + `mouse_event` で送れるので、
+**右ドラッグで図形を描く → キーで動かす → `Ctrl+Z`** のような
+オブジェクト編集の一連の流れまで実機で追える(実際にそれで検証した)。
+注意点:
+- 窓を前面に出してから撮る(`SetForegroundWindow` + 数百ms待つ)。
+  `CopyFromScreen` は画面をそのまま撮るので、隠れていると別のウィンドウが写る
+- 出力先を**開いているフォルダの中にしない**。書き出したPNGが一覧に混ざる
+- 起動直後は非同期デコードの完了待ちなので2秒ほど待つ。1回の結果で判断せず、
+  数回まわして安定して同じ結果になることを見る(上記の古い `.obj` 混在のような
+  不定な壊れ方を1回の成功で見逃さないため)
 
 ## リリース手順
 

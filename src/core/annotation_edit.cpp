@@ -192,6 +192,18 @@ void translateAnnotation(AnnotationSpec& spec, float dx, float dy) {
     }
 }
 
+Point screenNudgeToImage(const Point screenDelta, const int rotationDegrees) {
+    // 表示回転は画像 → 画面の向きなので、逆回転を掛けて画像座標へ戻す。
+    // 90 度単位しか取らないため三角関数は使わず成分の入れ替えで済ませる
+    const int turns = ((rotationDegrees / 90) % 4 + 4) % 4;
+    switch (turns) {
+    case 1:  return {screenDelta.y, -screenDelta.x};
+    case 2:  return {-screenDelta.x, -screenDelta.y};
+    case 3:  return {-screenDelta.y, screenDelta.x};
+    default: return screenDelta;
+    }
+}
+
 void scaleAnnotation(AnnotationSpec& spec, const float sx, const float sy) {
     spec.p1.x *= sx;
     spec.p1.y *= sy;

@@ -60,17 +60,47 @@ struct KeyChordHash {
 };
 
 /**
+ * @brief キーバインドが効く文脈。
+ *
+ * コマンドはどちらか一方にだけ属する。同じキー(矢印など)へ文脈ごとに別の
+ * コマンドを割り当てられるようにするため、対応表を文脈ごとに分けて持つ。
+ */
+enum class KeyScope {
+    Global,     ///< 常に効く(通常のキーバインド)
+    Selection,  ///< 注釈オブジェクトを選択している間だけ効き、Global より優先される
+};
+
+/**
+ * @brief コマンドが属する文脈を返す。
+ * @param[in] cmd 調べるコマンド。
+ * @return オブジェクト選択中だけ効くコマンドなら KeyScope::Selection、他は KeyScope::Global。
+ */
+KeyScope keyScopeOf(Command cmd);
+
+/**
  * @brief キー → コマンドの対応表。
  *
  * デフォルト表を基点に blinker.ini の [keys] で上書きできる。
+ * 対応表は文脈ごとに別インスタンスとして持つ(defaults / selectionDefaults)。
  */
 class Keymap {
 public:
     /**
-     * @brief 既定のキーバインドを持つ Keymap を作る。
+     * @brief 既定のキーバインドを持つ Keymap を作る(KeyScope::Global 用)。
      * @return デフォルト表が設定された Keymap。
      */
     static Keymap defaults();
+
+    /**
+     * @brief オブジェクト選択中だけ効く既定のキーバインドを持つ Keymap を作る。
+     *
+     * 矢印キーでの移動だけを持つ。ここに無いキー(Shift+矢印 のページ送り、
+     * Ctrl+矢印 のパン、PageUp/PageDown の画像遷移など)は選択中でも
+     * KeyScope::Global の表がそのまま受け持つ。
+     *
+     * @return KeyScope::Selection のデフォルト表が設定された Keymap。
+     */
+    static Keymap selectionDefaults();
 
     /**
      * @brief キー入力に対応するコマンドを引く。
@@ -119,10 +149,16 @@ public:
      * @brief blinker.ini の [keys] セクションを適用する。
      *
      * 記述されたコマンドは既存バインドをすべて置き換える。
+     * ini のセクションは 1 つで、文脈の違う対応表それぞれに同じものを渡す
+     * (自分の scope に属さないコマンドの記述は読み飛ばすので、
+     * 利用者はコマンド名だけを書けばよく、どの表に入るかを意識しなくてよい)。
      *
      * @param[in] keysSection コマンド名 → "Key1, Key2" の対応表。
+     * @param[in] scope       この対応表が受け持つ文脈。keyScopeOf が一致する
+     *                        コマンドの記述だけを適用する。
      */
-    void applyConfig(const std::unordered_map<std::string, std::string>& keysSection);
+    void applyConfig(const std::unordered_map<std::string, std::string>& keysSection,
+                     KeyScope scope = KeyScope::Global);
 
 private:
     std::unordered_map<KeyChord, Command, KeyChordHash> bindings_;
