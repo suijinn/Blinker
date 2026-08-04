@@ -9,10 +9,10 @@
 namespace blinker {
 namespace {
 
-// blinker.ini の [edit] tool = に書く名前。[keys] の tool_* コマンド名と揃える
+// blinker.ini の [edit] tool = に書く名前。[keys] の tool_* コマンド名と揃える。
+// 旧版にあった "crop" は無い(未知の名前として無視され、既定の矩形のままになる)
 std::optional<EditTool> toolFromName(std::string_view name) {
     const std::string lower = toLower(trim(name));
-    if (lower == "crop") return EditTool::Crop;
     if (lower == "rect") return EditTool::Rect;
     if (lower == "ellipse") return EditTool::Ellipse;
     if (lower == "arrow") return EditTool::Arrow;
@@ -29,7 +29,6 @@ std::optional<EditTool> toolFromName(std::string_view name) {
 
 std::string_view toolLabel(const EditTool tool) {
     switch (tool) {
-    case EditTool::Crop:    return "トリミング";
     case EditTool::Rect:    return "矩形";
     case EditTool::Ellipse: return "楕円";
     case EditTool::Arrow:   return "矢印";
@@ -41,12 +40,6 @@ std::string_view toolLabel(const EditTool tool) {
     case EditTool::Ocr:     return "文字認識";
     }
     return "";
-}
-
-void EditStyle::setTool(EditTool tool) {
-    // トリミングは一度きりなので、戻り先として直前の図形ツールを覚えておく
-    if (tool != EditTool::Crop) toolAfterCrop_ = tool;
-    tool_ = tool;
 }
 
 bool EditStyle::penActive() const {

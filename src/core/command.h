@@ -58,7 +58,7 @@ enum class Command {
     Undo,              ///< 直前の編集(トリミング・図形・テキスト)を取り消す
     Redo,              ///< 取り消した編集をやり直す
     DeleteAnnotation,  ///< 選択中の注釈オブジェクトを削除
-    SelectToolCrop,    ///< 編集ドラッグのツールをトリミングに切り替える
+    CropToSelection,   ///< 選択中の矩形の範囲で画像をトリミングする(矩形自身は消える)
     SelectToolRect,    ///< 編集ドラッグのツールを矩形に切り替える
     SelectToolEllipse, ///< 編集ドラッグのツールを楕円に切り替える
     SelectToolArrow,   ///< 編集ドラッグのツールを矢印に切り替える

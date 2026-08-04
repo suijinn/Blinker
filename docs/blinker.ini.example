@@ -139,13 +139,16 @@ swap_buttons = false
 
 [edit]
 # 編集ドラッグ(既定では右ドラッグ。[mouse] swap_buttons = true なら左ドラッグ)は
-# 「現在のツール」(トリミング / 矩形 / 楕円 / 矢印 / 直線 / テキスト)を
+# 「現在のツール」(矩形 / 楕円 / 矢印 / 直線 / テキストなど)を
 # その場で実行する。ツールの切り替えは何もない場所での右クリック(ドラッグなし)で
 # 開くメニュー、または [keys] の tool_* コマンド。現在のツールはステータスバーに出る。
 # 以下は新規作成時の初期値で、同じメニュー(線の太さ・文字サイズ・色の変更)から
 # その場で変更できる。追加済みオブジェクトは左クリック(swap_buttons によらず左)で
 # 選択して移動・回転・右クリックメニューで個別に変更できる
-# 起動時のツール: crop / ocr / rect / ellipse / arrow / line / pen / marker / number / text
+# トリミングはツールではない。矩形を描いてハンドルで範囲を整えてから、その矩形を
+# 右クリックして「この範囲でトリミング」を選ぶ([keys] の crop_selection でも実行できる)。
+# 同じメニューの「縦横比」で 16:9 や 1:1 へ範囲を整えてから切り出すこともできる
+# 起動時のツール: ocr / rect / ellipse / arrow / line / pen / marker / number / text
 # (pen = 手書き、marker = 半透明の太い手書き、number = 連番の数字入りマーカー、
 #  ocr = 選んだ範囲の文字を認識してコピー。画像は変えない)
 tool = rect
@@ -182,13 +185,14 @@ border_width = 0
 #     (save = 元のファイルへ上書き保存、save_as = 名前を付けて保存)
 #     (paste = クリップボードの画像を表示、paste_object = 表示中の画像の上へ
 #      移動・回転・リサイズできるオブジェクトとして貼る)
-#   undo redo delete_annotation resize
-#     (resize = 倍率・長辺のプリセットメニューを出して画像をリサイズ)
+#   undo redo delete_annotation resize crop_selection
+#     (resize = 倍率・長辺のプリセットメニューを出して画像をリサイズ、
+#      crop_selection = 選択中の矩形の範囲で画像をトリミング。矩形自身は消える)
 #   sort_name sort_date sort_size sort_ext sort_reverse sort_cycle recursive
 #     (一覧の並び順。既定のキーは割り当てていない ―― サイドバーの右クリックが入口。
 #      sort_* は同じキーを選び直すと昇順 / 降順が入れ替わる)
 #   sidebar statusbar help escape quit
-#   tool_crop tool_ocr tool_rect tool_ellipse tool_arrow tool_line tool_pen tool_marker
+#   tool_ocr tool_rect tool_ellipse tool_arrow tool_line tool_pen tool_marker
 #   tool_number tool_text
 #     (右ドラッグで実行するツールの切り替え。既定のキーは割り当てていない)
 #
@@ -202,6 +206,9 @@ border_width = 0
 #tool_arrow = A
 #tool_pen = P
 #tool_text = T
+#
+# 例: 矩形を描いたあと Enter 一発でトリミングする場合
+#crop_selection = Enter
 
 [ocr]
 # 文字認識 (Ctrl+T、または ocr ツールで範囲を選ぶ) に使う言語 (BCP-47)。

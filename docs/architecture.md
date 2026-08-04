@@ -84,12 +84,22 @@ stb_image のメモリ確保が失敗して「読み込み失敗」になる。�
 そのまま `App::onMouseDown` / `onMouseUp` / `onMouseMove` へ渡すだけで、どちらのボタンが
 何をするかは App が `mouseRole` で振り分ける(下記「マウスボタンの役割」)。
 編集役のボタンのドラッグは **現在のツール**(`EditTool`、`EditStyle::tool`)を選択領域へ
-適用する。トリミングは core の `cropImage` で `current_` を差し替え、図形・テキストは
-**非破壊の注釈オブジェクト**(`std::vector<AnnotationSpec>`)として App が保持する。
+適用し、図形・テキストを **非破壊の注釈オブジェクト**
+(`std::vector<AnnotationSpec>`)として App が保持する。
 注釈は描画時に `AnnotationsView` として RendererD2D へ渡されベクター描画で重なり
 (`current_` のピクセルは変更しない)、保存 (Ctrl+S)・コピー (Ctrl+C) 時にだけ
 `App::compositeImage` が `IAnnotationRasterizer` + `blendOverlay` で合成する。
-トリミングは注釈座標を平行移動してオブジェクトのまま維持する。
+
+**トリミングはツールではない**(`App::cropToSelection`)。範囲は `Kind::Rect` の注釈として
+作り、その右クリックメニュー(または `Command::CropToSelection`)から core の `cropImage` で
+`current_` を差し替える。ドラッグを離した時点で確定させないのは、範囲の微調整に
+注釈のリサイズハンドル・移動・Shift の縦横比維持をそのまま使うため。切り出したら範囲に
+使った矩形は消し、残りの注釈は座標を平行移動してオブジェクトのまま維持する
+(消去と切り出しは同じ `pushUndo` の 1 段に入るので Ctrl+Z 一発で両方戻る)。
+切り出す範囲の丸めとクランプは core の `cropRectFor` に閉じてあり、**メニューの表示可否・
+見出しに出す寸法・実行のすべてが同じ関数を通る**(判定を二重に持たないため)。
+回転した矩形(`angleDeg != 0`)ではメニューに出さない ―― 切り出しは軸平行にしか定義されて
+おらず、見えている枠と切れる範囲が食い違うため(同じメニューの「回転角度 → 0°」で戻せる)。
 **リサイズ (`App::applyResize`) もトリミングと同じ破壊的編集**で、`resizeImage` で
 `current_` を差し替え、注釈は `scaleAnnotation` で同じ倍率へ追従させる(焼き込まない)。
 大きさは**メニューのプリセット**(倍率・長辺)から選ぶ ―― 数値入力ダイアログは持たない。
@@ -112,11 +122,24 @@ stb_image のメモリ確保が失敗して「読み込み失敗」になる。�
 `EditStyle::applyTo`(既にある注釈の書式変更はここを通らず、対象を直接触る)。
 フォントの候補は `IAnnotationRasterizer::hasFontFamily` で実在するものだけへ絞る
 (起動時には呼ばず、メニューを開いたときだけ問い合わせる)。
-トリミングだけは一度きりの操作なので、実行したら直前の図形ツールへ戻す。
 
 ドラッグ中は `App::makeAnnotationSpec` が確定後と同じ `AnnotationSpec` を組み立て、
 `AnnotationsView::preview` として実物をプレビュー描画する。形の定まらない
-トリミング・テキストだけは従来どおりラバーバンド (`SelectionView`) を出す。
+テキスト・文字認識だけは従来どおりラバーバンド (`SelectionView`) を出す。
+
+注釈オブジェクトのメニュー (`buildObjectMenu`) は種別ごとに項目が変わり、回転していない
+矩形にだけ先頭へ「この範囲でトリミング」「この範囲を文字認識」「縦横比」が付く ―― 矩形は
+図形であると同時に**画像に対する範囲**でもある、という位置づけ。見出しには切り出す寸法を
+添えて選ぶ前に結果が分かるようにする(リサイズのプリセットと同じ考え方)。選択中は同じ寸法が
+ステータスバー右側にも出る (`objectSizeText`) ―― 自前の数値入力ダイアログを持たないため、
+これが範囲を合わせる唯一の数値表示になる。
+
+縦横比 (`fitRectToAspect`) は範囲を整えるだけで**切り出さない**(比を決めてから位置を直せる
+ように)。大きさは比の**整数倍**へ丸めるので、`16:9` と表示したものが画素数でも厳密に 16:9 に
+なる ―― 丸めずに実数で合わせると、`cropRectFor` の floor/ceil で 1px ずれて比が崩れる。
+整えた矩形は `ObjectMenuEntry::rect` に入れて App へ渡し、**見出しに出したものをそのまま**
+`p1`/`p2` へ書く(整数座標なので `cropRectFor` を通しても同じ大きさに戻る)。同じ計算を
+組み立て時と適用時の 2 回やると、見えていた寸法と結果が食い違いうるため。
 
 手書き(ペン・マーカー = `Kind::Pen`)だけは選択領域ではなく**軌跡**が図形になる。
 編集ドラッグ中の `onMouseMove` が通過点を `EditDragState` へ溜め(`appendPenPoint` が画面 2px
@@ -539,7 +562,7 @@ Text 注釈は PowerPoint のテキストボックスと同じく**画像上で�
 | `PointerState` | マウス操作の進行状態(`pointer_state.h`。純粋な状態、単体テスト対象)。左右の役割 (`MouseButton` / `MouseRole` / `swap_buttons`)、最後のポインタ位置と窓内にいるか、パン中か、右クリックの押下位置とそこから決まる `MenuOnRelease`、ホイールの貯金。**画像も窓も知らない** ― 画素に触る編集ドラッグ (`EditDragState`) とオブジェクト操作 (`ObjectDragState`) は別に持つ |
 | `EditDragState` | 編集ドラッグの進行状態(`edit_drag_state.h`。純粋な状態、単体テスト対象)。ドラッグ中か・始点と終点(画像座標)・押下位置から十分に動いたか・手書きの軌跡と Shift の直線アンカー(アンカーから先を 1 本に引き直す)。**画像もツールも窓も知らない** ― 画像座標への変換とクランプ・Shift での方向合わせ (`App::dragEndImage`)・どのツールを適用するかは `App` に残る |
 | `ObjectDragState` | 注釈オブジェクトを掴んでいる間の状態(`object_drag_state.h`。純粋な状態、単体テスト対象)。進行中の操作 (`ObjectDragMode`)・掴んだ時点の注釈の写し・移動量・回転量・掴んだハンドル。変形は毎回この写しを基準に計算し直す(途中経過に差分を積むと誤差が溜まるため)。**注釈の一覧も画像も窓も知らない** ― 対象は `App::selected_` が指し、ハンドルのヒット判定と実際の変形 (`resizeAnnotation`) は `App` に残る |
-| `EditStyle` | これから描く注釈の設定(`edit_style.h`。純粋な状態、単体テスト対象)。選択中のツール (`EditTool`) とトリミング後の戻り先、色・線幅・文字サイズ・フォント・塗り・枠線。値の丸め(線幅 1〜100px など)と ini の `[edit]` の読み取り (`applyConfig`) もここが持つ。**画像も注釈の一覧も窓も知らない** ― 次に作る 1 件へ写す (`applyTo`) だけで、何をどこへ描くか(種別・位置)と既にある注釈の書式変更は `App` に残る |
+| `EditStyle` | これから描く注釈の設定(`edit_style.h`。純粋な状態、単体テスト対象)。選択中のツール (`EditTool`) と、色・線幅・文字サイズ・フォント・塗り・枠線。値の丸め(線幅 1〜100px など)と ini の `[edit]` の読み取り (`applyConfig`) もここが持つ。**画像も注釈の一覧も窓も知らない** ― 次に作る 1 件へ写す (`applyTo`) だけで、何をどこへ描くか(種別・位置)と既にある注釈の書式変更は `App` に残る |
 | `menu.h` | ポップアップメニューの組み立て(`MenuItem` の木と末端項目の一覧を作る純関数。単体テスト対象)。ツール切り替え (`buildEditMenu`)・リサイズのプリセット (`buildResizeMenu`)・サイドバー (`buildSidebarMenu`)・注釈オブジェクト (`buildObjectMenu`)・編集中テキストの書式 (`buildTextStyleMenu`) の 5 つと、フォント候補の解決 (`fontFamilyChoices`)。**メニューを出さないし、選ばれた結果も適用しない** ― 表示 (`IAppHost::showContextMenu`) と適用 (`App::applyEditChoice` など) は `App` に残る。実在するフォントの問い合わせも `FontAvailableFn` で受け取るので、描画側 (`IAnnotationRasterizer`) を知らない |
 | `view_text.h` | 常に見えている表示文字列の組み立て(状態 → 文字列の純関数。単体テスト対象)。タイトルバー (`windowTitle`)・ステータスバー左側 (`statusText`)・カーソル位置の座標と色 (`pixelInfoText`) の 3 つ。**設定も描画もしない** ― `IAppHost::setTitle` を呼ぶのも `StatusBarView` に詰めるのも `App` に残る。窓の状態(フルスクリーンでバーを隠す判断)も、カーソルがビューポート内にいるかの判定も知らない |
 | `EditHistory` | 取り消し・やり直しの履歴(`edit_history.h`。1段は `EditSnapshot` = 画像 + 注釈一覧、上限 `kLimit` = 10。純粋な状態、単体テスト対象)。ドラッグ中・テキスト編集中の「最初の1回だけ積む」判定の旗も持つ。画像そのものや表示状態は知らず、復元は `App::restoreFrom` が行う |

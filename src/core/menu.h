@@ -9,6 +9,7 @@
 #include <string_view>
 #include <vector>
 
+#include "core/edit.h"
 #include "core/edit_style.h"
 #include "core/keymap.h"
 #include "core/sort_order.h"
@@ -126,13 +127,20 @@ struct SidebarMenuEntry {
 struct ObjectMenuEntry {
     /// @brief 末端項目が表す操作の種類。
     enum class Action {
-        EditText, Delete, Angle, StrokeWidth, StrokeAlpha, FontSize, FontFamily, PickColor,
+        EditText,
+        Crop,    ///< 矩形の範囲で画像を切り出す(矩形自身は消える)
+        Ocr,     ///< 矩形の範囲の文字を認識する(画像は変わらない)
+        Aspect,  ///< 矩形の範囲を選んだ縦横比へ整える(切り出しはしない)
+        Delete, Angle, StrokeWidth, StrokeAlpha, FontSize, FontFamily, PickColor,
         FillAlpha, PickFillColor, BorderWidth, PickBorderColor, Number
     };
     Action action;       ///< 操作の種類
     /// Angle/StrokeWidth/StrokeAlpha/FontSize/FillAlpha/BorderWidth/Number の値
     float value = 0;
     std::string family;  ///< FontFamily で選ばれたフォント名(UTF-8)
+    /// Aspect で整えたあとの範囲(画像座標)。**見出しに出したものをそのまま渡す** ――
+    /// 選ぶ前に見えていた大きさと適用結果が食い違わないよう、計算は組み立て時の 1 回だけ
+    RectI rect{};
 };
 
 /**
@@ -173,14 +181,21 @@ std::vector<MenuItem> buildSidebarMenu(SortOrder order, bool recursive, const Ke
 
 /**
  * @brief 注釈オブジェクトのメニュー構造を組み立てる。
+ *
+ * 回転していない矩形は「範囲」としても使えるので、先頭にトリミング・文字認識・縦横比が
+ * 付く。回転している矩形に出さないのは、切り出しが軸平行にしか定義されておらず、見えている
+ * 枠と切れる範囲が食い違うため(同じメニューの「回転角度 → 0°」で戻せる)。
+ *
  * @param[in]  spec      対象の注釈。種別によって出す項目が変わり、値は見出しとチェックに出る。
  * @param[in]  keymap    キー割り当て(項目にアクセラレータ表記を添えるために引く)。
  * @param[in]  available フォントが使えるかを答える述語。
+ * @param[in]  image     表示中の画像の大きさ。std::nullopt なら範囲としての項目を出さない。
  * @param[out] entries   末端項目の一覧。entries[i] が showContextMenu の返す index i に対応する。
  * @return メニュー構造。
  */
 std::vector<MenuItem> buildObjectMenu(const AnnotationSpec& spec, const Keymap& keymap,
                                       const FontAvailableFn& available,
+                                      std::optional<MenuImageSize> image,
                                       std::vector<ObjectMenuEntry>& entries);
 
 /**

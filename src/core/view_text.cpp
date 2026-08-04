@@ -67,6 +67,11 @@ std::string statusText(const StatusTextState& state) {
     return {};
 }
 
+std::string objectSizeText(const int width, const int height) {
+    if (width <= 0 || height <= 0) return {};
+    return std::format("選択 {} x {}", width, height);
+}
+
 std::string pixelInfoText(const DecodedImage& image, const int x, const int y) {
     if (x < 0 || y < 0 || x >= static_cast<int>(image.width) ||
         y >= static_cast<int>(image.height)) {

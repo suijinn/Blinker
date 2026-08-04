@@ -86,6 +86,20 @@ struct StatusTextState {
 std::string statusText(const StatusTextState& state);
 
 /**
+ * @brief 選択中の注釈オブジェクトの大きさを表す文字列を組み立てる(ステータスバー右側)。
+ *
+ * 矩形を範囲としてトリミングに使うとき、寸法を合わせるための唯一の数値表示になる
+ * (自前の数値入力ダイアログを持たないため)。
+ *
+ * @param[in] width  回転前のバウンディングボックスの幅(画像座標)。
+ * @param[in] height 同じく高さ。
+ * @return `選択 640 x 480` の形の文字列(UTF-8)。1px 未満なら空文字列。
+ * @note 表示は整数へ丸めるが、丸め方は切り出しに合わせて外側へ寄せる(呼び出し側で
+ *       cropRectFor を通した値を渡すこと)。
+ */
+std::string objectSizeText(int width, int height);
+
+/**
  * @brief 画像の 1 画素の座標と色を表す文字列を組み立てる(ステータスバー右側)。
  *
  * 事前乗算を解いてから出すので、半透明の画素でも元の色が読める。不透明なら
