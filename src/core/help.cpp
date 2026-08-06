@@ -56,6 +56,7 @@ constexpr std::array kCommandLabels = {
     CommandLabel{Command::PasteObject, "画像オブジェクトとして貼り付け"},
     CommandLabel{Command::Undo, "元に戻す"},
     CommandLabel{Command::Redo, "やり直す"},
+    CommandLabel{Command::DiscardEdits, "編集を破棄して閲覧へ戻る"},
     CommandLabel{Command::DeleteAnnotation, "選択中の図形・テキストを削除"},
     CommandLabel{Command::MoveObjectLeft, "選択中のオブジェクトを左へ 1px"},
     CommandLabel{Command::MoveObjectRight, "選択中のオブジェクトを右へ 1px"},
@@ -74,7 +75,7 @@ constexpr std::array kCommandLabels = {
     CommandLabel{Command::ToggleSidebar, "ファイル名一覧"},
     CommandLabel{Command::ToggleStatusBar, "ステータスバー"},
     CommandLabel{Command::ToggleHelp, "この操作一覧"},
-    CommandLabel{Command::Escape, "選択解除 / 全画面解除 / 終了"},
+    CommandLabel{Command::Escape, "選択解除 / 編集の破棄 / 全画面解除 / 終了"},
     CommandLabel{Command::Quit, "終了"},
 };
 
@@ -198,6 +199,16 @@ std::vector<HelpLine> buildHelpLines(const Keymap& keymap, const Keymap& selecti
     header("編集");
     row(Command::Undo);
     row(Command::Redo);
+    // 破棄は既定のキーを持たず Esc の連鎖 (Command::Escape) が受け持つので row() では出ない。
+    // ini で discard_edits に直接キーを割り当てていればそれも添える
+    {
+        std::string keys{keysLabel(keymap, Command::Escape)};
+        if (const std::string direct = keysLabel(keymap, Command::DiscardEdits);
+            !direct.empty()) {
+            keys += keys.empty() ? direct : " " + direct;
+        }
+        text(commandLabel(Command::DiscardEdits), keys);
+    }
     row(Command::ResizeImage);
     row(Command::SelectToolOcr);
     row(Command::SelectToolRect);

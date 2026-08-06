@@ -56,6 +56,8 @@ constexpr std::array kCommandNames = {
     CommandName{"recursive", Command::ToggleRecursive},
     CommandName{"undo", Command::Undo},
     CommandName{"redo", Command::Redo},
+    // 既定のキーは持たない ― Esc の連鎖 (Command::Escape) が受け持つ
+    CommandName{"discard_edits", Command::DiscardEdits},
     CommandName{"delete_annotation", Command::DeleteAnnotation},
     // 移動はオブジェクト選択中だけ効く(KeyScope::Selection)。
     // 既定の矢印は画像遷移と同じキーだが、表が別なので衝突しない

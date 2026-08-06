@@ -57,6 +57,7 @@ enum class Command {
     ToggleRecursive,   ///< サブフォルダの画像も一覧に含めるかを切り替える
     Undo,              ///< 直前の編集(トリミング・図形・テキスト)を取り消す
     Redo,              ///< 取り消した編集をやり直す
+    DiscardEdits,      ///< 未保存の編集をすべて破棄して閲覧モードへ戻る(確認あり)
     DeleteAnnotation,  ///< 選択中の注釈オブジェクトを削除
     MoveObjectLeft,    ///< 選択中の注釈オブジェクトを左へ 1px 動かす(選択中のみ有効)
     MoveObjectRight,   ///< 選択中の注釈オブジェクトを右へ 1px 動かす(同上)

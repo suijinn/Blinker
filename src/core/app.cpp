@@ -114,6 +114,8 @@ void App::applyConfig(const Config& config) {
         std::clamp(config.getInt("save", "jpeg_quality", encodeOptions_.jpegQuality), 1, 100);
     // 上書き保存(Ctrl+S)は元の画像を失うので既定では確認する
     confirmOverwrite_ = config.getBool("save", "confirm_overwrite", confirmOverwrite_);
+    // 未保存の編集がある間の画像切り替えを断る(false で従来どおり黙って破棄する)
+    lockNavigation_ = config.getBool("edit", "lock_navigation", lockNavigation_);
     // 印刷の余白は用紙の印刷可能領域からさらに空ける分(0-50mm)
     printOptions_.marginMm = static_cast<float>(std::clamp(
         config.getInt("print", "margin_mm", static_cast<int>(printOptions_.marginMm)), 0, 50));
@@ -149,6 +151,10 @@ void App::showStartupHint() {
 }
 
 void App::openPath(const fs::path& path) {
+    // ドラッグ&ドロップ・Ctrl+O・「プログラムから開く」も表示中の画像を捨てる。
+    // 一度きりの明示的な操作なので、黙って断らずダイアログで訊く
+    // (無反応にすると故障に見えるため。矢印での移動は guardEditLock の側)
+    if (!confirmEditLock(std::format("{} を開きます。", pathToUtf8(path.filename())))) return;
     std::error_code ec;
     const bool isDirectory = fs::is_directory(path, ec);
     const fs::path dir = isDirectory ? path : path.parent_path();
@@ -261,17 +267,18 @@ void App::execute(Command command) {
     // すべて区切りとして拾える
     if (keyScopeOf(command) != KeyScope::Selection) history_.resetKeyMove();
     switch (command) {
+    // 遷移ロックの判定は list_ を動かす前に済ませる(next/prev は位置を書き換えるため)
     case Command::NextImage:
-        navigate(list_.next());
+        if (guardEditLock("画像を切り替えられません")) navigate(list_.next());
         break;
     case Command::PrevImage:
-        navigate(list_.prev());
+        if (guardEditLock("画像を切り替えられません")) navigate(list_.prev());
         break;
     case Command::FirstImage:
-        navigate(list_.first());
+        if (guardEditLock("画像を切り替えられません")) navigate(list_.first());
         break;
     case Command::LastImage:
-        navigate(list_.last());
+        if (guardEditLock("画像を切り替えられません")) navigate(list_.last());
         break;
     case Command::TogglePlay:
         executeTogglePlay();
@@ -396,6 +403,9 @@ void App::execute(Command command) {
     case Command::Redo:
         executeRedo();
         break;
+    case Command::DiscardEdits:
+        executeDiscardEdits();
+        break;
     case Command::DeleteAnnotation:
         deleteSelectedAnnotation();
         break;
@@ -472,6 +482,10 @@ void App::execute(Command command) {
         } else if (drag_.dragging()) {
             drag_.end();
             host_.requestRedraw();
+        } else if (origin_.edited()) {
+            // 未保存の編集を抱えたまま Esc で終了してしまわないよう、まず破棄を訊く。
+            // これが遷移ロックを解く既定の入口でもある(Command::DiscardEdits に既定キーは無い)
+            executeDiscardEdits();
         } else if (sidebar_.showing(SidebarMode::Help)) {
             // ヘルプを見ている最中の Esc で終了してしまわないよう、まず閉じる
             execute(Command::ToggleHelp);
@@ -649,9 +663,10 @@ void App::clickSidebarItem(Point screenPos) {
         return;
     }
     const size_t index = sidebar_.itemAt(screenPos.y);
-    if (index < list_.size() && (list_.jumpTo(index) || origin_.fromClipboard())) {
-        refreshCurrent();
-    }
+    if (index >= list_.size()) return;
+    // 一覧からの選択も画像の切り替え。jumpTo は位置を書き換えるので判定を先に済ませる
+    if (!guardEditLock("画像を切り替えられません")) return;
+    if (list_.jumpTo(index) || origin_.fromClipboard()) refreshCurrent();
 }
 
 bool App::beginObjectGrab(Point screenPos) {
@@ -1679,6 +1694,9 @@ void App::moveSelectedObject(const Point screenDelta) {
 }
 
 bool App::executePasteImage() {
+    // 表示中の画像を置き換える = 切り替えと同じなのでロックの対象。
+    // 注釈として貼る PasteObject は編集そのものなので断らない
+    if (!guardEditLock("画像を貼り付けられません")) return false;
     auto image = clipboard_.getImage();
     if (!image || image->width == 0 || image->height == 0) {
         showMessage("クリップボードに画像がありません");
@@ -1997,6 +2015,65 @@ void App::discardEdits() {
     if (origin_.setEdited(false)) showMessage("編集を破棄しました");
 }
 
+bool App::editLocked() const {
+    return lockNavigation_ && origin_.edited();
+}
+
+std::string App::editLockHint() const {
+    std::string hint;
+    const auto add = [&](const std::string& keys, const std::string_view label) {
+        if (keys.empty()) return;  // ini で外されているキーは案内しない
+        if (!hint.empty()) hint += " / ";
+        hint += std::format("{} {}", keys, label);
+    };
+    add(keysLabel(keymap_, Command::SaveImage), "保存");
+    // 破棄の既定の入口は Esc の連鎖。直接の割り当てがあればそちらを優先して案内する
+    std::string discard = keysLabel(keymap_, Command::DiscardEdits);
+    if (discard.empty()) discard = keysLabel(keymap_, Command::Escape);
+    add(discard, "破棄");
+    add(keysLabel(keymap_, Command::Undo), "取り消し");
+    return hint;
+}
+
+bool App::guardEditLock(const std::string_view what) {
+    if (!editLocked()) return true;
+    const std::string hint = editLockHint();
+    showMessage(hint.empty() ? std::format("編集中は{}", what)
+                             : std::format("編集中は{}({})", what, hint));
+    return false;
+}
+
+bool App::confirmEditLock(const std::string_view what) {
+    if (!editLocked()) return true;
+    return host_.showConfirm(
+        std::format("{}\n未保存の編集は破棄されます。よろしいですか?", what));
+}
+
+bool App::executeDiscardEdits() {
+    if (!origin_.edited()) {
+        showMessage("破棄する編集はありません");
+        return false;
+    }
+    // 破棄した編集は undo でも戻せないので、ロックの有無によらず必ず確認する
+    if (!host_.showConfirm("編集内容をすべて破棄します。\n"
+                           "元に戻すことはできません。よろしいですか?")) {
+        return false;
+    }
+    // 注釈だけでなくトリミング・リサイズしたピクセルまで戻す必要があるので、
+    // 読み直せるならファイルから読み直す(画像を送って戻ってきたときと同じ状態になる)
+    if (!origin_.fromClipboard() && !list_.empty()) {
+        refreshCurrent();  // 先頭の discardEdits が注釈と履歴を捨て、通知も出す
+        return true;
+    }
+    // 貼り付け画像には読み直す元が無いので、履歴を遡れるところまで遡って戻す
+    // (ビューの作り直しは restoreFrom が大きさの変わった段でだけ行う)
+    while (history_.canUndo()) restoreFrom(history_.undo({current_, annotations_}));
+    discardEdits();
+    updateTitle();
+    host_.requestRedraw();
+    return true;
+}
+
 Point App::clampToImage(Point imagePos) const {
     if (!current_) return imagePos;
     return {std::clamp(imagePos.x, 0.0f, static_cast<float>(current_->width)),
@@ -2039,6 +2116,7 @@ SelectionView App::selection() const {
 
 NavArrowsState App::navArrowsGeometry() const {
     if (!navArrowsEnabled_ || !pointer_.inside() || list_.empty()) return {};
+    if (editLocked()) return {};  // 押しても遷移できないボタンは出さない
     // ドラッグ中とテキスト編集中は出さない(操作の途中で押せてしまうと編集が消える)
     if (pointer_.panning() || drag_.dragging() || sidebar_.resizing() || textEdit_.active() ||
         textEdit_.mouseSelecting() || objectDrag_.active()) {
@@ -2398,6 +2476,8 @@ void App::stepFrame(const int delta) {
         showMessage(std::format("最初の{}です", frameUnitLabel()));
         return;
     }
+    // フレーム切替も編集を捨てるので、画像切替と同じくロックの対象にする
+    if (!guardEditLock(std::format("{}を送れません", frameUnitLabel()))) return;
     setPlaying(false);  // 手で送ったら一時停止する(送った先を見たいはずなので)
     discardEdits();     // フレーム切替は画像切替と同じ扱いにする(規則を増やさない)
     showFrame(delta > 0 ? playback_.index + 1 : playback_.index - 1);
@@ -2554,6 +2634,7 @@ StatusBarView App::statusBar() const {
     state.tool = style_.tool();
     state.recursive = recursive_;
     state.failed = origin_.failed();
+    state.editLocked = editLocked();
     bar.leftText = statusText(state);
     bar.rightText = hoverText_;
     // 寸法を合わせる手がかりは他に無いので、選択中は大きさを常に見せる
