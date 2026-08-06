@@ -72,13 +72,14 @@ struct StatusTextState {
     EditTool tool = EditTool::Rect;       ///< 現在の編集ツール
     bool recursive = false;               ///< サブフォルダを含めて一覧しているか
     bool failed = false;                  ///< 読み込みに失敗したか
+    bool editLocked = false;              ///< 未保存の編集で画像の切り替えがロックされているか
 };
 
 /**
  * @brief ステータスバー左側の文字列を組み立てる。
  *
  * 通知メッセージがあればそれだけを出し、無ければ画像の情報(大きさ・フレーム位置・
- * 再帰の有無・現在のツール)を `  |  ` 区切りで並べる。
+ * 再帰の有無・現在のツール・遷移ロック)を `  |  ` 区切りで並べる。
  *
  * @param[in] state 表示中の画像と通知の状態。
  * @return 表示する文字列(UTF-8)。画像も通知も失敗も無ければ空文字列。

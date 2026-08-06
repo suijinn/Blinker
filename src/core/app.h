@@ -1200,6 +1200,51 @@ private:
     void discardEdits();
 
     /**
+     * @brief 画像の切り替えがロックされているかを返す(= 編集モードか)。
+     *
+     * モードは独立した状態としては持たず、未保存の編集 (`ImageOrigin::edited`) から
+     * 導出する。こうしておくと「破棄するものが無いのに遷移できない」状態が
+     * 原理的に作れない ― 閲覧しかしていない利用者の操作は一切変わらない。
+     *
+     * @return `[edit] lock_navigation` が有効で、かつ未保存の編集があれば true。
+     */
+    bool editLocked() const;
+
+    /**
+     * @brief 遷移ロックの案内文を組み立てる(抜け方を名指しする)。
+     * @return "Ctrl+S 保存 / Esc 破棄 / Ctrl+Z 取り消し" の形。ini で全部外されていれば空。
+     * @note 破棄は既定では Esc の連鎖が受け持つため、`Command::DiscardEdits` に
+     *       直接の割り当てが無ければ `Command::Escape` のキーを案内する。
+     */
+    std::string editLockHint() const;
+
+    /**
+     * @brief 未保存の編集がある間、画像の切り替えを断る(高頻度の操作用)。
+     *
+     * 矢印・ホイール・サイドボタンのように繰り返し押される操作で使う。押した回数だけ
+     * モーダルが出ないよう、確認ダイアログではなくステータスバーの通知で断る。
+     *
+     * @param[in] what 断る内容("画像を切り替えられません" など)。
+     * @return 進めてよければ true。ロック中なら通知を出して false。
+     */
+    bool guardEditLock(std::string_view what);
+
+    /**
+     * @brief 未保存の編集がある間、確認ダイアログを出す(低頻度の操作用)。
+     *
+     * ファイルを開く・ドラッグ&ドロップのように明示的で一度きりの操作で使う。
+     * 黙って無反応にすると故障に見えるため、こちらはダイアログで意思を訊く。
+     *
+     * @param[in] what ダイアログに出す行き先("別の画像を開きます" など)。
+     * @return 進めてよければ true。利用者が取りやめたら false。
+     */
+    bool confirmEditLock(std::string_view what);
+
+    /// @brief 未保存の編集を確認のうえ破棄して閲覧モードへ戻す (Command::DiscardEdits)。
+    /// @return 破棄したら true。編集が無い / 取りやめたなら false。
+    bool executeDiscardEdits();
+
+    /**
      * @brief 文字認識を予約する。
      *
      * 透明部分を持つ画像は白へ焼き込んでから渡す(認識器はアルファを見ないため、
@@ -1303,6 +1348,9 @@ private:
     EncodeOptions encodeOptions_;   ///< 保存時のエンコード設定([save] jpeg_quality)
     PrintOptions printOptions_;     ///< 印刷時の余白・自動回転([print] セクション)
     bool confirmOverwrite_ = true;  ///< 上書き保存の前に確認を取るか([save] confirm_overwrite)
+    /// 未保存の編集がある間、画像の切り替えを断るか(`[edit] lock_navigation`)。
+    /// false なら従来どおり黙って破棄する
+    bool lockNavigation_ = true;
     int prefetchRadius_ = 2;
     SizeF clientSize_{};  ///< クライアント領域全体(サイドバー + ビューポート + ステータスバー)
     bool statusBarEnabled_ = true;

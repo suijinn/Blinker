@@ -19,7 +19,7 @@ int zoomPercent(const float zoom) {
 
 std::string windowTitle(const TitleState& state) {
     if (state.fromClipboard) {
-        return std::format("(クリップボード){} {}% - {}", state.edited ? " (編集済み)" : "",
+        return std::format("(クリップボード){} {}% - {}", state.edited ? " (編集中)" : "",
                            zoomPercent(state.zoom), state.appName);
     }
     if (state.count == 0) return std::string(state.appName);
@@ -30,7 +30,7 @@ std::string windowTitle(const TitleState& state) {
     } else if (state.loading) {
         title += " (読み込み中)";
     } else {
-        if (state.edited) title += " (編集済み)";
+        if (state.edited) title += " (編集中)";
         title += std::format(" {}%", zoomPercent(state.zoom));
     }
     title += std::format(" - {}", state.appName);
@@ -57,6 +57,9 @@ std::string statusText(const StatusTextState& state) {
         // なぜ隣のフォルダの画像が出てくるのか分からなくなるので、再帰中は常に見せる
         if (state.recursive) text += "  |  サブフォルダ含む";
         text += std::format("  |  ツール: {}", toolLabel(state.tool));
+        // 画像を送れない理由が画面から分かるようにする(「モードが見えないと誤操作になる」)。
+        // ロックが切ってあれば出さない ― 出しても操作は何も変わらないため
+        if (state.editLocked) text += "  |  編集中(遷移ロック)";
         return text;
     }
     if (state.failed) {

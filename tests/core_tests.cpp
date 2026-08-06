@@ -489,6 +489,9 @@ void testHelpLines() {
     CHECK(has("名前を付けて保存  Ctrl+Shift+S"));
     CHECK(has("印刷  Ctrl+P"));
     CHECK(has("ファイルをコピー  Shift+C"));
+    // 破棄は既定のキーを持たず Esc の連鎖が受け持つので、Esc を案内する
+    CHECK(has("編集を破棄して閲覧へ戻る  Esc"));
+    CHECK(has("選択解除 / 編集の破棄 / 全画面解除 / 終了  Esc"));
     // 同じ矢印キーが文脈で意味を変えるので、節を分けて両方出す
     CHECK(hasHeader("オブジェクト選択中"));
     CHECK(has("選択中のオブジェクトを右へ 1px  Right"));
@@ -535,6 +538,13 @@ void testHelpLines() {
     };
     CHECK(hasCustom("次の画像  N"));
     CHECK(hasCustom("矢印ツール  A"));
+    // discard_edits に直接キーを割り当てたら Esc と並べて出す(どちらでも効く)
+    Keymap customDiscard = Keymap::defaults();
+    customDiscard.applyConfig({{"discard_edits", "Shift+D"}});
+    const std::vector<HelpLine> discardLines = buildHelpLines(customDiscard, sel, mm, false);
+    CHECK(std::any_of(discardLines.begin(), discardLines.end(), [](const HelpLine& line) {
+        return line.text == "編集を破棄して閲覧へ戻る  Esc Shift+D";
+    }));
     // ini でマウスを変えたら一覧もそれに追従する。素のホイールを遷移で埋めたので
     // ズームの案内は空いている Ctrl+ホイールへ移る
     CHECK(hasCustom("次の画像  ホイール↓"));
@@ -1007,11 +1017,15 @@ public:
             return nullptr;
         }
         auto image = std::make_shared<DecodedImage>();
-        image->width = 1;
-        image->height = 1;
-        image->pixels = {0, 0, 0, 255};
+        image->width = width;
+        image->height = height;
+        image->pixels.assign(static_cast<size_t>(width) * height * 4, 0);
+        for (size_t i = 3; i < image->pixels.size(); i += 4) image->pixels[i] = 255;  // 不透明
         return image;
     }
+
+    int width = 1;   ///< 返す画像の幅(既定は 1x1。編集を試す場合だけ大きくする)
+    int height = 1;  ///< 返す画像の高さ
 };
 
 // デコードに時間がかかるデコーダ。openPath の同期取得に間に合わないケースを作る
@@ -3859,7 +3873,7 @@ void testWindowTitle() {
     state.zoom = 1.0f;
     CHECK(windowTitle(state) == "(クリップボード) 100% - Blinker v1.2.3 (abc1234)");
     state.edited = true;
-    CHECK(windowTitle(state) == "(クリップボード) (編集済み) 100% - Blinker v1.2.3 (abc1234)");
+    CHECK(windowTitle(state) == "(クリップボード) (編集中) 100% - Blinker v1.2.3 (abc1234)");
 
     state.fromClipboard = false;
     state.edited = false;
@@ -3871,7 +3885,7 @@ void testWindowTitle() {
     state.index = 2;
     state.zoom = 1.255f;  // 四捨五入して整数のパーセントにする
     state.edited = true;
-    CHECK(windowTitle(state) == "a.png [3/3] (編集済み) 126% - Blinker v1.2.3 (abc1234)");
+    CHECK(windowTitle(state) == "a.png [3/3] (編集中) 126% - Blinker v1.2.3 (abc1234)");
 
     // まだ / もう表示していない画像の倍率は出さない(編集済みの印も出ない)
     state.loading = true;
@@ -3920,6 +3934,12 @@ void testStatusText() {
     CHECK(statusText(state) == "4 x 3 px  |  フレーム 2/5 停止中  |  ツール: 矩形");
     state.frame->playing = true;
     CHECK(statusText(state) == "4 x 3 px  |  フレーム 2/5 再生中  |  ツール: 矩形");
+
+    // 画像を送れない理由が画面から分かるようにする(遷移ロック中だけ出る)
+    state.frame.reset();
+    state.editLocked = true;
+    CHECK(statusText(state) == "4 x 3 px  |  ツール: 矩形  |  編集中(遷移ロック)");
+    state.editLocked = false;
 
     // 通知は他の何よりも優先する(画像の情報を押しのけて出る)
     state.message = "保存しました";
@@ -4464,6 +4484,156 @@ void testAppAnnotationObjects() {
     CHECK(nearly(app.annotations().specs->back().p2.y, 43));
 }
 
+// 未保存の編集がある間、画像の切り替えを断る「遷移ロック」。
+// モードは独立した状態としては持たず ImageOrigin::edited から導出するので、
+// 閲覧しかしていない間(= 破棄するものが無い間)は何も変わらないことも一緒に見る
+void testAppEditLock() {
+    FakeDecoder decoder;
+    decoder.width = 8;  // 図形を描ける大きさの画像を返させる
+    decoder.height = 8;
+    ImageCache cache(decoder);
+    FakeHost host;
+    FakeFileSystem fileSystem;
+    FakeClipboard clipboard;
+    FakeEncoder encoder;
+    FakeAnnotationRasterizer rasterizer;
+    FakeOcrEngine ocrEngine;
+    OcrService ocrService(ocrEngine);
+    ScanService scanService(fileSystem);
+    FakePrinter printer;
+    App app(host, fileSystem, cache, clipboard, encoder, rasterizer, ocrService, printer,
+            scanService);
+    app.onResize(800, 600);
+
+    std::mutex mutex;
+    std::condition_variable cv;
+    bool decoded = false;
+    cache.setOnDecoded([&](const std::filesystem::path&) {
+        std::lock_guard lock(mutex);
+        decoded = true;
+        cv.notify_all();
+    });
+    for (int i = 1; i <= 3; ++i) fileSystem.files.push_back(std::format("C:/pics/f{}.png", i));
+    app.openPath(fileSystem.files[0]);
+    {
+        std::unique_lock lock(mutex);
+        CHECK(cv.wait_for(lock, std::chrono::seconds(5), [&] { return decoded; }));
+    }
+    app.onDecodeCompleted();
+    CHECK(app.currentImage() && app.currentImage()->width == 8);
+    CHECK(host.lastTitle.find("[1/3]") != std::string::npos);
+    CHECK(app.statusBar().leftText == "8 x 8 px  |  ツール: 矩形");  // 閲覧中はロックの表示なし
+
+    // 閲覧しているだけならオーバーレイ矢印も従来どおり出る
+    app.onMouseMove({770, 300});
+    CHECK(app.navArrows().arrows.next.visible);
+
+    // サイドバーの項目クリックも閲覧中なら効く(下でロック中に断られることの対照)
+    app.execute(Command::ToggleSidebar);
+    app.onMouseDown(MouseButton::Left, {100, 60});  // 3 枚目 (y=48..72)
+    app.onMouseUp(MouseButton::Left, {100, 60});
+    CHECK(host.lastTitle.find("[3/3]") != std::string::npos);
+    app.onMouseDown(MouseButton::Left, {100, 12});  // 1 枚目へ戻す
+    app.onMouseUp(MouseButton::Left, {100, 12});
+    CHECK(host.lastTitle.find("[1/3]") != std::string::npos);
+    app.execute(Command::ToggleSidebar);
+    app.onDecodeCompleted();
+    CHECK(app.currentImage() && app.currentImage()->width == 8);
+
+    // 画像左上はスクリーン (396, 283)。矩形を 1 つ描くと編集モードへ入る
+    app.execute(Command::SelectToolRect);
+    app.onMouseDown(MouseButton::Right, {396, 283});
+    app.onMouseUp(MouseButton::Right, {400, 287});
+    CHECK(app.annotations().specs->size() == 1);
+    CHECK(host.lastTitle.find("(編集中)") != std::string::npos);
+    CHECK(app.statusBar().leftText == "8 x 8 px  |  ツール: 矩形  |  編集中(遷移ロック)");
+
+    // 押しても遷移できないボタンは出さない
+    app.onMouseMove({770, 300});
+    CHECK(!app.navArrows().arrows.next.visible);
+    CHECK(!app.navArrows().arrows.prev.visible);
+
+    // 遷移系はどれも断られ、一覧の位置も動かない(next/prev が位置を書き換えないこと)
+    for (const Command command : {Command::NextImage, Command::PrevImage, Command::FirstImage,
+                                  Command::LastImage}) {
+        app.execute(command);
+        CHECK(app.statusBar().leftText ==
+              "編集中は画像を切り替えられません(Ctrl+S 保存 / Esc 破棄 / Ctrl+Z 取り消し)");
+        CHECK(host.lastTitle.find("[1/3]") != std::string::npos);
+        CHECK(app.annotations().specs->size() == 1);
+    }
+
+    // 一覧(サイドバー)からの選択も同じ扱い
+    app.execute(Command::ToggleSidebar);
+    app.onMouseDown(MouseButton::Left, {100, 60});  // 3 枚目 (y=48..72)
+    app.onMouseUp(MouseButton::Left, {100, 60});
+    CHECK(host.lastTitle.find("[1/3]") != std::string::npos);
+    app.execute(Command::ToggleSidebar);
+
+    // ファイルを開く(D&D・Ctrl+O)は一度きりの明示的な操作なのでダイアログで訊く。
+    // 取りやめれば表示も編集もそのまま
+    host.confirmAnswer = false;
+    const int confirmBeforeOpen = host.confirmCount;
+    app.openPath(fileSystem.files[2]);
+    CHECK(host.confirmCount == confirmBeforeOpen + 1);
+    CHECK(host.lastTitle.find("[1/3]") != std::string::npos);
+    CHECK(app.annotations().specs->size() == 1);
+
+    // 破棄も確認する(undo でも戻せないため)。取りやめれば何も変わらない
+    const int confirmBeforeDiscard = host.confirmCount;
+    app.execute(Command::DiscardEdits);
+    CHECK(host.confirmCount == confirmBeforeDiscard + 1);
+    CHECK(app.annotations().specs->size() == 1);
+    CHECK(host.lastTitle.find("(編集中)") != std::string::npos);
+
+    // 承諾すればファイルから読み直して閲覧モードへ戻る
+    host.confirmAnswer = true;
+    app.execute(Command::DiscardEdits);
+    CHECK(app.statusBar().leftText == "編集を破棄しました");
+    CHECK(app.annotations().specs->empty());
+    CHECK(app.currentImage() && app.currentImage()->width == 8);
+    CHECK(host.lastTitle.find("(編集中)") == std::string::npos);
+    app.onTimer();
+
+    // ロックが解けたので遷移できる
+    app.execute(Command::NextImage);
+    CHECK(host.lastTitle.find("[2/3]") != std::string::npos);
+    app.execute(Command::FirstImage);
+    CHECK(host.lastTitle.find("[1/3]") != std::string::npos);
+    app.onDecodeCompleted();
+
+    // 編集が無ければ破棄するものも無い
+    app.execute(Command::DiscardEdits);
+    CHECK(app.statusBar().leftText == "破棄する編集はありません");
+    app.onTimer();
+
+    // [edit] lock_navigation = false なら従来どおり黙って破棄する
+    app.applyConfig(Config::parse("[edit]\nlock_navigation = false\n"));
+    app.onMouseDown(MouseButton::Right, {396, 283});
+    app.onMouseUp(MouseButton::Right, {400, 287});
+    CHECK(app.annotations().specs->size() == 1);
+    CHECK(app.statusBar().leftText == "8 x 8 px  |  ツール: 矩形");  // ロックの表示は出ない
+    app.onMouseMove({770, 300});
+    CHECK(app.navArrows().arrows.next.visible);  // 矢印も出たまま
+    app.execute(Command::NextImage);
+    CHECK(app.statusBar().leftText == "編集を破棄しました");
+    CHECK(app.annotations().specs->empty());
+    CHECK(host.lastTitle.find("[2/3]") != std::string::npos);
+
+    // ロックを切っても Esc の破棄は残る(遷移ロックとは別に、未保存のまま終了させないため)
+    app.onDecodeCompleted();
+    CHECK(app.currentImage() && app.currentImage()->width == 8);
+    app.onMouseDown(MouseButton::Right, {396, 283});
+    app.onMouseUp(MouseButton::Right, {400, 287});
+    CHECK(app.annotations().specs->size() == 1);
+    app.execute(Command::Escape);  // まず選択解除
+    const int confirmBeforeEsc = host.confirmCount;
+    app.execute(Command::Escape);
+    CHECK(host.confirmCount == confirmBeforeEsc + 1);
+    CHECK(app.annotations().specs->empty());
+    CHECK(host.lastTitle.find("(編集中)") == std::string::npos);
+}
+
 void testAppKeyboardObjectMove() {
     FakeDecoder decoder;
     ImageCache cache(decoder);
@@ -4712,9 +4882,10 @@ void testAppEdit() {
     app.execute(Command::CropToSelection);
     CHECK(app.currentImage()->width == 4 && app.currentImage()->height == 4);
     CHECK(app.annotations().specs->empty());  // 範囲に使った矩形は残らない
-    CHECK(app.statusBar().leftText == "4 x 4 px  |  ツール: 矩形");
+    // 未保存の編集ができたので、遷移ロック中であることがステータスバーにも出る
+    CHECK(app.statusBar().leftText == "4 x 4 px  |  ツール: 矩形  |  編集中(遷移ロック)");
     CHECK(app.statusBar().rightText.empty());
-    CHECK(host.lastTitle.find("(編集済み)") != std::string::npos);
+    CHECK(host.lastTitle.find("(編集中)") != std::string::npos);
     CHECK(!app.selection().visible);
 
     // Undo で元に戻る(切り出しと矩形の消去で 1 段、矩形の追加でもう 1 段)。
@@ -4724,7 +4895,7 @@ void testAppEdit() {
     CHECK(app.annotations().specs->size() == 1);
     app.execute(Command::Undo);
     CHECK(app.annotations().specs->empty());
-    CHECK(host.lastTitle.find("(編集済み)") == std::string::npos);
+    CHECK(host.lastTitle.find("(編集中)") == std::string::npos);
     app.execute(Command::Undo);
     CHECK(app.statusBar().leftText == "取り消す編集はありません");
     app.onTimer();
@@ -4760,7 +4931,7 @@ void testAppEdit() {
         CHECK(nearly(spec.angleDeg, 0));
         CHECK(view.selected && *view.selected == 0);
     }
-    CHECK(host.lastTitle.find("(編集済み)") != std::string::npos);
+    CHECK(host.lastTitle.find("(編集中)") != std::string::npos);
     CHECK(app.currentImage()->pixels[(1 * 8 + 1) * 4 + 2] == 0);  // 画像自体は無変更
 
     // コピーは注釈を合成した画像になる (2x2 赤 overlay が (1,1) へ)。
@@ -4947,8 +5118,34 @@ void testAppEdit() {
     app.onMouseDown(MouseButton::Right, {396, 283});
     app.onMouseUp(MouseButton::Right, {400, 287});
     CHECK(app.annotations().specs->size() == 1);
-    app.execute(Command::NextImage);  // 1 枚しかないが貼り付け表示からは戻る
+    // 未保存の編集がある間、画像の切り替えは断られる(遷移ロック)。抜け方も案内する
+    app.execute(Command::NextImage);
+    CHECK(app.statusBar().leftText ==
+          "編集中は画像を切り替えられません(Ctrl+S 保存 / Esc 破棄 / Ctrl+Z 取り消し)");
+    CHECK(app.currentImage() && app.currentImage()->width == 8);  // 貼り付け画像のまま
+    CHECK(app.annotations().specs->size() == 1);
+
+    // Esc の連鎖: まず選択を外し、次の Esc で破棄を訊く(取りやめれば何も変わらない)
+    app.execute(Command::Escape);
+    CHECK(!app.annotations().selected.has_value());
+    host.confirmAnswer = false;
+    const int confirmBefore = host.confirmCount;
+    app.execute(Command::Escape);
+    CHECK(host.confirmCount == confirmBefore + 1);
+    CHECK(app.annotations().specs->size() == 1);
+    CHECK(host.lastTitle.find("(編集中)") != std::string::npos);
+
+    // 承諾すれば破棄される。貼り付け画像は読み直す元が無いので履歴を遡って戻す
+    host.confirmAnswer = true;
+    app.execute(Command::Escape);
     CHECK(app.statusBar().leftText == "編集を破棄しました");
+    CHECK(app.annotations().specs->empty());
+    CHECK(app.currentImage() && app.currentImage()->width == 8);  // 貼り付け画像自体は残る
+    CHECK(host.lastTitle.find("(編集中)") == std::string::npos);
+    app.onTimer();
+
+    // ロックが解けたので移動できる(1 枚しかないが貼り付け表示からは戻る)
+    app.execute(Command::NextImage);
     CHECK(app.currentImage() && app.currentImage()->width == 1);
     CHECK(app.annotations().specs->empty());
     CHECK(host.lastTitle.find("a.png") != std::string::npos);
@@ -5826,9 +6023,17 @@ void testAppPasteObject() {
     CHECK(app.annotations().specs->size() == 2);
     CHECK(app.statusBar().leftText == "クリップボードに画像がありません");
 
-    // 注釈を扱えない環境では、見えないオブジェクトを作らず画像として開く
+    // 注釈を扱えない環境では、見えないオブジェクトを作らず画像として開く。
+    // ただし画像の置き換えは遷移ロックの対象なので、まず未保存の編集を片付ける
     rasterizer.supported = false;
     clipboard.pasteImage = pasted;
+    app.execute(Command::PasteObject);
+    CHECK(app.statusBar().leftText ==
+          "編集中は画像を貼り付けられません(Ctrl+S 保存 / Esc 破棄 / Ctrl+Z 取り消し)");
+    CHECK(app.annotations().specs->size() == 2);
+    app.execute(Command::Escape);  // 選択を外してから破棄する
+    app.execute(Command::Escape);
+    CHECK(app.annotations().specs->empty());
     app.execute(Command::PasteObject);
     CHECK(app.currentImage() == pasted);
     CHECK(app.annotations().specs->empty());
@@ -6745,6 +6950,23 @@ void testAppMultiPage() {
     app.execute(Command::TogglePlay);
     CHECK(app.statusBar().leftText == "この画像はアニメーションではありません");
     CHECK(host.lastFrameTimerMs == 0);
+    app.onTimer();
+
+    // ページ送りも編集を捨てるので、画像切替と同じく遷移ロックの対象にする。
+    // 200x100 の画像はビューポート中央に等倍で出るので左上はスクリーン (300, 237)
+    app.execute(Command::PrevFrame);
+    CHECK(app.statusBar().leftText.find("ページ 2/3") != std::string::npos);
+    app.onMouseDown(MouseButton::Right, {300, 237});
+    app.onMouseUp(MouseButton::Right, {320, 257});
+    CHECK(app.annotations().specs->size() == 1);
+    CHECK(host.lastTitle.find("(編集中)") != std::string::npos);
+    for (const Command command : {Command::NextFrame, Command::PrevFrame}) {
+        app.execute(command);
+        CHECK(app.statusBar().leftText ==
+              "編集中はページを送れません(Ctrl+S 保存 / Esc 破棄 / Ctrl+Z 取り消し)");
+        app.onTimer();
+        CHECK(app.statusBar().leftText.find("ページ 2/3") != std::string::npos);
+    }
 }
 
 void testAppIcoSizes() {
@@ -7337,6 +7559,7 @@ int main() {
     testPenGeometry();
     testPastedImageGeometry();
     testAppAnnotationObjects();
+    testAppEditLock();
     testAppKeyboardObjectMove();
     testAppEdit();
     testAppTextEditing();
