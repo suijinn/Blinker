@@ -810,7 +810,7 @@ bool App::beginTextEditByDoubleClick(Point screenPos) {
     if (textEdit_.active()) commitTextEdit();
     selected_ = hit;
     objectDrag_.end();
-    beginTextEdit(*hit, {current_, annotations_}, false);
+    beginTextEdit(*hit, {current_, annotations_, selected_}, false);
     // 文字位置はダブルクリックした場所の語を選ぶ(通常のテキスト編集と同じ)
     textEdit_.buffer().selectWordAt(textOffsetAt(imagePos));
     notifyCaretMoved();
@@ -1003,7 +1003,7 @@ void App::showObjectMenu(Point screenPos) {
     AnnotationSpec& spec = annotations_[*selected_];
     switch (entry.action) {
     case ObjectMenuEntry::Action::EditText:
-        beginTextEdit(*selected_, {current_, annotations_}, false);
+        beginTextEdit(*selected_, {current_, annotations_, selected_}, false);
         textEdit_.buffer().selectAll();  // 入力し直しやすいよう全選択で始める
         notifyCaretMoved();
         host_.requestRedraw();
@@ -1368,7 +1368,7 @@ void App::applyAnnotation(AnnotationSpec::Kind kind) {
         const Point origin{std::min(spec.p1.x, spec.p2.x), std::min(spec.p1.y, spec.p2.y)};
         spec.p2 = {std::max(spec.p1.x, spec.p2.x), std::max(spec.p1.y, spec.p2.y)};
         spec.p1 = origin;
-        EditSnapshot before{current_, annotations_};  // 追加前の状態を undo 用に控える
+        EditSnapshot before{current_, annotations_, selected_};  // 追加前の状態を undo 用に控える
         annotations_.push_back(std::move(spec));
         selected_ = annotations_.size() - 1;
         beginTextEdit(annotations_.size() - 1, std::move(before), true);
@@ -1944,7 +1944,7 @@ void App::markEdited() {
 }
 
 void App::pushUndo() {
-    pushUndoState({current_, annotations_});
+    pushUndoState({current_, annotations_, selected_});
 }
 
 void App::pushUndoState(EditSnapshot state) {
@@ -1962,7 +1962,7 @@ void App::pushDragUndoOnce() {
 
 void App::executeUndo() {
     if (textEdit_.active()) commitTextEdit();  // 編集中の内容を確定してから履歴を戻す
-    if (!restoreFrom(history_.undo({current_, annotations_}))) {
+    if (!restoreFrom(history_.undo({current_, annotations_, selected_}))) {
         showMessage("取り消す編集はありません");
         return;
     }
@@ -1974,7 +1974,7 @@ void App::executeUndo() {
 
 void App::executeRedo() {
     if (textEdit_.active()) commitTextEdit();
-    if (!restoreFrom(history_.redo({current_, annotations_}))) {
+    if (!restoreFrom(history_.redo({current_, annotations_, selected_}))) {
         showMessage("やり直す編集はありません");
         return;
     }
@@ -1990,7 +1990,10 @@ bool App::restoreFrom(std::optional<EditSnapshot> state) {
         (current_->width != state->image->width || current_->height != state->image->height);
     current_ = std::move(state->image);
     annotations_ = std::move(state->annotations);
-    selected_.reset();  // index が指す対象が変わりうるため選択は解除する
+    // 選択も控えてある(移動を取り消したときに対象が選択されたまま残るように)。
+    // index はこのスナップショットの注釈一覧に対するものだが、念のため範囲を確かめる
+    selected_ = state->selected;
+    if (selected_ && *selected_ >= annotations_.size()) selected_.reset();
     objectDrag_.end();
     // トリミングの取り消しでサイズが戻るときだけビューを再設定する(回転等を保つ)
     if (sizeChanged) {
@@ -2067,7 +2070,7 @@ bool App::executeDiscardEdits() {
     }
     // 貼り付け画像には読み直す元が無いので、履歴を遡れるところまで遡って戻す
     // (ビューの作り直しは restoreFrom が大きさの変わった段でだけ行う)
-    while (history_.canUndo()) restoreFrom(history_.undo({current_, annotations_}));
+    while (history_.canUndo()) restoreFrom(history_.undo({current_, annotations_, selected_}));
     discardEdits();
     updateTitle();
     host_.requestRedraw();

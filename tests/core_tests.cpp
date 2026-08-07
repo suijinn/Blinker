@@ -3006,6 +3006,20 @@ void testEditHistory() {
     CHECK(forward && forward->image->width == 3);  // 取り消す前の状態がやり直し先
     CHECK(!history.canRedo());
 
+    // 選択もスナップショットの一部として往復する(移動を取り消しても選択が残るように)
+    {
+        EditHistory sel;
+        EditSnapshot before = snapshotWithWidth(1);
+        before.selected = 2;
+        sel.push(std::move(before));
+        EditSnapshot now = snapshotWithWidth(2);
+        now.selected = 5;
+        auto restored = sel.undo(std::move(now));
+        CHECK(restored && restored->selected == std::optional<size_t>(2));
+        auto again = sel.redo(snapshotWithWidth(1));
+        CHECK(again && again->selected == std::optional<size_t>(5));  // 戻る前の選択
+    }
+
     // 新しい編集をすると、分岐した未来(やり直し先)は捨てられる
     history.undo(snapshotWithWidth(3));
     CHECK(history.canRedo());
@@ -4326,10 +4340,10 @@ void testAppAnnotationObjects() {
     CHECK(nearly(app.annotations().specs->front().p1.x, 1));
     app.onMouseUp(MouseButton::Left);
 
-    // ドラッグ1回の undo は1段。取り消しで元の位置に戻り選択は解除される
+    // ドラッグ1回の undo は1段。取り消しで元の位置に戻り、選択は掴んだままで残る
     app.execute(Command::Undo);
     CHECK(nearly(app.annotations().specs->front().p1.x, 0));
-    CHECK(!app.annotations().selected.has_value());
+    CHECK(app.annotations().selected == std::optional<size_t>(0));
 
     // 何もない場所のクリックは消費しない(選択解除してパンに回る)
     CHECK(app.onMouseDown(MouseButton::Left, {396, 283}));
@@ -4352,11 +4366,9 @@ void testAppAnnotationObjects() {
     app.onMouseUp(MouseButton::Left);
     app.execute(Command::Undo);  // リサイズ1回で undo 1段
     CHECK(nearly(app.annotations().specs->front().p2.x, 4));
-    CHECK(!app.annotations().selected.has_value());
+    CHECK(app.annotations().selected == std::optional<size_t>(0));
 
-    // 回転ハンドル(枠上辺中央の 20px 上)のドラッグで回転する
-    CHECK(app.onMouseDown(MouseButton::Left, {396, 283}));  // 選択し直す
-    app.onMouseUp(MouseButton::Left);
+    // 回転ハンドル(枠上辺中央の 20px 上)のドラッグで回転する(取り消し後も選択のまま)
     CHECK(app.onMouseDown(MouseButton::Left, {398, 263}));  // 中心 (398,285)、ハンドル (398,263)
     app.onMouseMove({420, 285});         // 中心の真右 → 90°
     CHECK(nearly(app.annotations().specs->front().angleDeg, 90));
@@ -4679,6 +4691,18 @@ void testAppKeyboardObjectMove() {
     app.execute(Command::Undo);
     CHECK(nearly(p1().x, 0) && nearly(p1().y, 0));
     CHECK(app.annotations().specs->size() == 1);
+    // 取り消しても選択は外れない(そのまま矢印で動かし直せる)
+    CHECK(app.annotations().selected == std::optional<size_t>(0));
+    CHECK(app.onKey({KeyCode::Right}));
+    CHECK(nearly(p1().x, 1) && nearly(p1().y, 0));
+    app.execute(Command::Undo);
+    CHECK(nearly(p1().x, 0) && nearly(p1().y, 0));
+    // やり直しでも同じ(戻る前の選択がそのまま復元される)
+    app.execute(Command::Redo);
+    CHECK(nearly(p1().x, 1) && nearly(p1().y, 0));
+    CHECK(app.annotations().selected == std::optional<size_t>(0));
+    app.execute(Command::Undo);
+    CHECK(nearly(p1().x, 0) && nearly(p1().y, 0));
 
     // 別のコマンドを挟むと連なりが切れ、次の移動は新しい段になる
     CHECK(app.onMouseDown(MouseButton::Left, {396, 283}));  // 選択し直す
