@@ -314,6 +314,10 @@ std::optional<std::filesystem::path> WindowSdl::showSaveDialog(
     return path;
 }
 
+void WindowSdl::beginFileDrag(const std::vector<std::filesystem::path>&) {
+    // SDL3 はドロップ先にはなれてもドラッグ元にはなれないため、何もしない
+}
+
 bool WindowSdl::showConfirm(const std::string& message) {
     const SDL_MessageBoxButtonData buttons[] = {
         {SDL_MESSAGEBOX_BUTTON_ESCAPEKEY_DEFAULT, 0, "キャンセル"},

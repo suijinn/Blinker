@@ -556,6 +556,21 @@ blinker.ini の `[mouse] swap_buttons` で入れ替えられる(`PointerState::r
 上限は `kMaxWidth` と「窓幅 - `kMinViewportWidth`」の狭いほう。ini の
 `sidebar_width` は起動時の幅で、ドラッグでの変更は保存しない。
 
+サイドバーの項目は**掴んで他のアプリへ落とせる**(エクスプローラへのコピー、
+他のアプリへの受け渡し)。押下は従来どおり `clickSidebarItem` でその画像へ移動し、
+`pressSidebarItem` が掴んだパスを控えるだけ。`kDragThresholdPx` を超えて動いた時点で
+`beginSidebarFileDrag` が `IAppHost::beginFileDrag` を呼ぶ ―― **控えるのが index ではなく
+パス**なのは、押下から移動までの間に並び替えやサブフォルダ走査の完了で一覧が
+入れ替わりうるため。win 層は OLE の `DoDragDrop`(`win/drag_drop_win.cpp`)で、
+`SHCreateDataObject` の空のデータオブジェクトへ `CF_HDROP` を積むだけなので
+`IDataObject` の自前実装は要らない。落とし先へ許すのは**コピーとリンクだけ**で、
+移動は許さない(閲覧しているファイルがドラッグひとつで消えるのを防ぐ)。
+そのため `wWinMain` の COM 初期化は `CoInitializeEx` ではなく `OleInitialize`
+(`DoDragDrop` が OLE の初期化を要求する)。`beginFileDrag` は落とされるまで返らず、
+`DoDragDrop` が自分でマウスを捕捉するので、**呼ぶ前にウィンドウのキャプチャを手放し、
+対になる `WM_LBUTTONUP` が来ない前提で押下状態を畳んでおく**。SDL 版はドラッグ元に
+なれる API が無いため何もしない。
+
 オブジェクトを掴む操作も入れ替えない。既存の図形を選ぶのに右クリックが要るのは
 他のペイント系ソフトと食い違って戸惑うため、左ボタンのままにしてある。そのため
 `onMouseDown` は**左ボタンだけ**まず `beginObjectGrab` を通し、掴めなかったときに

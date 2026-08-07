@@ -614,7 +614,12 @@ bool App::onMouseDown(MouseButton button, Point screenPos) {
     // サイドバーは UI 部品なので左右の入れ替えの対象外。左クリックが項目へ移動し、
     // 右クリックは一覧のメニュー(並び替え・サブフォルダ)を開く
     if (sidebarVisible() && screenPos.x < sidebarOffset()) {
-        if (button == MouseButton::Left) clickSidebarItem(screenPos);
+        if (button == MouseButton::Left) {
+            // 掴んだファイルを覚えてから移動する(移動で一覧が入れ替わっても
+            // 掴んだのは押した項目のまま。動かさずに離せば単なるクリック)
+            pressSidebarItem(screenPos);
+            clickSidebarItem(screenPos);
+        }
         // 操作一覧モードには並べ替える一覧が無いのでメニューも出さない。
         // ここでは位置だけ覚え、ドラッグにならずに離されたら onMouseUp が開く
         if (button == MouseButton::Right && sidebar_.mode() == SidebarMode::Files) {
@@ -667,6 +672,35 @@ void App::clickSidebarItem(Point screenPos) {
     // 一覧からの選択も画像の切り替え。jumpTo は位置を書き換えるので判定を先に済ませる
     if (!guardEditLock("画像を切り替えられません")) return;
     if (list_.jumpTo(index) || origin_.fromClipboard()) refreshCurrent();
+}
+
+void App::pressSidebarItem(Point screenPos) {
+    sidebarDragPath_.reset();
+    if (sidebar_.mode() != SidebarMode::Files || screenPos.y < 0 ||
+        screenPos.y >= sidebarViewHeight()) {
+        return;  // 操作一覧にはファイルが無く、ステータスバー上は領域外
+    }
+    const size_t index = sidebar_.itemAt(screenPos.y);
+    if (index >= list_.size()) return;
+    sidebarDragPath_ = list_.at(index);
+    sidebarDragPress_ = screenPos;
+}
+
+bool App::beginSidebarFileDrag(Point screenPos) {
+    if (!sidebarDragPath_) return false;
+    // 判定はメニューを開くかどうかと同じ閾値・同じ距離の測り方にする
+    const float dx = screenPos.x - sidebarDragPress_.x;
+    const float dy = screenPos.y - sidebarDragPress_.y;
+    if (dx * dx + dy * dy < PointerState::kDragThresholdPx * PointerState::kDragThresholdPx) {
+        return false;  // クリックとみなす範囲。まだ始めない
+    }
+    // 掴んだ印は先に落とす。beginFileDrag は落とされるまで返らず、対になる
+    // ボタン解放の通知も来ないので、ここで畳んでおかないと次の移動でまた始まってしまう
+    const fs::path path = *sidebarDragPath_;
+    sidebarDragPath_.reset();
+    // サイドバー上の押下はパンもメニューも始めていないので、畳む状態は他に無い
+    host_.beginFileDrag({path});
+    return true;
 }
 
 bool App::beginObjectGrab(Point screenPos) {
@@ -736,6 +770,8 @@ bool App::beginObjectGrab(Point screenPos) {
 
 void App::onMouseUp(MouseButton button, Point screenPos, bool shift) {
     pointer_.setLastScreen(screenPos);
+    // 動かさずに離したのでドラッグ&ドロップにはならなかった(クリックは押下で済んでいる)
+    if (button == MouseButton::Left) sidebarDragPath_.reset();
     // 書式メニューは押した時点で決まっている(編集を確定させずに出す)
     if (button == MouseButton::Right && textEdit_.consumeStyleMenu()) {
         showTextStyleMenu(screenPos);
@@ -810,7 +846,7 @@ bool App::beginTextEditByDoubleClick(Point screenPos) {
     if (textEdit_.active()) commitTextEdit();
     selected_ = hit;
     objectDrag_.end();
-    beginTextEdit(*hit, {current_, annotations_}, false);
+    beginTextEdit(*hit, {current_, annotations_, selected_}, false);
     // 文字位置はダブルクリックした場所の語を選ぶ(通常のテキスト編集と同じ)
     textEdit_.buffer().selectWordAt(textOffsetAt(imagePos));
     notifyCaretMoved();
@@ -1003,7 +1039,7 @@ void App::showObjectMenu(Point screenPos) {
     AnnotationSpec& spec = annotations_[*selected_];
     switch (entry.action) {
     case ObjectMenuEntry::Action::EditText:
-        beginTextEdit(*selected_, {current_, annotations_}, false);
+        beginTextEdit(*selected_, {current_, annotations_, selected_}, false);
         textEdit_.buffer().selectAll();  // 入力し直しやすいよう全選択で始める
         notifyCaretMoved();
         host_.requestRedraw();
@@ -1368,7 +1404,7 @@ void App::applyAnnotation(AnnotationSpec::Kind kind) {
         const Point origin{std::min(spec.p1.x, spec.p2.x), std::min(spec.p1.y, spec.p2.y)};
         spec.p2 = {std::max(spec.p1.x, spec.p2.x), std::max(spec.p1.y, spec.p2.y)};
         spec.p1 = origin;
-        EditSnapshot before{current_, annotations_};  // 追加前の状態を undo 用に控える
+        EditSnapshot before{current_, annotations_, selected_};  // 追加前の状態を undo 用に控える
         annotations_.push_back(std::move(spec));
         selected_ = annotations_.size() - 1;
         beginTextEdit(annotations_.size() - 1, std::move(before), true);
@@ -1944,7 +1980,7 @@ void App::markEdited() {
 }
 
 void App::pushUndo() {
-    pushUndoState({current_, annotations_});
+    pushUndoState({current_, annotations_, selected_});
 }
 
 void App::pushUndoState(EditSnapshot state) {
@@ -1962,7 +1998,7 @@ void App::pushDragUndoOnce() {
 
 void App::executeUndo() {
     if (textEdit_.active()) commitTextEdit();  // 編集中の内容を確定してから履歴を戻す
-    if (!restoreFrom(history_.undo({current_, annotations_}))) {
+    if (!restoreFrom(history_.undo({current_, annotations_, selected_}))) {
         showMessage("取り消す編集はありません");
         return;
     }
@@ -1974,7 +2010,7 @@ void App::executeUndo() {
 
 void App::executeRedo() {
     if (textEdit_.active()) commitTextEdit();
-    if (!restoreFrom(history_.redo({current_, annotations_}))) {
+    if (!restoreFrom(history_.redo({current_, annotations_, selected_}))) {
         showMessage("やり直す編集はありません");
         return;
     }
@@ -1990,7 +2026,10 @@ bool App::restoreFrom(std::optional<EditSnapshot> state) {
         (current_->width != state->image->width || current_->height != state->image->height);
     current_ = std::move(state->image);
     annotations_ = std::move(state->annotations);
-    selected_.reset();  // index が指す対象が変わりうるため選択は解除する
+    // 選択も控えてある(移動を取り消したときに対象が選択されたまま残るように)。
+    // index はこのスナップショットの注釈一覧に対するものだが、念のため範囲を確かめる
+    selected_ = state->selected;
+    if (selected_ && *selected_ >= annotations_.size()) selected_.reset();
     objectDrag_.end();
     // トリミングの取り消しでサイズが戻るときだけビューを再設定する(回転等を保つ)
     if (sizeChanged) {
@@ -2067,7 +2106,7 @@ bool App::executeDiscardEdits() {
     }
     // 貼り付け画像には読み直す元が無いので、履歴を遡れるところまで遡って戻す
     // (ビューの作り直しは restoreFrom が大きさの変わった段でだけ行う)
-    while (history_.canUndo()) restoreFrom(history_.undo({current_, annotations_}));
+    while (history_.canUndo()) restoreFrom(history_.undo({current_, annotations_, selected_}));
     discardEdits();
     updateTitle();
     host_.requestRedraw();
@@ -2254,6 +2293,8 @@ void App::onMouseMove(Point screenPos, bool shift) {
         setSidebarWidth(sidebar_.resizeWidth(screenPos.x));
         return;
     }
+    // サイドバーの項目を掴んだまま動かしたら、ファイルを他のアプリへ渡す
+    if (beginSidebarFileDrag(screenPos)) return;
     // パン役のボタンで何も掴まずにドラッグしている間は画像を動かす
     if (pointer_.panning()) panBy(delta.x, delta.y);
     // 編集ドラッグ中は選択領域とプレビューを更新する(ホバー表示の更新も続ける)

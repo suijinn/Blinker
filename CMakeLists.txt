@@ -125,6 +125,7 @@ if(WIN32)
         src/win/wic_factory.cpp
         src/win/file_system_win.cpp
         src/win/clipboard_win.cpp
+        src/win/drag_drop_win.cpp
         src/win/ocr_winrt.cpp
         src/win/printer_win.cpp
         ${CMAKE_BINARY_DIR}/generated/win/blinker.rc

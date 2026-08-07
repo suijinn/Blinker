@@ -1173,6 +1173,10 @@ public:
         lastConfirmMessage = message;
         return confirmAnswer;
     }
+    void beginFileDrag(const std::vector<std::filesystem::path>& paths) override {
+        ++fileDragCount;
+        lastDragPaths = paths;
+    }
     std::optional<size_t> showContextMenu(const std::vector<MenuItem>& items, Point) override {
         ++menuCount;
         lastMenuItems = items;
@@ -1224,6 +1228,8 @@ public:
     std::optional<uint32_t> colorChoice;    // 色ダイアログの応答 (nullopt = キャンセル)
     uint32_t lastColorPickerInitial = 0;
     int colorPickerCount = 0;
+    int fileDragCount = 0;                             // beginFileDrag の呼び出し回数
+    std::vector<std::filesystem::path> lastDragPaths;  // 最後に渡されたパス
 };
 
 // 選択可能な末端項目(separator とサブメニュー親を除く)の数。index の対応確認用
@@ -2702,6 +2708,91 @@ void testAppSidebarResize() {
     CHECK(!app.onMouseDown(MouseButton::Left, {420, 300}));
 }
 
+void testAppSidebarFileDrag() {
+    FakeDecoder decoder;
+    ImageCache cache(decoder);
+    FakeHost host;
+    FakeFileSystem fileSystem;
+    FakeClipboard clipboard;
+    FakeEncoder encoder;
+    FakeAnnotationRasterizer rasterizer;
+    FakeOcrEngine ocrEngine;
+    OcrService ocrService(ocrEngine);
+    ScanService scanService(fileSystem);
+    FakePrinter printer;
+    App app(host, fileSystem, cache, clipboard, encoder, rasterizer, ocrService, printer,
+            scanService);
+    app.onResize(800, 600);
+    std::mutex mutex;
+    std::condition_variable cv;
+    bool decoded = false;
+    cache.setOnDecoded([&](const std::filesystem::path&) {
+        std::lock_guard lock(mutex);
+        decoded = true;
+        cv.notify_all();
+    });
+    for (int i = 1; i <= 30; ++i) {
+        fileSystem.files.push_back(std::format("C:/pics/f{:02}.png", i));
+    }
+    app.openPath(fileSystem.files[0]);
+    {
+        std::unique_lock lock(mutex);
+        CHECK(cv.wait_for(lock, std::chrono::seconds(5), [&] { return decoded; }));
+    }
+    app.onDecodeCompleted();
+    app.execute(Command::ToggleSidebar);
+
+    // 押しただけ・閾値未満の移動ではまだ始めない(単なるクリックと区別が付かない)。
+    // 押下時のジャンプは従来どおり起きる (y=100 → index 4 = f05.png)
+    CHECK(app.onMouseDown(MouseButton::Left, {100, 100}));
+    CHECK(host.lastTitle.find("f05.png") == 0);
+    app.onMouseMove({102, 101});
+    CHECK(host.fileDragCount == 0);
+
+    // 閾値を超えて動かしたら、押した項目のパスを渡してドラッグ&ドロップを始める
+    app.onMouseMove({140, 108});
+    CHECK(host.fileDragCount == 1);
+    CHECK(host.lastDragPaths.size() == 1);
+    CHECK(host.lastDragPaths[0] == std::filesystem::path("C:/pics/f05.png"));
+
+    // 始めるのは 1 回だけ。落とし終えた後の移動では始まらない
+    // (beginFileDrag から戻った時点でボタンは離されている)
+    app.onMouseMove({200, 200});
+    CHECK(host.fileDragCount == 1);
+
+    // 動かさずに離せばクリックのまま。以後の移動でも始まらない
+    CHECK(app.onMouseDown(MouseButton::Left, {100, 148}));  // index 6 = f07.png
+    app.onMouseUp(MouseButton::Left, {100, 148}, false);
+    app.onMouseMove({300, 300});
+    CHECK(host.fileDragCount == 1);
+
+    // 右端(幅の変更)を掴んだときは幅が変わるだけで、ファイルは掴まない
+    CHECK(app.onMouseDown(MouseButton::Left, {220, 100}));
+    app.onMouseMove({300, 100});
+    CHECK(nearly(app.sidebar().width, 300));
+    CHECK(host.fileDragCount == 1);
+    app.onMouseUp(MouseButton::Left, {300, 100}, false);
+
+    // 項目のない場所(ステータスバーの高さ・一覧の末尾より下)からは始まらない
+    CHECK(app.onMouseDown(MouseButton::Left, {100, 590}));
+    app.onMouseMove({200, 400});
+    CHECK(host.fileDragCount == 1);
+
+    // ビューポート上のドラッグは従来どおり(パン。ファイルは掴まない)
+    CHECK(!app.onMouseDown(MouseButton::Left, {500, 300}));
+    app.onMouseMove({560, 320});
+    CHECK(host.fileDragCount == 1);
+    app.onMouseUp(MouseButton::Left, {560, 320}, false);
+
+    // 操作一覧モードにはファイルが無いので始まらない
+    app.execute(Command::ToggleHelp);
+    CHECK(app.sidebarMode() == SidebarMode::Help);
+    CHECK(app.onMouseDown(MouseButton::Left, {100, 100}));
+    app.onMouseMove({160, 130});
+    CHECK(host.fileDragCount == 1);
+    app.onMouseUp(MouseButton::Left, {160, 130}, false);
+}
+
 void testAppHelpSidebar() {
     FakeDecoder decoder;
     ImageCache cache(decoder);
@@ -3005,6 +3096,20 @@ void testEditHistory() {
     forward = history.redo(snapshotWithWidth(2));
     CHECK(forward && forward->image->width == 3);  // 取り消す前の状態がやり直し先
     CHECK(!history.canRedo());
+
+    // 選択もスナップショットの一部として往復する(移動を取り消しても選択が残るように)
+    {
+        EditHistory sel;
+        EditSnapshot before = snapshotWithWidth(1);
+        before.selected = 2;
+        sel.push(std::move(before));
+        EditSnapshot now = snapshotWithWidth(2);
+        now.selected = 5;
+        auto restored = sel.undo(std::move(now));
+        CHECK(restored && restored->selected == std::optional<size_t>(2));
+        auto again = sel.redo(snapshotWithWidth(1));
+        CHECK(again && again->selected == std::optional<size_t>(5));  // 戻る前の選択
+    }
 
     // 新しい編集をすると、分岐した未来(やり直し先)は捨てられる
     history.undo(snapshotWithWidth(3));
@@ -4326,10 +4431,10 @@ void testAppAnnotationObjects() {
     CHECK(nearly(app.annotations().specs->front().p1.x, 1));
     app.onMouseUp(MouseButton::Left);
 
-    // ドラッグ1回の undo は1段。取り消しで元の位置に戻り選択は解除される
+    // ドラッグ1回の undo は1段。取り消しで元の位置に戻り、選択は掴んだままで残る
     app.execute(Command::Undo);
     CHECK(nearly(app.annotations().specs->front().p1.x, 0));
-    CHECK(!app.annotations().selected.has_value());
+    CHECK(app.annotations().selected == std::optional<size_t>(0));
 
     // 何もない場所のクリックは消費しない(選択解除してパンに回る)
     CHECK(app.onMouseDown(MouseButton::Left, {396, 283}));
@@ -4352,11 +4457,9 @@ void testAppAnnotationObjects() {
     app.onMouseUp(MouseButton::Left);
     app.execute(Command::Undo);  // リサイズ1回で undo 1段
     CHECK(nearly(app.annotations().specs->front().p2.x, 4));
-    CHECK(!app.annotations().selected.has_value());
+    CHECK(app.annotations().selected == std::optional<size_t>(0));
 
-    // 回転ハンドル(枠上辺中央の 20px 上)のドラッグで回転する
-    CHECK(app.onMouseDown(MouseButton::Left, {396, 283}));  // 選択し直す
-    app.onMouseUp(MouseButton::Left);
+    // 回転ハンドル(枠上辺中央の 20px 上)のドラッグで回転する(取り消し後も選択のまま)
     CHECK(app.onMouseDown(MouseButton::Left, {398, 263}));  // 中心 (398,285)、ハンドル (398,263)
     app.onMouseMove({420, 285});         // 中心の真右 → 90°
     CHECK(nearly(app.annotations().specs->front().angleDeg, 90));
@@ -4679,6 +4782,18 @@ void testAppKeyboardObjectMove() {
     app.execute(Command::Undo);
     CHECK(nearly(p1().x, 0) && nearly(p1().y, 0));
     CHECK(app.annotations().specs->size() == 1);
+    // 取り消しても選択は外れない(そのまま矢印で動かし直せる)
+    CHECK(app.annotations().selected == std::optional<size_t>(0));
+    CHECK(app.onKey({KeyCode::Right}));
+    CHECK(nearly(p1().x, 1) && nearly(p1().y, 0));
+    app.execute(Command::Undo);
+    CHECK(nearly(p1().x, 0) && nearly(p1().y, 0));
+    // やり直しでも同じ(戻る前の選択がそのまま復元される)
+    app.execute(Command::Redo);
+    CHECK(nearly(p1().x, 1) && nearly(p1().y, 0));
+    CHECK(app.annotations().selected == std::optional<size_t>(0));
+    app.execute(Command::Undo);
+    CHECK(nearly(p1().x, 0) && nearly(p1().y, 0));
 
     // 別のコマンドを挟むと連なりが切れ、次の移動は新しい段になる
     CHECK(app.onMouseDown(MouseButton::Left, {396, 283}));  // 選択し直す
@@ -7550,6 +7665,7 @@ int main() {
     testPixelInfoText();
     testAppSidebar();
     testAppSidebarResize();
+    testAppSidebarFileDrag();
     testAppHelpSidebar();
     testAppHelpHint();
     testEditFunctions();

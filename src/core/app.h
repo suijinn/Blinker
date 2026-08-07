@@ -91,6 +91,18 @@ public:
         const std::string& defaultFileName) = 0;
 
     /**
+     * @brief ファイルのドラッグ&ドロップ元になる(モーダル。落とされるまで返らない)。
+     *
+     * サイドバーの項目を掴んで他のアプリ(エクスプローラ等)へ渡すための入口。
+     * ウィンドウ層が呼び出しの間ずっとマウスを握るので、返ったときにはボタンは
+     * 離されている(ボタン解放の通知は来ない)。
+     *
+     * @param[in] paths 渡すファイルのパス。空なら何もしない。
+     * @note SDL バックエンドは未対応(何もしない)。
+     */
+    virtual void beginFileDrag(const std::vector<std::filesystem::path>& paths) = 0;
+
+    /**
      * @brief 取り消せない操作の確認を求める(モーダル。応答されるまで返らない)。
      * @param[in] message 確認したい内容(UTF-8)。
      * @return 続行してよければ true。取りやめなら false。
@@ -800,6 +812,23 @@ private:
     void clickSidebarItem(Point screenPos);
 
     /**
+     * @brief サイドバーの項目の押下を、ファイルのドラッグ&ドロップの候補として覚える。
+     * @param[in] screenPos 押下位置(スクリーン座標)。サイドバーの内側であること。
+     * @note 覚えるのはパスで index ではない(押下から動かすまでの間に並び替えや
+     *       サブフォルダ走査の完了で一覧が入れ替わっても、掴んだファイルは変わらない)。
+     */
+    void pressSidebarItem(Point screenPos);
+
+    /**
+     * @brief 掴んだ項目のドラッグ&ドロップを、閾値を超えていれば始める。
+     * @param[in] screenPos 現在のポインタ位置(スクリーン座標)。
+     * @return 始めたら true(呼び出し元は以後の処理を行わない)。
+     * @note host_.beginFileDrag は落とされるまで返らず、その間のマウスは
+     *       ウィンドウ層が握る。戻ったときにはボタンは離されている。
+     */
+    bool beginSidebarFileDrag(Point screenPos);
+
+    /**
      * @brief 左ボタンの押下でオブジェクトを掴めるかを試す。
      * @param[in] screenPos 押下位置(スクリーン座標)。
      * @return 注釈のハンドル・本体、または編集中テキストの内側を掴んだら true。
@@ -1373,6 +1402,10 @@ private:
     bool navArrowsEnabled_ = true;
     /// 直前に描いた矢印の状態。ポインタ移動で再描画が必要かの判定にだけ使う
     NavArrowsState navArrowsShown_;
+    /// サイドバーで左ボタンを押した項目のパス。閾値を超えて動いたらこれを掴んで
+    /// ドラッグ&ドロップを始める(押下から開始までの間だけ値が入る)
+    std::optional<std::filesystem::path> sidebarDragPath_;
+    Point sidebarDragPress_{};  ///< 上記の押下位置。移動量の判定の基準
 
     // 編集(トリミング・図形・テキスト)の状態
     /// 注釈ヒットテストの許容(画面px)。塗りの無い矩形・楕円は輪郭線しか当たらないため、

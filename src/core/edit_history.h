@@ -19,14 +19,18 @@
 namespace blinker {
 
 /**
- * @brief undo 1 段分のスナップショット(画像と注釈一覧)。
+ * @brief undo 1 段分のスナップショット(画像・注釈一覧・選択)。
  *
  * 画像は共有する(トリミングのように差し替えでしか変わらないため、
  * 段ごとに画素を複製する必要はない)。
+ *
+ * 選択も一緒に控えるのは、移動を取り消したときに対象が選択されたまま残るようにするため。
+ * index は同じスナップショットの annotations に対するもので、他の段では意味を持たない。
  */
 struct EditSnapshot {
     std::shared_ptr<DecodedImage> image;      ///< そのときの画像
     std::vector<AnnotationSpec> annotations;  ///< そのときの注釈一覧
+    std::optional<size_t> selected;           ///< そのとき選択していた注釈の index
 };
 
 /**

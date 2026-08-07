@@ -11,6 +11,7 @@
 
 #include "core/unicode.h"
 #include "platform/image_formats.h"
+#include "win/drag_drop_win.h"
 
 namespace blinker {
 namespace {
@@ -452,6 +453,13 @@ std::optional<std::filesystem::path> MainWindow::showSaveDialog(
         result += ofn.nFilterIndex == 2 ? L".jpg" : ofn.nFilterIndex == 3 ? L".bmp" : L".png";
     }
     return result;
+}
+
+void MainWindow::beginFileDrag(const std::vector<std::filesystem::path>& paths) {
+    // DoDragDrop は自分でマウスを捕捉するので、こちらのキャプチャは先に手放す
+    // (握ったままだとドラッグ中の移動が届かず、落とし先も反応しない)
+    if (GetCapture() == hwnd_) ReleaseCapture();
+    dragFiles(paths);
 }
 
 bool MainWindow::showConfirm(const std::string& message) {
