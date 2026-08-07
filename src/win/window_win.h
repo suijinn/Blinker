@@ -93,6 +93,15 @@ public:
         const std::string& defaultFileName) override;
 
     /**
+     * @brief ファイルのドラッグ&ドロップ元になる (DoDragDrop)。
+     * @param[in] paths 渡すファイルのパス。
+     * @note 落とされる(または Esc で取りやめられる)まで返らない。DoDragDrop が
+     *       自分でマウスを捕捉するので、先にこちらのキャプチャを手放す。
+     *       そのため対になる WM_LBUTTONUP は届かず、押下状態は App 側で畳んである。
+     */
+    void beginFileDrag(const std::vector<std::filesystem::path>& paths) override;
+
+    /**
      * @brief 確認ダイアログ (MessageBox) を表示する。
      * @param[in] message 確認したい内容(UTF-8)。
      * @return 「OK」なら true。「キャンセル」・閉じるなら false。

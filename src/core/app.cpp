@@ -614,7 +614,12 @@ bool App::onMouseDown(MouseButton button, Point screenPos) {
     // サイドバーは UI 部品なので左右の入れ替えの対象外。左クリックが項目へ移動し、
     // 右クリックは一覧のメニュー(並び替え・サブフォルダ)を開く
     if (sidebarVisible() && screenPos.x < sidebarOffset()) {
-        if (button == MouseButton::Left) clickSidebarItem(screenPos);
+        if (button == MouseButton::Left) {
+            // 掴んだファイルを覚えてから移動する(移動で一覧が入れ替わっても
+            // 掴んだのは押した項目のまま。動かさずに離せば単なるクリック)
+            pressSidebarItem(screenPos);
+            clickSidebarItem(screenPos);
+        }
         // 操作一覧モードには並べ替える一覧が無いのでメニューも出さない。
         // ここでは位置だけ覚え、ドラッグにならずに離されたら onMouseUp が開く
         if (button == MouseButton::Right && sidebar_.mode() == SidebarMode::Files) {
@@ -667,6 +672,35 @@ void App::clickSidebarItem(Point screenPos) {
     // 一覧からの選択も画像の切り替え。jumpTo は位置を書き換えるので判定を先に済ませる
     if (!guardEditLock("画像を切り替えられません")) return;
     if (list_.jumpTo(index) || origin_.fromClipboard()) refreshCurrent();
+}
+
+void App::pressSidebarItem(Point screenPos) {
+    sidebarDragPath_.reset();
+    if (sidebar_.mode() != SidebarMode::Files || screenPos.y < 0 ||
+        screenPos.y >= sidebarViewHeight()) {
+        return;  // 操作一覧にはファイルが無く、ステータスバー上は領域外
+    }
+    const size_t index = sidebar_.itemAt(screenPos.y);
+    if (index >= list_.size()) return;
+    sidebarDragPath_ = list_.at(index);
+    sidebarDragPress_ = screenPos;
+}
+
+bool App::beginSidebarFileDrag(Point screenPos) {
+    if (!sidebarDragPath_) return false;
+    // 判定はメニューを開くかどうかと同じ閾値・同じ距離の測り方にする
+    const float dx = screenPos.x - sidebarDragPress_.x;
+    const float dy = screenPos.y - sidebarDragPress_.y;
+    if (dx * dx + dy * dy < PointerState::kDragThresholdPx * PointerState::kDragThresholdPx) {
+        return false;  // クリックとみなす範囲。まだ始めない
+    }
+    // 掴んだ印は先に落とす。beginFileDrag は落とされるまで返らず、対になる
+    // ボタン解放の通知も来ないので、ここで畳んでおかないと次の移動でまた始まってしまう
+    const fs::path path = *sidebarDragPath_;
+    sidebarDragPath_.reset();
+    // サイドバー上の押下はパンもメニューも始めていないので、畳む状態は他に無い
+    host_.beginFileDrag({path});
+    return true;
 }
 
 bool App::beginObjectGrab(Point screenPos) {
@@ -736,6 +770,8 @@ bool App::beginObjectGrab(Point screenPos) {
 
 void App::onMouseUp(MouseButton button, Point screenPos, bool shift) {
     pointer_.setLastScreen(screenPos);
+    // 動かさずに離したのでドラッグ&ドロップにはならなかった(クリックは押下で済んでいる)
+    if (button == MouseButton::Left) sidebarDragPath_.reset();
     // 書式メニューは押した時点で決まっている(編集を確定させずに出す)
     if (button == MouseButton::Right && textEdit_.consumeStyleMenu()) {
         showTextStyleMenu(screenPos);
@@ -2257,6 +2293,8 @@ void App::onMouseMove(Point screenPos, bool shift) {
         setSidebarWidth(sidebar_.resizeWidth(screenPos.x));
         return;
     }
+    // サイドバーの項目を掴んだまま動かしたら、ファイルを他のアプリへ渡す
+    if (beginSidebarFileDrag(screenPos)) return;
     // パン役のボタンで何も掴まずにドラッグしている間は画像を動かす
     if (pointer_.panning()) panBy(delta.x, delta.y);
     // 編集ドラッグ中は選択領域とプレビューを更新する(ホバー表示の更新も続ける)

@@ -58,10 +58,10 @@ std::filesystem::path pathFromCommandLine() {
 int WINAPI wWinMain(HINSTANCE hinstance, HINSTANCE, PWSTR, int showCommand) {
     using namespace blinker;
 
-    // メインスレッドは STA(ファイルダイアログ等のため)。WIC デコードはワーカースレッド側
-    if (FAILED(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE))) {
-        return 1;
-    }
+    // メインスレッドは STA(ファイルダイアログ等のため)。WIC デコードはワーカースレッド側。
+    // CoInitializeEx ではなく OleInitialize なのは、サイドバーからのドラッグ&ドロップ
+    // (DoDragDrop)が OLE の初期化を要求するため。中で STA として CoInitializeEx される
+    if (FAILED(OleInitialize(nullptr))) return 1;
 
     int exitCode = 0;
     {
@@ -76,7 +76,7 @@ int WINAPI wWinMain(HINSTANCE hinstance, HINSTANCE, PWSTR, int showCommand) {
         const bool darkTheme = resolveDarkTheme(config);
         MainWindow window;
         if (!window.create(hinstance, showCommand, darkTheme)) {
-            CoUninitialize();
+            OleUninitialize();
             return 1;
         }
 
@@ -127,6 +127,6 @@ int WINAPI wWinMain(HINSTANCE hinstance, HINSTANCE, PWSTR, int showCommand) {
         exitCode = static_cast<int>(msg.wParam);
     }  // cache のデストラクタがワーカースレッドを join してから COM を解放する
 
-    CoUninitialize();
+    OleUninitialize();
     return exitCode;
 }

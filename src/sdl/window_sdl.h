@@ -103,6 +103,14 @@ public:
         const std::string& defaultFileName) override;
 
     /**
+     * @brief ファイルのドラッグ&ドロップ元になる(SDL バックエンドでは未実装)。
+     * @param[in] paths 渡すファイルのパス(未使用)。
+     * @todo SDL3 にドラッグ元になる API が無いため、対応するならプラットフォーム
+     *       ごとの実装(X11 の XDND 等)が要る。閲覧機能には影響しない。
+     */
+    void beginFileDrag(const std::vector<std::filesystem::path>& paths) override;
+
+    /**
      * @brief 確認ダイアログ (SDL_ShowMessageBox) を表示する。
      * @param[in] message 確認したい内容(UTF-8)。
      * @return 「OK」なら true。「キャンセル」・表示できなかった場合は false。
