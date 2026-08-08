@@ -127,7 +127,9 @@ if(WIN32)
         src/win/clipboard_win.cpp
         src/win/drag_drop_win.cpp
         src/win/ocr_winrt.cpp
+        src/win/winrt_abi.cpp
         src/win/printer_win.cpp
+        src/win/print_winrt.cpp
         ${CMAKE_BINARY_DIR}/generated/win/blinker.rc
         src/win/blinker.manifest
     )

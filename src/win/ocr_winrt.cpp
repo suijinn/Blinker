@@ -6,10 +6,7 @@
 #include <wrl/client.h>
 
 // WinRT を C++/WinRT ではなく ABI (MIDL 生成ヘッダ) で直接使う。windowsapp.lib への
-// 静的リンクを避け、exe のインポートを増やさないため
-#include <roapi.h>
-#include <winstring.h>
-
+// 静的リンクを避け、exe のインポートを増やさないため(下ごしらえは win/winrt_abi.h)
 #include <windows.foundation.h>
 #include <windows.globalization.h>
 #include <windows.graphics.imaging.h>
@@ -25,6 +22,7 @@
 #include "core/ocr_text.h"
 #include "core/unicode.h"
 #include "win/wic_factory.h"
+#include "win/winrt_abi.h"
 
 namespace blinker {
 namespace {
@@ -50,82 +48,6 @@ constexpr DWORD kRecognizeTimeoutMs = 60'000;
 // 認識器がサイズ上限を報告しなかった場合に渡す「上限なし」の値
 constexpr double kUnlimitedUpscale = 1e9;
 
-/**
- * combase.dll の遅延解決。
- *
- * 静的リンク (windowsapp.lib) を避けることで、exe のインポートテーブルが増えず、
- * OCR を一度も使わなければ combase.dll が読み込まれることもない(起動時間を守る)。
- */
-struct ComBaseApi {
-    HRESULT(WINAPI* roInitialize)(RO_INIT_TYPE) = nullptr;
-    void(WINAPI* roUninitialize)() = nullptr;
-    HRESULT(WINAPI* roGetActivationFactory)(HSTRING, REFIID, void**) = nullptr;
-    HRESULT(WINAPI* windowsCreateString)(PCNZWCH, UINT32, HSTRING*) = nullptr;
-    HRESULT(WINAPI* windowsDeleteString)(HSTRING) = nullptr;
-    PCWSTR(WINAPI* windowsGetStringRawBuffer)(HSTRING, UINT32*) = nullptr;
-    bool ok = false;
-};
-
-const ComBaseApi& comBase() {
-    static const ComBaseApi api = [] {
-        ComBaseApi a;
-        // combase.dll は Windows 8 以降にのみ存在する。無ければ ok = false のまま
-        HMODULE module = LoadLibraryExW(L"combase.dll", nullptr,
-                                        LOAD_LIBRARY_SEARCH_SYSTEM32);
-        if (!module) return a;
-        const auto load = [module](const char* name) {
-            return reinterpret_cast<void*>(GetProcAddress(module, name));
-        };
-        a.roInitialize = reinterpret_cast<decltype(a.roInitialize)>(load("RoInitialize"));
-        a.roUninitialize = reinterpret_cast<decltype(a.roUninitialize)>(load("RoUninitialize"));
-        a.roGetActivationFactory =
-            reinterpret_cast<decltype(a.roGetActivationFactory)>(load("RoGetActivationFactory"));
-        a.windowsCreateString =
-            reinterpret_cast<decltype(a.windowsCreateString)>(load("WindowsCreateString"));
-        a.windowsDeleteString =
-            reinterpret_cast<decltype(a.windowsDeleteString)>(load("WindowsDeleteString"));
-        a.windowsGetStringRawBuffer = reinterpret_cast<decltype(a.windowsGetStringRawBuffer)>(
-            load("WindowsGetStringRawBuffer"));
-        a.ok = a.roInitialize && a.roUninitialize && a.roGetActivationFactory &&
-               a.windowsCreateString && a.windowsDeleteString && a.windowsGetStringRawBuffer;
-        return a;
-    }();
-    return api;
-}
-
-/// HSTRING の所有権を持つ薄いラッパ(WindowsCreateString / WindowsDeleteString の対)。
-class HString {
-public:
-    HString() = default;
-
-    explicit HString(std::wstring_view s) {
-        if (!comBase().ok) return;
-        comBase().windowsCreateString(s.data(), static_cast<UINT32>(s.size()), &value_);
-    }
-
-    ~HString() {
-        if (value_ && comBase().ok) comBase().windowsDeleteString(value_);
-    }
-
-    HString(const HString&) = delete;
-    HString& operator=(const HString&) = delete;
-
-    HSTRING get() const { return value_; }
-    HSTRING* put() { return &value_; }
-
-    /// 保持している文字列を UTF-8 で返す(空・未設定なら空文字列)。
-    std::string toUtf8() const {
-        if (!value_ || !comBase().ok) return {};
-        UINT32 length = 0;
-        const wchar_t* buffer = comBase().windowsGetStringRawBuffer(value_, &length);
-        if (!buffer) return {};
-        return wideToUtf8(std::wstring_view(buffer, length));
-    }
-
-private:
-    HSTRING value_ = nullptr;
-};
-
 /// スレッドごとの WinRT (MTA) 初期化。ワーカースレッドから最初に呼ばれた時点で走る。
 bool winRtReadyForThisThread() {
     if (!comBase().ok) return false;
@@ -145,20 +67,6 @@ bool winRtReadyForThisThread() {
         }
     } state;
     return state.usable;
-}
-
-/**
- * アクティベーションファクトリを取得する。
- * @param classId ランタイムクラス名。
- * @param out     受け取り先。
- */
-template <typename T>
-HRESULT activationFactory(const wchar_t* classId, ComPtr<T>& out) {
-    if (!comBase().ok) return E_NOINTERFACE;
-    const HString name(classId);
-    if (!name.get()) return E_OUTOFMEMORY;
-    return comBase().roGetActivationFactory(name.get(), __uuidof(T),
-                                            reinterpret_cast<void**>(out.GetAddressOf()));
 }
 
 /**

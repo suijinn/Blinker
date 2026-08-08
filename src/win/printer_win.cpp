@@ -12,6 +12,7 @@
 #include "core/image_scale.h"
 #include "core/print_layout.h"
 #include "core/unicode.h"
+#include "win/print_winrt.h"
 
 namespace blinker {
 namespace {
@@ -52,6 +53,20 @@ struct PrintDialogResult {
 PrintStatus PrinterWin::print(const DecodedImage& image, const std::string& jobName,
                               const PrintOptions& options) {
     if (image.width == 0 || image.height == 0) return PrintStatus::Failed;
+
+    const std::wstring name = utf8ToWide(jobName);
+    // まず OS のモダン印刷ダイアログ(プレビュー付き)を試す。使えない環境では
+    // 従来の印刷ダイアログ (PrintDlg) へ落とす ―― そちらにプレビューは無い
+    switch (printWithModernUi(owner_, image, name, options)) {
+    case ModernPrintStatus::Printed:
+        return PrintStatus::Printed;
+    case ModernPrintStatus::Canceled:
+        return PrintStatus::Canceled;
+    case ModernPrintStatus::Failed:
+        return PrintStatus::Failed;
+    case ModernPrintStatus::Unavailable:
+        break;
+    }
 
     PRINTDLGW dialog{};
     dialog.lStructSize = sizeof(dialog);
@@ -103,7 +118,6 @@ PrintStatus PrinterWin::print(const DecodedImage& image, const std::string& jobN
 
     DOCINFOW docInfo{};
     docInfo.cbSize = sizeof(docInfo);
-    const std::wstring name = utf8ToWide(jobName);
     docInfo.lpszDocName = name.empty() ? L"Blinker" : name.c_str();
     // ダイアログの「ファイルへ出力」。指定しないとチェックしても普通に印刷されてしまう
     // (出力先のファイル名は GDI が尋ねる)

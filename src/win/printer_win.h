@@ -14,11 +14,13 @@
 namespace blinker {
 
 /**
- * @brief GDI による印刷。
+ * @brief Windows の印刷。
  *
- * PrintDlg で選ばせたプリンタの DC へ、画像を StretchDIBits で 1 ページ描く。
- * プリンタ・用紙・向き・部数はダイアログの設定に従い、用紙のどこに置くかだけを
- * PrintOptions(blinker.ini の `[print]`)で決める。
+ * まず OS のモダン印刷ダイアログ(プレビュー付き。print_winrt)を試し、それが
+ * 使えない環境でだけ従来の PrintDlg + GDI へ落ちる。GDI 経路では選ばせたプリンタの
+ * DC へ画像を StretchDIBits で 1 ページ描く(プレビューは出ない)。
+ * どちらの経路でもプリンタ・用紙・向き・部数はダイアログの設定に従い、
+ * 用紙のどこに置くかだけを PrintOptions(blinker.ini の `[print]`)で決める。
  */
 class PrinterWin final : public IPrinter {
 public:
@@ -33,9 +35,11 @@ public:
      * @param[in] image   印刷する画像(32bpp PBGRA)。GDI はアルファを見ないため、
      *                    半透明を含む画像は呼び出し側で背景へ焼き込んでおくこと。
      * @param[in] jobName 印刷キューに表示されるジョブ名(UTF-8)。空なら "Blinker"。
+     *                    モダン印刷ダイアログではタイトルにもなる。
      * @param[in] options 余白・自動回転の設定。
      * @return 印刷結果。ダイアログでの取りやめは PrintStatus::Canceled。
-     * @note モーダル。UI スレッドから呼ぶこと。
+     * @note モーダル。UI スレッドから呼ぶこと。モダン経路では表示中もメッセージを回し、
+     *       その間は親ウィンドウを無効にする。
      */
     PrintStatus print(const DecodedImage& image, const std::string& jobName,
                       const PrintOptions& options) override;

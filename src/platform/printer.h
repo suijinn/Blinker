@@ -40,7 +40,9 @@ enum class PrintStatus {
 /**
  * @brief 印刷のプラットフォーム抽象。
  *
- * Windows 実装は GDI (printer_win)、SDL バックエンドは未対応 (printer_stub)。
+ * Windows 実装は OS のモダン印刷ダイアログ + Direct2D (print_winrt) で、
+ * それが使えない環境では GDI の印刷ダイアログ (printer_win) へ落ちる。
+ * SDL バックエンドは未対応 (printer_stub)。
  * 画像は 1 ページに収まるよう拡大縮小して印刷する(タイル印刷・複数ページはしない)。
  */
 class IPrinter {
@@ -52,9 +54,12 @@ public:
      * @param[in] image   印刷する画像(32bpp PBGRA)。実装はアルファを見ないことがあるため、
      *                    半透明を含む画像は呼び出し側で背景へ焼き込んでおくこと。
      * @param[in] jobName 印刷キューに表示されるジョブ名(UTF-8)。空なら実装が既定名を使う。
+     *                    ダイアログのタイトルにも使われることがある。
      * @param[in] options 余白・自動回転の設定。
      * @return 印刷結果。
      * @note ダイアログを含むモーダル処理で、応答があるまで返らない。UI スレッドから呼ぶこと。
+     *       実装はその間もメッセージを回す(ダイアログのプレビュー描画を進めるため)ので、
+     *       呼び出し中に他のコマンドが走らないよう窓を無効化するのは実装側の責任。
      */
     virtual PrintStatus print(const DecodedImage& image, const std::string& jobName,
                               const PrintOptions& options) = 0;
