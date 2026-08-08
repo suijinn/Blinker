@@ -18,7 +18,8 @@
 │  / wic_factory /           │  │  decoder_stb / encoder_stb /  │
 │  file_system_win /         │  │  file_system_posix /          │
 │  clipboard_win /           │  │  clipboard_sdl /              │
-│  printer_win               │  │  printer_stub                 │
+│  printer_win /             │  │  printer_stub                 │
+│  print_winrt / winrt_abi   │  │                               │
 └──────────────┬────────────┘  └────────────┬──────────────────┘
                │ 実装・所有                   │ 実装・所有
 ┌──────────────▼─────────────────────────────▼──────────────────┐
@@ -57,7 +58,7 @@
 | `EncoderStb` | `EncoderWic` | stb_image_write。PNG/JPEG/BMP(JPEG 品質は `EncodeOptions`) |
 | `FileSystemPosix` | `FileSystemWin` | `std::filesystem` + core の `naturalCompare`(自然順) |
 | `ClipboardSdl` | `ClipboardWin` | テキストは SDL、画像は "image/png" MIME で PNG 受け渡し |
-| `PrinterStub` | `PrinterWin` | **未実装**。印刷 (Ctrl+P) は「対応していない」旨をステータスバーに出すだけ(Linux では CUPS、macOS では Cocoa の印刷 API が要り、外部依存ゼロで賄えないため) |
+| `PrinterStub` | `PrinterWin` (+ `print_winrt` のモダン印刷 UI) | **未実装**。印刷 (Ctrl+P) は「対応していない」旨をステータスバーに出すだけ(Linux では CUPS、macOS では Cocoa の印刷 API が要り、外部依存ゼロで賄えないため) |
 | `AnnotationStub` | `OcrEngineWinrt` | Windows.Media.Ocr による文字認識(`IOcrEngine` 実装)。**WinRT を C++/WinRT ではなく ABI で直接呼び、`combase.dll` は `LoadLibrary` で遅延解決する**。`windowsapp.lib` を静的リンクすると exe のインポートが増え、OCR を使わない起動でも DLL が読まれるため。認識器の生成も最初の実行まで遅延する。上限を超える画像は WIC で縮小し、座標は元のスケールへ戻す。文字が小さいときは 1 回目の行高から拡大率を決めて読み直す 2 パス構成(判断は core の `ocrRetryUpscale`)|
 | `AnnotationD2D` | **未実装**(ラスタライズ・テキスト計測とも)。ツールメニュー(コンテキストメニュー・色選択)やテキストのインプレース編集も未対応のため、SDL 版は閲覧専用 |
 
@@ -224,6 +225,58 @@ redo 側へ、redo は undo 側へ積み替えるだけの対称な操作で、�
 アルファを見ない)で `flattenOnBackground` で白へ焼き込んでから渡す。用紙のどこに
 どう置くかだけが `[print]` の設定で、プリンタ・用紙・向き・部数は OS の印刷ダイアログ
 に任せる(自前の印刷設定 UI は持たない)。
+
+### 印刷ダイアログとプレビュー (Windows)
+
+Windows 版の `PrinterWin::print` は 2 つの経路を持ち、**モダン印刷ダイアログを試して、
+駄目なら従来の `PrintDlg` へ落ちる**。
+
+| 経路 | 実装 | プレビュー | 使われる場面 |
+|---|---|---|---|
+| モダン印刷 UI | `print_winrt.cpp` (WinRT `PrintManager` + Direct2D 1.1) | **出る** | 既定。Windows 8 以降で `PrintManager` を開ければこちら |
+| 従来の印刷ダイアログ | `printer_win.cpp` (`PrintDlg` + GDI `StretchDIBits`) | 出ない | WinRT を開けない・D3D デバイスを作れない環境 |
+
+**プレビューの中身は OS ではなくアプリが描く**。Windows 11 の印刷ダイアログは
+プレビュー枠を持つが、ページを供給しないアプリには「このアプリは印刷プレビューを
+サポートしていません」と表示されるだけで、`PrintDlg` にプレビューを出させる方法は無い
+(ダイアログはこちらが 1 画素も描く前に開くので、OS には中身が分からない)。
+埋めるには次の流れが要る:
+
+1. `IPrintManagerInterop::GetForWindow` で HWND に紐づく `PrintManager` を取り、
+   `PrintTaskRequested` を購読してから `ShowPrintUIForWindowAsync` でダイアログを出す
+2. ハンドラで `CreatePrintTask` し、ソースとして `IPrintDocumentSource` +
+   `IPrintDocumentPageSource` を実装したオブジェクト (`PrintDocument`) を渡す
+3. OS が `GetPreviewPageCollection` → `Paginate`(`SetJobPageCount` で 1 ページと申告)
+   → `MakePage` と呼んでくるので、**OS が用意した DXGI サーフェスへ D2D で用紙 1 枚を
+   描き**、`IPrintPreviewDxgiPackageTarget::DrawPage` で返す
+4. 「印刷」が押されると `MakeDocument` が来る。`ID2D1PrintControl` にコマンドリストを
+   1 ページ追加して `Close` すれば、スプーラへ渡る
+
+配置の計算は GDI 経路と同じ `layoutPrintImage` を使う(単位が DIP なので 1/100 DIP の
+整数に直して渡す)。用紙の寸法・ハードウェア余白は `IPrintTaskOptionsCore::GetPageDescription`
+から取り、`[print]` の余白と自動回転をそこへ適用するので、**プレビューに見えるものが
+そのまま刷られる**。用紙の向きを変えると OS が `Paginate` から呼び直す。
+
+実装上の注意:
+
+- **プレビュー枠は 96dpi で合成される**。`MakePage` に渡る width / height (DIP) が
+  そのままサーフェスのピクセル数で、`DrawPage` にも 96 を渡す。用紙はそこへ収まるよう
+  D2D の変換で縮めて描く
+- `DrawPage` の**前に `SetTarget(nullptr)` で描画先の割り当てを外す**こと。
+  付けたままだと受け手が読めず、枠が「プレビューを読み込んでいます」のまま止まる
+- 画面描画の `RendererD2D` は D2D 1.0 の `ID2D1HwndRenderTarget` なので流用できない。
+  印刷は D2D 1.1 のデバイス・コマンドリスト・`ID2D1PrintControl` を要求するため、
+  **印刷のときだけ** D3D11 + D2D 1.1 のデバイスを作って捨てる
+- `d3d11.dll` は `LoadLibrary` で遅延解決し、WinRT も `combase` を遅延解決する
+  (`winrt_abi.h`。OCR と共用)。**印刷を使わない起動では読み込まれない**
+- WinRT インターフェースの実装に WRL の `RuntimeClass` は使わない。`InspectableClass`
+  マクロが `windowsapp.lib` の静的リンクを要求するため、`IUnknown` / `IInspectable` は
+  `print_winrt.cpp` の `ComObject` テンプレートで手書きする
+- `ShowPrintUIForWindowAsync` の完了は「**ダイアログを出せた**」の合図であって、
+  閉じた合図ではない。終わりは `PrintTask` の `Completed`
+  (`Submitted` / `Canceled` / `Failed`)で受ける。それまで `IPrinter::print` は
+  メッセージを回して待ち、その間だけ親ウィンドウを無効にする(従来の `PrintDlg` と
+  同じモーダル感にするため)。回さずにブロックするとダイアログもプレビューも進まない
 
 ### 選択中のキーバインド (KeyScope)
 

@@ -1,7 +1,8 @@
 # Blinker — 開発ガイド
 
-軽量・高速起動の画像ビューア。C++20。Windows版は Win32 API / Direct2D / WIC / WinRT(OCR)で
-外部ライブラリ依存ゼロの単一exe(約630KB。うちOCRが約35KB)。Linux/macOS版は SDL3 + stb(third_party/にベンダリング)の `src/sdl` バックエンド(閲覧専用、編集は未対応)。
+軽量・高速起動の画像ビューア。C++20。Windows版は Win32 API / Direct2D / WIC / WinRT(OCR・印刷)で
+外部ライブラリ依存ゼロの単一exe(約790KB。うちOCRが約35KB、モダン印刷UIが約22KB)。
+**WinRT (combase) と D3D11 は遅延ロード**なので、OCR も印刷も使わない起動では読み込まれない。Linux/macOS版は SDL3 + stb(third_party/にベンダリング)の `src/sdl` バックエンド(閲覧専用、編集は未対応)。
 
 設計の詳細(層構造・コンポーネントの責務・データフロー・起動シーケンス)の正は
 [docs/architecture.md](docs/architecture.md)。ここにはビルド方法と、コードを触るたびに必要になる
@@ -128,6 +129,13 @@ Node.js 20 で動くメジャー(`@v4` 系)はランナーが強制的に 24 で
   `downscaleToFit` で縮めて載せるため、転送元の矩形は画像の寸法ではなく
   ビットマップの実寸(`GetSize` 等)から取ること。逆に**取り込み時に縮小された画像**
   (`DecodedImage::downscaled()`)は元ファイルより小さいので、上書き保存してはならない
+- **印刷プレビューの中身はアプリが描く**。Windows のモダン印刷ダイアログはプレビュー枠を
+  出すだけで、ページを供給しないアプリには「このアプリは印刷プレビューをサポートして
+  いません」と出る(`PrintDlg` にプレビューを出させる方法は無い)。実装は
+  `src/win/print_winrt.cpp`(WinRT `PrintManager` + Direct2D 1.1)で、画面描画の
+  `RendererD2D`(D2D 1.0 の HwndRenderTarget)は流用できず、印刷時だけ別のデバイスを作る。
+  手順と落とし穴(96dpi 合成・`DrawPage` 前の `SetTarget(nullptr)`・完了イベントの意味)は
+  architecture.md「印刷ダイアログとプレビュー」
 - 座標はすべて物理ピクセル(D2DはDPI 96固定でDIP=px)。DPI対応はmanifestのPerMonitorV2
 - パス比較は大文字小文字を無視(Windows準拠)。フォルダ内ソートは Win版が `StrCmpLogicalW`、
   SDL版が core の `naturalCompare`(いずれもエクスプローラと同じ自然順)
